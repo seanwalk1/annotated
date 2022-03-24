@@ -1,0 +1,287 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209641405/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	Bugcheck C9 - DRIVER_VERIFIER_IOMANAGER_VIOLATION
+[BUGCHECK]:	0xC9
+
+
+Driver Verifier device removal rule enforcement appears to fail to take into account existing corner cases in PnP Manager.
+This is Bugcheck C9 - DRIVER_VERIFIER_IOMANAGER_VIOLATION (c9) (see attached dump).
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_VERIFIER_IOMANAGER_VIOLATION (c9)
+The IO manager has caught a misbehaving driver.
+Arguments:
+Arg1: 0000000000000221, An IRP dispatch handler for a PDO has deleted its device object, but the
+	hardware has not been reported as missing in a bus relations query.
+Arg2: fffff807b36b1800, The address in the driver's code where the error was detected.
+Arg3: ffff810caae92c10, IRP address.
+Arg4: ffffb180b4260e40, Device object address.
+…
+
+The IRP is PnP removal IRP:
+3: kd> !irp ffff810caae92c10
+Irp is active with 10 stacks 8 is current (= 0xffff810caae92ed8)
+ No Mdl: No System Buffer: Thread ffffb180b410f040:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0 10 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_PNP(1b), IRP_MN_START_DEVICE(0)]
+            0 10 ffffb180b4260e40 00000000 fffff802ab7fbf00-ffff8d8029906290    
+	       \Driver\ACPI	nt!ViFilterRemoveNotificationCompletion
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_PNP(1b), IRP_MN_REMOVE_DEVICE - (2)]
+            0 e0 ffffb180b42ef7a0 00000000 fffff802ab7e9470-ffff810caae92f20 Success Error Cancel 
+	       \DRIVER\VERIFIER_FILTER	nt!IovpInternalCompletionTrap
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_PNP(1b), IRP_MN_REMOVE_DEVICE - (2)]
+            0 e0 ffffb180b42ed510 00000000 fffff802ab7fbf00-ffff8d8029906610 Success Error Cancel 
+	       \Driver\imx230	nt!ViFilterRemoveNotificationCompletion
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_PNP(1b), IRP_MN_REMOVE_DEVICE - (2)]
+            0  0 ffffb180b42f3560 00000000 00000000-00000000    
+	       \DRIVER\VERIFIER_FILTER
+			Args: 00000000 00000000 00000000 00000000
+
+And the device stack is ACPI-enumerated camera:
+3: kd> !devstack ffffb180b4260e40
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffb180b42f3560  \DRIVER\VERIFIER_FILTERffffb180b42f36b0  
+  ffffb180b42ed510  \Driver\imx230     ffffb180b42f1320  
+  ffffb180b42ef7a0  \DRIVER\VERIFIER_FILTERffffb180b42ef8f0  
+> ffffb180b4260e40  \Driver\ACPI       00000000  00000048
+!DevNode ffffb180b42609d0 :
+  DeviceInst is "ACPI\SONY230A\1"
+  ServiceName is "imx230"
+
+The problem Verifier reports is that as ACPI.SYS bus driver is deleting PDO, Verifier states that bus driver has not reported device as missing basically violating WDM rule:
+“If the device is still present when the PnP manager sends the IRP_MN_REMOVE_DEVICE request, the bus driver retains the PDO. If, at some later time, the device is physically removed from the bus, the PnP manager sends another IRP_MN_REMOVE_DEVICE. Upon receipt of the subsequent remove IRP, the bus driver deletes the PDO for the device.”
+
+From "Removing a device in a bus driver" (https://msdn.microsoft.com/en-us/library/windows/hardware/ff561048(v=vs.85).aspx)
+
+However, this is not what actually happened. While ACPI device extension is gone at this point:
+!verifier 80 6
+…
+======================================================================
+Pool block ffffdc03d9f64860, Size 0000000000000030, Thread ffffb180b410f040
+fffff802ab7f089f nt!VfFreePoolNotification+0x5b
+fffff802ab30401a nt!ExFreePoolWithTag+0x139a
+fffff802ab5bb362 nt!ObpDeleteDirectoryEntry+0x52
+fffff802ab4bb875 nt!ObpDeleteNameCheck+0x1b5
+fffff802ab1a0c25 nt!IoDeleteDevice+0xc5
+fffff807b3701029 ACPI!ACPIInitResetDeviceExtension+0x215
+fffff807b36f74f9 ACPI!ACPIBusIrpRemoveDevice+0x349
+fffff807b36e32de ACPI!ACPIDispatchIrp+0x31ade
+fffff802ab7de07d nt!IovCallDriver+0x245
+fffff802ab2160c9 nt!IofCallDriver+0x162a49
+fffff802ab7fbc6b nt!ViFilterDispatchPnp+0x11b
+fffff802ab7de07d nt!IovCallDriver+0x245
+fffff802ab2160c9 nt!IofCallDriver+0x162a49
+
+We can actually see from WDF logs that device went through the re-enumeration of the REENUMERATE_SELF_INTERFACE_STANDARD interface
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff560839(v=vs.85).aspx
+
+3: kd> !wdfkd.wdfdriverinfo imx230
+----------------------------------
+Default driver image name: imx230
+WDF library image name: Wdf01000
+ FxDriverGlobals  0xffffb180b42ecbf0
+ WdfBindInfo      0xfffff807b5806330
+   Version        v1.11
+ Library module   0xffffb180b1e591e0
+   ServiceName    \Registry\Machine\System\CurrentControlSet\Services\Wdf01000
+   ImageName      Wdf01000
+----------------------------------
+WDFDRIVER: 0x00004e7f4bd13bf8
+Driver logs: Not available 
+Framework logs: !wdflogdump imx230.sys -f
+
+----------------------------------
+
+WDF Verifier settings for imx230.sys is ON
+  Enhanced verifier is OFF
+  Pool tracking is ON
+  Handle verification is ON
+  IO verification is ON
+  Lock verification is ON
+  Power reference tracking is OFF (stack capture is OFF)
+  Handle reference tracking is OFF
+----------------------------------
+3: kd> !wdflogdump imx230.sys -f
+Trace searchpath is:
+…
+627: FxPkgPnp::Dispatch - WDFDEVICE 0x00004E7F4BD0EFC8 !devobj 0xFFFFB180B42ED510, IRP_MJ_PNP, 0x00000007(IRP_MN_QUERY_DEVICE_RELATIONS) type RemovalRelations IRP 0xFFFF810CAAB44C10
+…
+672: FxPkgPnp::Dispatch - WDFDEVICE 0x00004E7F4BD0EFC8 !devobj 0xFFFFB180B42ED510, IRP_MJ_PNP, 0x00000001(IRP_MN_QUERY_REMOVE_DEVICE) IRP 0xFFFF810CAAC92C10
+…
+680: FxPkgPnp::Dispatch - WDFDEVICE 0x00004E7F4BD0EFC8 !devobj 0xFFFFB180B42ED510, IRP_MJ_PNP, 0x00000003(IRP_MN_CANCEL_REMOVE_DEVICE) IRP 0xFFFF810CAA010C10
+…
+683: FxPkgPnp::Dispatch - WDFDEVICE 0x00004E7F4BD0EFC8 !devobj 0xFFFFB180B42ED510, IRP_MJ_PNP, 0x00000007(IRP_MN_QUERY_DEVICE_RELATIONS) type RemovalRelations IRP 0xFFFF810CAAF52C10
+…
+684: FxPkgPnp::Dispatch - WDFDEVICE 0x00004E7F4BD0EFC8 !devobj 0xFFFFB180B42ED510, IRP_MJ_PNP, 0x00000017(IRP_MN_SURPRISE_REMOVAL) IRP 0xFFFF810CAAF1AC10
+…
+687: FxPkgPnp::Dispatch - WDFDEVICE 0x00004E7F4BD0EFC8 !devobj 0xFFFFB180B42ED510, IRP_MJ_PNP, 0x00000002(IRP_MN_REMOVE_DEVICE) IRP 0xFFFF810CAAE92C10
+…
+
+The actual live repro (different session) confirms it:
+ACPI!ACPIBusReenumerateSelf:
+fffff806`630de960 48895c2408      mov     qword ptr [rsp+8],rbx
+3: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffff9481`d09339d8 fffff806`62f8dca6 ACPI!ACPIBusReenumerateSelf
+01 ffff9481`d09339e0 fffff806`62f83b13 Wdf01000!FxPkgFdo::AskParentToRemoveAndReenumerate+0x26
+02 ffff9481`d0933a10 fffff806`62f148f9 Wdf01000!FxPkgPnp::PnpEventFailedPowerPolicyRemoved+0x43
+03 (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PnpEnterNewState+0xc9
+04 ffff9481`d0933a40 fffff806`62f014a8 Wdf01000!FxPkgPnp::PnpProcessEventInner+0x1a9
+05 ffff9481`d0933af0 fffff806`62f013bf Wdf01000!FxPkgPnp::_PnpProcessEventInner+0x58
+06 (Inline Function) --------`-------- Wdf01000!FxEventQueue::EventQueueWorker+0x83
+07 ffff9481`d0933b30 fffff800`26aab33b Wdf01000!FxWorkItemEventQueue::_WorkItemCallback+0x9f
+08 ffff9481`d0933b90 fffff800`26b4772f nt!IopProcessWorkItem+0xfb
+09 ffff9481`d0933c00 fffff800`26a9c9a7 nt!ExpWorkerThread+0xef
+0a ffff9481`d0933c90 fffff800`26c0a9f6 nt!PspSystemThreadStartup+0x47
+0b ffff9481`d0933ce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+Verifier’s logic whenever device can be removed or not is based on DNF_ENUMERATED (0x00000010) flag in the device node:
+3: kd> u nt!PpvUtilGetDevnodeRemovalOption
+nt!PpvUtilGetDevnodeRemovalOption [inlined in nt!IovpCallDriver2+0x8e]:
+fffff802`ab7e8a16 488b5340        mov     rdx,qword ptr [rbx+40h]
+fffff802`ab7e8a1a 488b8a38010000  mov     rcx,qword ptr [rdx+138h]
+fffff802`ab7e8a21 4c8b4128        mov     r8,qword ptr [rcx+28h]
+fffff802`ab7e8a25 4d85c0          test    r8,r8
+fffff802`ab7e8a28 7440            je      nt!IovpCallDriver2+0xe2 (fffff802`ab7e8a6a)
+fffff802`ab7e8a2a 418b888c010000  mov     ecx,dword ptr [r8+18Ch]
+fffff802`ab7e8a31 f6c110          test    cl,10h
+fffff802`ab7e8a34 7573            jne     nt!IovpCallDriver2+0x121 (fffff802`ab7e8aa9)
+
+3: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffff8d80`29905fc8 fffff802`ab7e9fdf nt!KeBugCheckEx
+01 ffff8d80`29905fd0 fffff802`ab7eea85 nt!VerifierBugCheckIfAppropriate+0x6b
+02 ffff8d80`29906010 fffff802`ab2cecb3 nt!ViErrorFinishReport+0x10d
+03 ffff8d80`29906070 fffff802`ab7e8a6a nt!ViErrorReport10+0x6f
+04 (Inline Function) --------`-------- nt!ViErrorReport2+0x15
+05 (Inline Function) --------`-------- nt!VfErrorReport2+0x15
+06 ffff8d80`29906150 fffff802`ab7e96ca nt!IovpCallDriver2+0xe2
+07 ffff8d80`299061a0 fffff802`ab7de08e nt!VfAfterCallDriver+0x1b6
+08 ffff8d80`299061d0 fffff802`ab2160c9 nt!IovCallDriver+0x256
+09 ffff8d80`29906210 fffff802`ab7fbc6b nt!IofCallDriver+0x162a49
+0a ffff8d80`29906250 fffff802`ab7de07d nt!ViFilterDispatchPnp+0x11b
+0b ffff8d80`29906290 fffff802`ab2160c9 nt!IovCallDriver+0x245
+0c ffff8d80`299062d0 fffff807`b35fa3ae nt!IofCallDriver+0x162a49
+0d (Inline Function) --------`-------- Wdf01000!FxIrp::CallDriver+0x10
+0e ffff8d80`29906310 fffff807`b35f96b2 Wdf01000!FxPkgFdo::ProcessRemoveDeviceOverload+0x7e
+0f ffff8d80`29906340 fffff807`b3567c02 Wdf01000!FxPkgPnp::_PnpRemoveDevice+0x112
+10 ffff8d80`299063b0 fffff807`b356727a Wdf01000!FxPkgPnp::Dispatch+0xc2
+11 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0xcd
+12 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0xd9
+13 ffff8d80`29906420 fffff807`b34dec27 Wdf01000!FxDevice::DispatchWithLock+0x11a
+14 ffff8d80`29906500 fffff802`ab7de07d VerifierExt!xdv_IRP_MJ_PNP_wrapper+0xc7
+15 ffff8d80`29906550 fffff802`ab2160c9 nt!IovCallDriver+0x245
+16 ffff8d80`29906590 fffff802`ab7fbc6b nt!IofCallDriver+0x162a49
+17 ffff8d80`299065d0 fffff802`ab7de07d nt!ViFilterDispatchPnp+0x11b
+18 ffff8d80`29906610 fffff802`ab2160c9 nt!IovCallDriver+0x245
+19 ffff8d80`29906650 fffff802`ab542d89 nt!IofCallDriver+0x162a49
+1a ffff8d80`29906690 fffff802`ab5e7b2f nt!IopSynchronousCall+0xe5
+1b ffff8d80`29906700 fffff802`ab19fd47 nt!IopRemoveDevice+0xdf
+1c ffff8d80`299067c0 fffff802`ab5e6d96 nt!PnpRemoveLockedDeviceNode+0x1ab
+1d ffff8d80`29906820 fffff802`ab5e6ad6 nt!PnpDeleteLockedDeviceNode+0x4e
+1e ffff8d80`29906860 fffff802`ab5f466d nt!PnpDeleteLockedDeviceNodes+0xbe
+1f ffff8d80`299068d0 fffff802`ab5f456f nt!PipRemoveDevicesInRelationList+0x8d
+20 ffff8d80`29906920 fffff802`ab5f4455 nt!PnpDelayedRemoveWorker+0xef
+21 ffff8d80`29906960 fffff802`ab1a0111 nt!PnpChainDereferenceComplete+0x101
+22 ffff8d80`29906990 fffff802`ab5e64d8 nt!PnpIsChainDereferenced+0x111
+23 ffff8d80`29906a10 fffff802`ab4d93c2 nt!PnpProcessQueryRemoveAndEject+0x4e0
+24 ffff8d80`29906b40 fffff802`ab4d6c44 nt!PnpProcessTargetDeviceEvent+0xf2
+25 ffff8d80`29906b70 fffff802`ab136188 nt!PnpDeviceEventWorker+0x254
+26 ffff8d80`29906c00 fffff802`ab0f1b77 nt!ExpWorkerThread+0xd8
+27 ffff8d80`29906c90 fffff802`ab1fe3d6 nt!PspSystemThreadStartup+0x47
+28 ffff8d80`29906ce0 00000000`00000000 nt!KxStartSystemThread+0x16
+3: kd> .frame /r 6
+00 ffff8d80`29905fc8 fffff802`ab7e9fdf nt!KeBugCheckEx
+rax=ffffb180b4260e40 rbx=fffff807b36b1800 rcx=00000000000000c9
+rdx=0000000000000221 rsi=0000000000000221 rdi=fffff802ab839a70
+rip=fffff802ab1f8e60 rsp=ffff8d8029905fc8 rbp=ffffb180b4260e40
+ r8=fffff807b36b1800  r9=ffff810caae92c10 r10=00000000000000c9
+r11=ffff810caae92c10 r12=0000000000000103 r13=ffffb180b4260e40
+r14=ffff810caae92c10 r15=fffff807b36b1800
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+nt!KeBugCheckEx:
+fffff802`ab1f8e60 48894c2408      mov     qword ptr [rsp+8],rcx ss:0018:ffff8d80`29905fd0=00000000000000c9
+
+3: kd> dt   CallDriverData RemovePdo
+Local var @ rbx Type _IOFCALLDRIVER_STACKDATA*
+   +0x040 RemovePdo : 0xffffb180`b4260e40 _DEVICE_OBJECT
+3: kd> dt 0xffffb180`b4260e40 _DEVICE_OBJECT DeviceObjectExtension
+srv!_DEVICE_OBJECT
+   +0x138 DeviceObjectExtension : 0xffffb180`b4260f90 _DEVOBJ_EXTENSION
+3: kd> dt 0xffffb180`b4260f90 _DEVOBJ_EXTENSION DeviceNode
+srv!_DEVOBJ_EXTENSION
+   +0x028 DeviceNode : 0xffffb180`b42609d0 Void
+3: kd> dt nt!_DEVICE_NODE 0xffffb180`b42609d0 Flags
+   +0x18c Flags : 0x6c000030
+3: kd> ? 0x6c000030 & 10
+Evaluate expression: 16 = 00000000`00000010
+
+In this case the DNF_ENUMERATED is set:
+3: kd> !devnode ffffb180b42609d0 
+DevNode 0xffffb180b42609d0 for PDO 0xffffb180b4260e40
+  Parent 0xffffb180b33aad30   Sibling 0000000000   Child 0000000000   
+  InstancePath is "ACPI\SONY230A\1"
+  ServiceName is "imx230"
+  State = DeviceNodeRemovePendingCloses (0x311)
+  Previous State = DeviceNodeStarted (0x308)
+  StateHistory[07] = DeviceNodeStarted (0x308)
+  StateHistory[06] = DeviceNodeAwaitingQueuedRemoval (0x30f)
+  StateHistory[05] = DeviceNodeStarted (0x308)
+  StateHistory[04] = DeviceNodeQueryRemoved (0x310)
+  StateHistory[03] = DeviceNodeStarted (0x308)
+  StateHistory[02] = DeviceNodeEnumerateCompletion (0x30d)
+  StateHistory[01] = DeviceNodeEnumeratePending (0x30c)
+  StateHistory[00] = DeviceNodeStarted (0x308)
+  StateHistory[19] = DeviceNodeEnumerateCompletion (0x30d)
+  StateHistory[18] = DeviceNodeEnumeratePending (0x30c)
+  StateHistory[17] = DeviceNodeStarted (0x308)
+  StateHistory[16] = DeviceNodeEnumerateCompletion (0x30d)
+  StateHistory[15] = DeviceNodeEnumeratePending (0x30c)
+  StateHistory[14] = DeviceNodeStarted (0x308)
+  StateHistory[13] = DeviceNodeEnumerateCompletion (0x30d)
+  StateHistory[12] = DeviceNodeEnumeratePending (0x30c)
+  StateHistory[11] = DeviceNodeStarted (0x308)
+  StateHistory[10] = DeviceNodeEnumerateCompletion (0x30d)
+  StateHistory[09] = DeviceNodeEnumeratePending (0x30c)
+  StateHistory[08] = DeviceNodeStarted (0x308)
+  Flags (0x6c000030)  DNF_ENUMERATED, DNF_IDS_QUERIED, 
+                      DNF_NO_LOWER_DEVICE_FILTERS, DNF_NO_LOWER_CLASS_FILTERS, 
+                      DNF_NO_UPPER_DEVICE_FILTERS, DNF_NO_UPPER_CLASS_FILTERS
+  CapabilityFlags (0x000000c0)  UniqueID, SilentInstall
+
+There are a number of situations however when PnP Manager does not clear DNF_ENUMERATED flag in removal process.
+So Verifier’s assumption appears to be too strong and generates false positive. This has been seen before (see VSO 9199491 for instance although with incorrect analysis).

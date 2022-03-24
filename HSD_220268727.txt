@@ -1,0 +1,128 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220268727
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	IRQL_NOT_LESS_OR_EQUAL (a)
+[BUGCHECK]:	0xA
+
+
+This is IRQL_NOT_LESS_OR_EQUAL (a) – see attached memory dump:
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+IRQL_NOT_LESS_OR_EQUAL (a)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If a kernel debugger is available get the stack backtrace.
+Arguments:
+Arg1: fffff8010568ee41, memory referenced
+Arg2: 0000000000000002, IRQL
+Arg3: 0000000000000008, bitfield :
+	bit 0 : value 0 = read operation, 1 = write operation
+	bit 3 : value 0 = not an execute operation, 1 = execute operation (only on chips which support this level of status)
+Arg4: fffff8010568ee41, address which referenced memory
+…
+
+The IRQL is elevated:
+0: kd> !irql
+Debugger saved IRQL for processor 0x0 -- 2 (DISPATCH_LEVEL)
+
+The page fault address is in transition:
+0: kd> r cr2
+cr2=fffff8010568ee41
+0: kd> !pte fffff8010568ee41 
+                                           VA fffff8010568ee41
+PXE at FFFFCBE5F2F97F80    PPE at FFFFCBE5F2FF0020    PDE at FFFFCBE5FE004158    PTE at FFFFCBFC0082B470
+contains 0000000003909063  contains 000000000390A063  contains 0000000003A17063  contains 000000001E10C860
+pfn 3909      ---DA--KWEV  pfn 390a      ---DA--KWEV  pfn 3a17      ---DA--KWEV  not valid
+                                                                                  Transition: 1e10c
+                                                                                  Protect: 3 - ExecuteRead
+
+This is execute access:
+0: kd> u fffff8010568ee41 L1
+nt!ExpAcquireSpinLockExclusive+0xd [inlined in nt!NtSetInformationThread+0x1621]:
+fffff801`0568ee41 7314            jae     nt!NtSetInformationThread+0x1637 (fffff801`0568ee57)
+
+Looking at the stack, notice spinlock acquire (which raises the IRQL) was called from nt!PspRevertContainerImpersonation which is inlined into nt!NtSetInformationThread:
+0: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffff8105`bac46cc8 fffff801`0541eca2 nt!DbgBreakPointWithStatus
+01 ffff8105`bac46cd0 fffff801`0541e542 nt!KiBugCheckDebugBreak+0x12
+02 ffff8105`bac46d30 fffff801`0538ba37 nt!KeBugCheck2+0x932
+03 ffff8105`bac47440 fffff801`053971e9 nt!KeBugCheckEx+0x107
+04 ffff8105`bac47480 fffff801`0539557d nt!KiBugCheckDispatch+0x69
+05 ffff8105`bac475c0 fffff801`0568ee41 nt!KiPageFault+0x23d
+06 (Inline Function) --------`-------- nt!ExpAcquireSpinLockExclusive+0xd
+07 (Inline Function) --------`-------- nt!ExAcquireSpinLockExclusive+0x35
+08 (Inline Function) --------`-------- nt!PspRevertContainerImpersonation+0x4f
+09 ffff8105`bac47750 fffff801`05396d53 nt!NtSetInformationThread+0x1621
+0a ffff8105`bac47a00 00007ff8`a015f804 nt!KiSystemServiceCopyEnd+0x13
+0b 000000d6`1f47f558 00007ff8`a01302fd ntdll!ZwSetInformationThread+0x14
+0c 000000d6`1f47f560 00007ff8`9e53f269 ntdll!RtlClearThreadWorkOnBehalfTicket+0x3d
+0d 000000d6`1f47f590 00007ff8`9e53fdd6 RPCRT4!LRPC_SCALL::DispatchRequest+0x369
+0e (Inline Function) --------`-------- RPCRT4!LRPC_SCALL::QueueOrDispatchCall+0x1c4
+0f 000000d6`1f47f670 00007ff8`9e542f10 RPCRT4!LRPC_SCALL::HandleRequest+0x996
+10 (Inline Function) --------`-------- RPCRT4!LRPC_SASSOCIATION::HandleRequest+0x1f2
+11 000000d6`1f47f780 00007ff8`9e544663 RPCRT4!LRPC_ADDRESS::HandleRequest+0x2d0
+12 000000d6`1f47f820 00007ff8`9e555be8 RPCRT4!LRPC_ADDRESS::ProcessIO+0x8a3
+13 (Inline Function) --------`-------- RPCRT4!LrpcServerIoHandler+0x18
+14 000000d6`1f47f960 00007ff8`a0113f04 RPCRT4!LrpcIoComplete+0xd8
+15 000000d6`1f47fa00 00007ff8`a011272d ntdll!TppAlpcpExecuteCallback+0x2b4
+16 000000d6`1f47fab0 00007ff8`9d6a2fa4 ntdll!TppWorkerThread+0x21d
+17 000000d6`1f47fda0 00007ff8`a0121651 KERNEL32!BaseThreadInitThunk+0x14
+18 000000d6`1f47fdd0 00000000`00000000 ntdll!RtlUserThreadStart+0x21
+
+Looking at the PE sections:
+0: kd> !dh nt
+…
+
+SECTION HEADER #1
+   .text name
+  289269 virtual size
+    1000 virtual address
+  289400 size of raw data
+     800 file pointer to raw data
+       0 file pointer to relocation table
+       0 file pointer to line numbers
+       0 number of relocations
+       0 number of line numbers
+68000020 flags
+         Code
+         Not Paged
+         (no align specified)
+         Execute Read
+…
+
+SECTION HEADER #D
+    PAGE name
+  3549B6 virtual size
+  42C000 virtual address
+  354A00 size of raw data
+  3BB200 file pointer to raw data
+       0 file pointer to relocation table
+       0 file pointer to line numbers
+       0 number of relocations
+       0 number of line numbers
+60000020 flags
+         Code
+         (no align specified)
+         Execute Read
+…
+
+We can notice that nt!PspRevertContainerImpersonation is in Non-Paged .text section:
+0: kd> ? (nt!PspRevertContainerImpersonation - nt) < 1000+289269 
+Evaluate expression: 1 = 00000000`00000001
+0: kd> ? (nt!PspRevertContainerImpersonation - nt) >= 1000
+Evaluate expression: 1 = 00000000`00000001
+
+While nt!NtSetInformationThread in in paged PAGE section:
+0: kd> ? (nt!NtSetInformationThread - nt) < 0x42C000+3549B6 
+Evaluate expression: 1 = 00000000`00000001
+0: kd> ? (nt!NtSetInformationThread - nt) >= 0x42C000 
+Evaluate expression: 1 = 00000000`00000001
+
+So Non-paged code was inlined into Paged code and stayed in Paged section – this looks like linker or build issue.

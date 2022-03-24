@@ -1,0 +1,44 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209637245/main
+[AUTHOR]:	Joel Faber
+
+[ANALYSYS]:	APPLICATION_VERIFIER_LOCKS_LOCK_NOT_INITIALIZED 
+[BUGCHECK]:	0x210
+
+
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Exception Analysis                                   *
+*                                                                             *
+*******************************************************************************
+
+APPLICATION_VERIFIER_LOCKS_LOCK_NOT_INITIALIZED (210)
+Critical section not initialized.
+This stop is generated if a critical section is used without being
+initialized or after it has been deleted. To debug this stop:
+$ ln parameter1 - to show symbols near the address of the critical section.
+This should help identify the critical section. 
+Arguments:
+Arg1: 00007ffa2755a000, Critical section address. Run !cs -s <address> to get more information. 
+Arg2: 00007ffa2755a028, Critical section debug info address. 
+Arg3: 0000000000000000, Not used. 
+Arg4: 0000000000000000, Not used. 
+
+
+We can see that a Critical Section is not initialized.  From the call stack we can see this happens when the CS is deleted from resourcepolicystoreclient.cpp @ 74
+
+2: kd> kb
+ # RetAddr           : Args to Child                                                           : Call Site
+00 00007ffa`1de637ee : 00000000`00000000 00000000`00000000 00007ffa`1de615a8 00007ffa`1de720b0 : ntdll!DbgBreakPoint [d:\rs2\minkernel\ntos\rtl\amd64\debugstb.asm @ 51] 
+01 00007ffa`241997bf : 00007ffa`2755a000 00000000`00000210 00007ffa`2755a000 00007ffa`2755a028 : vrfcore!VerifierStopMessageEx+0x772
+02 00007ffa`2419a1cc : 00007ffa`2755a000 00000000`00000001 00000000`00000000 00000000`00000000 : vfbasics!AVrfpVerifyInitializedCriticalSection+0xf3
+03 00007ffa`275418a1 : 00000000`00000001 00000000`00000001 00000000`00000000 00000000`00000000 : vfbasics!AVrfpRtlDeleteCriticalSection+0x60
+04 00007ffa`27541258 : 00000000`00000001 00000264`00001fa0 00000000`00000000 00000000`0100100a : resourcepolicyclient!FreeResourcePolicyStoreClient+0x71 [onecore\base\appmodel\resourcepolicy\client\resourcepolicystoreclient.cpp @ 74] 
+05 00007ffa`2754f2cf : 00000264`65a00000 00007ffa`2cad3f0c 00000264`65a00000 00000000`00000001 : resourcepolicyclient!DllMain+0x28 [onecore\base\appmodel\resourcepolicy\clientdll\dllmain.cpp @ 44] 
+06 00007ffa`19b91439 : 00007ffa`27540000 00000000`00000000 00000000`00000000 00000264`006d0fb0 : resourcepolicyclient!__DllMainCRTStartup+0x107 [minkernel\crts\crtw32\dllstuff\crtdll.c @ 630] 
+...
+
+Looking at this file we can see the CS is statically initialized like this:
+RTL_STATIC_CRITICAL_SECTION(s_csProxy, 0);
+
+Since initialization was done statically, there was no call to RtlInitializeCriticalSection.  The function call that failed was RtlDeleteCriticalSection.  The application verifier bug checked as a result.  If initialization is done statically there should not be a deletion dynamically.  

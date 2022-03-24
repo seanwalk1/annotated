@@ -1,0 +1,369 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22010898140
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 9F - DRIVER_POWER_STATE_FAILURE (9f) (see memory dump):
+3: kd> !analyze -show
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffcf066378adc0, Physical Device Object of the stack
+Arg3: ffffb303e607f120, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffcf0663722820, The blocked IRP
+
+The timed-out Power IRP is D0 IRP owned by the RTKSdWHwCodec driver:
+3: kd> !irp ffffcf0663722820
+Irp is active with 10 stacks 8 is current (= 0xffffcf0663722ae8)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffcf066378adc0 00000000 00000000-00000000    
+	       \Driver\IntcOED
+			Args: 00000000 00000000 00000000 00000002
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0  1 ffffcf066352cc70 00000000 00000000-00000000    pending
+	       \Driver\RTKSdWHwCodec
+			Args: 00041100 00000001 00000001 00000002
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffcf06638394e0 00000000 fffff8050fb2b550-ffffcf0664144208 Success Error Cancel pending
+	       \Driver\ksthunk	nt!PopRequestCompletion
+			Args: 00041100 00000001 00000001 00000002
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffcf0664144208    
+
+			Args: 00000000 00000000 00000000 00000000
+3: kd> !devstack ffffcf066352cc70
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffcf06638394e0  \Driver\ksthunk    ffffcf0663839630  00000087
+> ffffcf066352cc70  \Driver\RTKSdWHwCodecffffcf066371c7a0  
+  ffffcf066378adc0  \Driver\IntcOED    ffffcf066371c310  00000086
+!DevNode ffffcf065dcd0ca0 :
+  DeviceInst is "SNDW\CLASS_00&MAN_025D&PART_1308&VER_02&UID_00&SUBSYS_300010EC&CI_01\6&494ce05&0&001308025D000201"
+  ServiceName is "RTKSdWHwCodec"
+3: kd> dt nt!_POP_IRP_DATA ffffcf0664144208 PowerState.DeviceState
+   +0x0c0 PowerState             : 
+      +0x000 DeviceState            : 1 ( PowerDeviceD0 )
+
+The IRP is processed by a thread which is READY on processor 3 for nearly 2 minutes:
+3: kd> .thread /p /r ffffcf0669f0a040
+…
+3: kd> !thread ffffcf0669f0a040
+THREAD ffffcf0669f0a040  Cid 0004.1aa8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 3
+Not impersonating
+DeviceMap                 ffff9d8527435a20
+Owning Process            ffffcf06596c4140       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      2945002        Ticks: 7404 (0:00:01:55.687)
+Context Switch Count      208167         IdealProcessor: 3  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:22.703
+Win32 Start Address nt!ExpWorkerThread (0xfffff8050fa1a250)
+Stack Init ffffb303e90f75d0 Current ffffb303e90f5d30
+Base ffffb303e90f8000 Limit ffffb303e90f1000 Call 0000000000000000
+Priority 30 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffb303`e90f5d70 fffff805`0fa1b992 : ffffe480`696c2180 00000000`00000000 00000000`00000000 ffffcf06`69f0a040 : nt!KiSwapContext+0x76
+ffffb303`e90f5eb0 fffff805`0faba9ca : ffffcf06`69f0a040 00000000`00000001 00000000`00000000 00000000`00000001 : nt!KiProcessDeferredReadyList+0x10e
+ffffb303`e90f5ef0 fffff805`0faba62e : ffffe480`00000000 00000000`00000000 ffffe480`696c2180 00000000`00000000 : nt!KeSetSystemGroupAffinityThread+0x13a
+ffffb303`e90f5f60 fffff805`0faba439 : ffffcf06`9b188cb0 ffffb303`e90f61d0 fffff805`00000000 ffffcf06`9b188cb0 : nt!KeGenericProcessorCallback+0x10e
+ffffb303`e90f60d0 fffff805`1280d609 : 00000000`00000000 fffff805`15e2f078 00000000`00000003 fffff805`0fa69b52 : nt!KeFlushQueuedDpcs+0xc9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!Mx::MxFlushQueuedDpcs+0xc (Inline Function @ fffff805`1280d609)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!MxTimer::FlushQueuedDpcs+0xc (Inline Function @ fffff805`1280d609)
+ffffb303`e90f6290 fffff805`1280d4e3 : ffffcf06`760e6901 fffff805`0b9de100 ffffcf06`760e6990 ffffcf06`760e6990 : Wdf01000!FxTimer::Stop+0xf1
+ffffb303`e90f62f0 fffff805`15ee21d8 : ffffcf06`760e6990 ffffcf06`9b188cb0 00000000`00000000 00000000`00000000 : Wdf01000!imp_WdfTimerStop+0x53
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : IntcOED!WdfTimerStop+0x1e (Inline Function @ fffff805`15ee21d8)
+ffffb303`e90f6330 fffff805`15ed4dd7 : ffffcf06`6371c310 ffffcf06`760e6990 ffffcf06`760e6990 fffff805`15e1bc97 : IntcOED!soundwire::SlaveCmdCommandBuffer::ResetBuffer+0x78
+ffffb303`e90f6370 fffff805`15ede9ee : ffffcf06`6371c310 ffffcf06`6371c318 00000000`00000000 00000000`00000003 : IntcOED!soundwire::Slave::ResetBuffer+0x127
+ffffb303`e90f63c0 fffff805`161e0f21 : ffffcf06`6371c310 ffffcf06`78be6b50 00000000`00000005 00000000`00000003 : IntcOED!soundwire::slave_iface::SlaveIface::ResetBufferCtx+0x10e
+ffffb303`e90f6400 fffff805`161e05c4 : ffff510a`40ab0787 00000000`00000000 00000000`00000000 00000000`00000003 : RTKSdWHwCodec+0x40f21
+ffffb303`e90f6450 fffff805`161e04ea : ffffcf06`78be6b50 00000000`00000000 ffffcf06`00000006 00000000`00000003 : RTKSdWHwCodec+0x405c4
+ffffb303`e90f64a0 fffff805`161e137b : ffffcf06`78be6b50 ffffb303`e90f65b0 00000000`00000000 ffffb303`e90f65b0 : RTKSdWHwCodec+0x404ea
+ffffb303`e90f64f0 fffff805`161d87c8 : ffffcf06`59a87a20 00000000`000003b9 00000000`00000000 00000000`0000d078 : RTKSdWHwCodec+0x4137b
+ffffb303`e90f6570 fffff805`161bb62f : 00000000`00000001 00000000`00000000 ffffb303`e90f6650 00000000`73435069 : RTKSdWHwCodec+0x387c8
+ffffb303`e90f65b0 fffff805`161b90ff : 00000000`00000028 fffff805`0fa93747 00000000`00000000 00000000`00000200 : RTKSdWHwCodec+0x1b62f
+ffffb303`e90f65e0 fffff805`161b819f : ffffcf06`78be6150 fffff805`161c7df0 ffffcf06`640586a0 ffffcf06`6f1f4290 : RTKSdWHwCodec+0x190ff
+ffffb303`e90f6680 fffff805`161d8054 : ffffcf06`59a87a20 fffff805`161f80a0 ffffcf06`59a87a20 00000000`00000000 : RTKSdWHwCodec+0x1819f
+ffffb303`e90f6b10 fffff805`161e5954 : ffffcf06`59a87a20 ffffb303`e90f6c00 ffffcf06`59a87a20 ffffcf06`64080990 : RTKSdWHwCodec+0x38054
+ffffb303`e90f6b70 fffff805`161e589e : ffffcf06`59a87a20 00000000`00000001 ffffb303`e90f6ca8 ffffcf06`5dee2200 : RTKSdWHwCodec+0x45954
+ffffb303`e90f6bc0 fffff805`161e47b5 : ffff510a`40ab3837 00000000`00000000 00000000`00000000 ffffb303`e90f6d70 : RTKSdWHwCodec+0x4589e
+ffffb303`e90f6c00 fffff805`161e83d4 : ffffcf06`6371c7a0 fffff805`161f90c0 00000000`00000000 00000000`00000000 : RTKSdWHwCodec+0x447b5
+ffffb303`e90f6c50 fffff805`1281895f : ffffcf06`5dee2768 ffffb303`00000004 ffffcf06`6371c4b0 00000000`00000660 : RTKSdWHwCodec+0x483d4
+ffffb303`e90f6ca0 fffff805`12816ed2 : ffffcf06`5dee2768 00000000`00000000 00000000`0000000e ffffb303`e90f6d98 : Wdf01000!FxPnpDeviceD0Entry::InvokeClient+0x2f
+ffffb303`e90f6d00 fffff805`12817d4d : ffffcf06`5dee2230 ffffb303`e90f6e70 00000000`00000660 00000000`00000000 : Wdf01000!FxPrePostCallback::InvokeStateful+0x6a
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPnpDeviceD0Entry::Invoke+0x18 (Inline Function @ fffff805`12817d4d)
+ffffb303`e90f6d40 fffff805`12812546 : 00000000`00000300 00000000`00000020 ffffcf06`5dee2230 00000000`00000301 : Wdf01000!FxPkgPnp::PowerWaking+0x3d
+ffffb303`e90f6d70 fffff805`128122fa : ffffb303`e90f6ee0 ffffcf06`6352cc70 ffffcf06`5dee2230 00000000`00000000 : Wdf01000!FxPkgPnp::PowerEnterNewState+0x156
+ffffb303`e90f6ed0 fffff805`12811861 : ffffcf06`5dee2230 00000000`00000000 00000000`00000001 ffffcf06`63722800 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0xea
+ffffb303`e90f6f50 fffff805`128112c5 : 00000000`00000000 00000000`00000000 ffffcf06`6352cc70 ffffcf06`63722820 : Wdf01000!FxPkgPnp::PowerProcessEvent+0x1d1
+ffffb303`e90f6fe0 fffff805`0fb02836 : ffffcf06`63722820 ffffcf06`63722820 ffffcf06`63722aa3 ffffcf06`63722820 : Wdf01000!FxPkgFdo::RaiseDevicePowerCompletion+0x25
+ffffb303`e90f7010 fffff805`0fa87fd6 : ffffcf06`63722aa3 ffffb303`e90f7098 ffffcf06`6352cc70 ffffcf06`63722820 : nt!IopUnloadSafeCompletion+0x56
+ffffb303`e90f7040 fffff805`0fa87ec7 : 00000000`00000000 ffffe480`696c2101 00000000`00000000 ffffcf06`637cb3c0 : nt!IopfCompleteRequest+0x102
+ffffb303`e90f70e0 fffff805`12810480 : ffffcf06`637cb020 ffffb303`e90f7100 00000000`00000000 00000000`00000000 : nt!IofCompleteRequest+0x17
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxIrp::CompleteRequest+0x11 (Inline Function @ fffff805`12810480)
+ffffb303`e90f7110 fffff805`1281015a : ffffcf06`640e70e0 ffffb303`e90f72a0 00000000`00000560 ffffb303`e90f72a0 : Wdf01000!FxPkgPnp::CompletePowerRequest+0x44
+ffffb303`e90f7140 fffff805`128113d7 : ffffcf06`63722820 ffffcf06`640e70e0 00000000`00000000 00000000`00000000 : Wdf01000!FxPkgPdo::PowerReleasePendingDeviceIrp+0x2a
+
+We can confirm that this thread is working on the timed-out IRP:
+3: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffb303`e90f5d70 fffff805`0fa1b992 nt!KiSwapContext+0x76
+01 ffffb303`e90f5eb0 fffff805`0faba9ca nt!KiProcessDeferredReadyList+0x10e
+02 ffffb303`e90f5ef0 fffff805`0faba62e nt!KeSetSystemGroupAffinityThread+0x13a
+03 ffffb303`e90f5f60 fffff805`0faba439 nt!KeGenericProcessorCallback+0x10e
+04 ffffb303`e90f60d0 fffff805`1280d609 nt!KeFlushQueuedDpcs+0xc9
+05 (Inline Function) --------`-------- Wdf01000!Mx::MxFlushQueuedDpcs+0xc
+06 (Inline Function) --------`-------- Wdf01000!MxTimer::FlushQueuedDpcs+0xc
+07 ffffb303`e90f6290 fffff805`1280d4e3 Wdf01000!FxTimer::Stop+0xf1
+08 ffffb303`e90f62f0 fffff805`15ee21d8 Wdf01000!imp_WdfTimerStop+0x53
+09 (Inline Function) --------`-------- IntcOED!WdfTimerStop+0x1e
+0a ffffb303`e90f6330 fffff805`15ed4dd7 IntcOED!soundwire::SlaveCmdCommandBuffer::ResetBuffer+0x78
+0b ffffb303`e90f6370 fffff805`15ede9ee IntcOED!soundwire::Slave::ResetBuffer+0x127
+0c ffffb303`e90f63c0 fffff805`161e0f21 IntcOED!soundwire::slave_iface::SlaveIface::ResetBufferCtx+0x10e
+0d ffffb303`e90f6400 fffff805`161e05c4 RTKSdWHwCodec+0x40f21
+0e ffffb303`e90f6450 fffff805`161e04ea RTKSdWHwCodec+0x405c4
+0f ffffb303`e90f64a0 fffff805`161e137b RTKSdWHwCodec+0x404ea
+10 ffffb303`e90f64f0 fffff805`161d87c8 RTKSdWHwCodec+0x4137b
+11 ffffb303`e90f6570 fffff805`161bb62f RTKSdWHwCodec+0x387c8
+12 ffffb303`e90f65b0 fffff805`161b90ff RTKSdWHwCodec+0x1b62f
+13 ffffb303`e90f65e0 fffff805`161b819f RTKSdWHwCodec+0x190ff
+14 ffffb303`e90f6680 fffff805`161d8054 RTKSdWHwCodec+0x1819f
+15 ffffb303`e90f6b10 fffff805`161e5954 RTKSdWHwCodec+0x38054
+16 ffffb303`e90f6b70 fffff805`161e589e RTKSdWHwCodec+0x45954
+17 ffffb303`e90f6bc0 fffff805`161e47b5 RTKSdWHwCodec+0x4589e
+18 ffffb303`e90f6c00 fffff805`161e83d4 RTKSdWHwCodec+0x447b5
+19 ffffb303`e90f6c50 fffff805`1281895f RTKSdWHwCodec+0x483d4
+1a ffffb303`e90f6ca0 fffff805`12816ed2 Wdf01000!FxPnpDeviceD0Entry::InvokeClient+0x2f
+1b ffffb303`e90f6d00 fffff805`12817d4d Wdf01000!FxPrePostCallback::InvokeStateful+0x6a
+1c (Inline Function) --------`-------- Wdf01000!FxPnpDeviceD0Entry::Invoke+0x18
+1d ffffb303`e90f6d40 fffff805`12812546 Wdf01000!FxPkgPnp::PowerWaking+0x3d
+1e ffffb303`e90f6d70 fffff805`128122fa Wdf01000!FxPkgPnp::PowerEnterNewState+0x156
+1f ffffb303`e90f6ed0 fffff805`12811861 Wdf01000!FxPkgPnp::PowerProcessEventInner+0xea
+20 ffffb303`e90f6f50 fffff805`128112c5 Wdf01000!FxPkgPnp::PowerProcessEvent+0x1d1
+21 ffffb303`e90f6fe0 fffff805`0fb02836 Wdf01000!FxPkgFdo::RaiseDevicePowerCompletion+0x25
+22 ffffb303`e90f7010 fffff805`0fa87fd6 nt!IopUnloadSafeCompletion+0x56
+23 ffffb303`e90f7040 fffff805`0fa87ec7 nt!IopfCompleteRequest+0x102
+24 ffffb303`e90f70e0 fffff805`12810480 nt!IofCompleteRequest+0x17
+25 (Inline Function) --------`-------- Wdf01000!FxIrp::CompleteRequest+0x11
+26 ffffb303`e90f7110 fffff805`1281015a Wdf01000!FxPkgPnp::CompletePowerRequest+0x44
+27 ffffb303`e90f7140 fffff805`128113d7 Wdf01000!FxPkgPdo::PowerReleasePendingDeviceIrp+0x2a
+28 ffffb303`e90f7170 fffff805`12812546 Wdf01000!FxPkgPnp::PowerStartSelfManagedIo+0x67
+29 ffffb303`e90f71a0 fffff805`128122fa Wdf01000!FxPkgPnp::PowerEnterNewState+0x156
+2a ffffb303`e90f7300 fffff805`12811a28 Wdf01000!FxPkgPnp::PowerProcessEventInner+0xea
+2b ffffb303`e90f7380 fffff805`128166e3 Wdf01000!FxPkgPnp::_PowerProcessEventInner+0x68
+2c ffffb303`e90f73c0 fffff805`1281663c Wdf01000!FxEventQueue::EventQueueWorker+0x9b
+2d ffffb303`e90f7410 fffff805`0fa3fa55 Wdf01000!FxThreadedEventQueue::_WorkItemCallback+0xc
+2e ffffb303`e90f7440 fffff805`0fa1a349 nt!IopProcessWorkItem+0x135
+2f ffffb303`e90f74b0 fffff805`0fa0b1b5 nt!ExpWorkerThread+0xf9
+30 ffffb303`e90f7550 fffff805`0fba4f58 nt!PspSystemThreadStartup+0x55
+31 ffffb303`e90f75a0 00000000`00000000 nt!KiStartSystemThread+0x28
+3: kd> .frame /r 25
+25 (Inline Function) --------`-------- Wdf01000!FxIrp::CompleteRequest+0x11
+rax=0000000000000000 rbx=ffffb303e90f7170 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffffcf0663722820 rdi=ffffcf06640e70e0
+rip=fffff80512810480 rsp=ffffb303e90f7110 rbp=0000000000000000
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=000000000000032b r13=fffff805128950a0
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+Wdf01000!FxIrp::CompleteRequest+0x11 [inlined in Wdf01000!FxPkgPnp::CompletePowerRequest+0x44]:
+fffff805`12810480 48832300        and     qword ptr [rbx],0 ds:ffffb303`e90f7170=ffffcf0663722820
+3: kd> ub
+Wdf01000!FxIrp::SetStatus [inlined in Wdf01000!FxPkgPnp::CompletePowerRequest+0x20]:
+fffff805`1281045c 44894630        mov     dword ptr [rsi+30h],r8d
+fffff805`12810460 488b0a          mov     rcx,qword ptr [rdx]
+fffff805`12810463 4c8b152e700a00  mov     r10,qword ptr [Wdf01000!_imp_PoStartNextPowerIrp (fffff805`128b7498)]
+fffff805`1281046a e8d18333fd      call    nt!EmpCheckErrataList (fffff805`0fb48840)
+fffff805`1281046f 488b0b          mov     rcx,qword ptr [rbx]
+fffff805`12810472 33d2            xor     edx,edx
+fffff805`12810474 4c8b15356c0a00  mov     r10,qword ptr [Wdf01000!_imp_IofCompleteRequest (fffff805`128b70b0)]
+fffff805`1281047b e8307a27fd      call    nt!IofCompleteRequest (fffff805`0fa87eb0)
+3: kd> dq ffffb303e90f7170 L1
+ffffb303`e90f7170  ffffcf06`63722820
+
+But the thread is affinitized to the Processor 3 and, therefore, can only run on Processor 3:
+3: kd> dt nt!_KTHREAD ffffcf0669f0a040 Affinity.Mask
+   +0x240 Affinity      : 
+      +0x000 Mask          : 8
+3: kd> ? 0y1000
+Evaluate expression: 8 = 00000000`00000008
+
+The Processor 3 is occupied by another thread, that has been running for nearly 2 minutes:
+3: kd> ~3
+3: kd> !thread
+THREAD ffffcf06665ca040  Cid 0004.1870  Teb: 0000000000000000 Win32Thread: 0000000000000000 RUNNING on processor 3
+Not impersonating
+DeviceMap                 ffff9d8527435a20
+Owning Process            ffffcf06596c4140       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      2944742        Ticks: 7664 (0:00:01:59.750)
+Context Switch Count      116965         IdealProcessor: 2  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:02:06.046
+Win32 Start Address nt!ExpWorkerThread (0xfffff8050fa1a250)
+Stack Init ffffb303e6fd75d0 Current ffffb303e6fd7190
+Base ffffb303e6fd8000 Limit ffffb303e6fd1000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffb303`e6fd7270 fffff805`0fa99d22 : ffffcf06`665ca040 fffff805`0fa82b16 ffffe480`69840180 fffff805`0fa80d6d : nt!KeYieldProcessorEx+0x17
+ffffb303`e6fd72a0 fffff805`0fa7fcc9 : ffffe480`cabbf8fd ffffe480`69840180 ffffcf06`665ca040 00000000`00000000 : nt!KiAcquireKobjectLockSafe+0x26
+ffffb303`e6fd72d0 fffff805`15ed8680 : ffffcf06`665ca140 00000000`00000000 ffffb303`e6fd7300 ffffe480`69840180 : nt!KeSetEvent+0x69
+ffffb303`e6fd7360 fffff805`15e16a7c : ffffcf06`9acce090 ffffcf06`637833e0 ffffcf06`634dcdf0 ffffcf06`959e7090 : IntcOED!soundwire::CmdEngine::SyncExecuteCb+0xa0
+ffffb303`e6fd73a0 fffff805`1280c5f8 : ffffcf06`6369a9f0 00000000`00000000 ffffcf06`634dcdf0 ffffcf06`6369aa60 : IntcOED!soundwire::CmdEngine::CmdCompletionWorkItemEvt+0x1cc
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxWorkItem::WorkItemHandler+0xc6 (Inline Function @ fffff805`1280c5f8)
+ffffb303`e6fd7400 fffff805`0fa3fa55 : ffffcf06`636863b0 ffffcf06`637b6d00 ffffcf06`637b6dd0 fffff805`1280c510 : Wdf01000!FxWorkItem::WorkItemThunk+0xe8
+ffffb303`e6fd7440 fffff805`0fa1a349 : ffffcf06`665ca040 ffffcf06`665ca040 ffffcf06`636863b0 00000000`00000000 : nt!IopProcessWorkItem+0x135
+ffffb303`e6fd74b0 fffff805`0fa0b1b5 : ffffcf06`665ca040 ffffcf06`665ca040 00000000`00000080 001fa4ff`bd9bbfff : nt!ExpWorkerThread+0xf9
+ffffb303`e6fd7550 fffff805`0fba4f58 : ffffe480`69840180 ffffcf06`665ca040 fffff805`0fa0b160 00000000`00000246 : nt!PspSystemThreadStartup+0x55
+ffffb303`e6fd75a0 00000000`00000000 : ffffb303`e6fd8000 ffffb303`e6fd1000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+The thread called nt!KeSetEvent API which raises IRQL to DISPATCH_LEVEL thus preventing thread preemption:
+3: kd> u  nt!KeSetEvent  nt!KeSetEvent+0x69
+nt!KeSetEvent:
+fffff805`0fa7fc60 4488442418      mov     byte ptr [rsp+18h],r8b
+fffff805`0fa7fc65 89542410        mov     dword ptr [rsp+10h],edx
+fffff805`0fa7fc69 53              push    rbx
+fffff805`0fa7fc6a 55              push    rbp
+fffff805`0fa7fc6b 56              push    rsi
+fffff805`0fa7fc6c 57              push    rdi
+fffff805`0fa7fc6d 4154            push    r12
+fffff805`0fa7fc6f 4155            push    r13
+fffff805`0fa7fc71 4156            push    r14
+fffff805`0fa7fc73 4157            push    r15
+fffff805`0fa7fc75 4883ec48        sub     rsp,48h
+fffff805`0fa7fc79 f6017f          test    byte ptr [rcx],7Fh
+fffff805`0fa7fc7c 418ac0          mov     al,r8b
+fffff805`0fa7fc7f 488bf1          mov     rsi,rcx
+fffff805`0fa7fc82 bd01000000      mov     ebp,1
+fffff805`0fa7fc87 0f84fc000000    je      nt!KeSetEvent+0x129 (fffff805`0fa7fd89)
+fffff805`0fa7fc8d 33db            xor     ebx,ebx
+fffff805`0fa7fc8f 440f20c1        mov     rcx,cr8
+fffff805`0fa7fc93 48894c2430      mov     qword ptr [rsp+30h],rcx
+fffff805`0fa7fc98 41bd02000000    mov     r13d,2
+fffff805`0fa7fc9e 450f22c5        mov     cr8,r13
+fffff805`0fa7fca2 8b05b0c9a700    mov     eax,dword ptr [nt!KiIrqlFlags (fffff805`104fc658)]
+fffff805`0fa7fca8 85c0            test    eax,eax
+fffff805`0fa7fcaa 0f85d8a01600    jne     nt!KeSetEvent+0x16a128 (fffff805`0fbe9d88)
+fffff805`0fa7fcb0 65488b3c2520000000 mov   rdi,qword ptr gs:[20h]
+fffff805`0fa7fcb9 488bce          mov     rcx,rsi
+fffff805`0fa7fcbc 4889bc24a8000000 mov     qword ptr [rsp+0A8h],rdi
+fffff805`0fa7fcc4 e833a00100      call    nt!KiAcquireKobjectLockSafe (fffff805`0fa99cfc)
+fffff805`0fa7fcc9 8b4604          mov     eax,dword ptr [rsi+4]
+
+Switching to the thread:
+3: kd> .thread /p /r  ffffcf06665ca040
+…
+3: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffb303`e6fd7270 fffff805`0fa99d22 nt!KeYieldProcessorEx+0x17
+01 ffffb303`e6fd72a0 fffff805`0fa7fcc9 nt!KiAcquireKobjectLockSafe+0x26
+02 ffffb303`e6fd72d0 fffff805`15ed8680 nt!KeSetEvent+0x69
+03 ffffb303`e6fd7360 fffff805`15e16a7c IntcOED!soundwire::CmdEngine::SyncExecuteCb+0xa0
+04 ffffb303`e6fd73a0 fffff805`1280c5f8 IntcOED!soundwire::CmdEngine::CmdCompletionWorkItemEvt+0x1cc
+05 (Inline Function) --------`-------- Wdf01000!FxWorkItem::WorkItemHandler+0xc6
+06 ffffb303`e6fd7400 fffff805`0fa3fa55 Wdf01000!FxWorkItem::WorkItemThunk+0xe8
+07 ffffb303`e6fd7440 fffff805`0fa1a349 nt!IopProcessWorkItem+0x135
+08 ffffb303`e6fd74b0 fffff805`0fa0b1b5 nt!ExpWorkerThread+0xf9
+09 ffffb303`e6fd7550 fffff805`0fba4f58 nt!PspSystemThreadStartup+0x55
+0a ffffb303`e6fd75a0 00000000`00000000 nt!KiStartSystemThread+0x28
+
+And looking into the frame before calling nt!KeSetEvent:
+3: kd> .frame /r 3
+03 ffffb303`e6fd7360 fffff805`15e16a7c IntcOED!soundwire::CmdEngine::SyncExecuteCb+0xa0
+rax=00000000cabbf8fd rbx=ffffb303e732f2b0 rcx=ffffb303e6fd72d0
+rdx=0000000000000000 rsi=ffffcf06959e7090 rdi=00000000000000ff
+rip=fffff80515ed8680 rsp=ffffb303e6fd7360 rbp=ffffcf06959e7090
+ r8=0000000000000000  r9=fffff80515ed85e0 r10=fffff8050facf250
+r11=0000000000000000 r12=fffff80515e2f078 r13=fffff80515e272b0
+r14=fffff80515e2f078 r15=fffff80510525440
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00040282
+IntcOED!soundwire::CmdEngine::SyncExecuteCb+0xa0:
+fffff805`15ed8680 488b0df169f5ff  mov     rcx,qword ptr [IntcOED!WPP_GLOBAL_Control (fffff805`15e2f078)] ds:fffff805`15e2f078={IntcOED!WPP_MAIN_CB (fffff805`15e31f60)}
+
+We can determine the address of the passed event:
+3: kd> ub
+IntcOED!soundwire::CmdEngine::SyncExecuteCb+0x80:
+fffff805`15ed8660 4c8d0549ecf4ff  lea     r8,[IntcOED!WPP_7689508ae6a03794c27dd5da67d056c8_Traceguids (fffff805`15e272b0)]
+fffff805`15ed8667 e8588aedff      call    IntcOED!WPP_SF_ (fffff805`15db10c4)
+fffff805`15ed866c eb43            jmp     IntcOED!soundwire::CmdEngine::SyncExecuteCb+0xd1 (fffff805`15ed86b1)
+fffff805`15ed866e 0fb67f44        movzx   edi,byte ptr [rdi+44h]
+fffff805`15ed8672 4533c0          xor     r8d,r8d
+fffff805`15ed8675 33d2            xor     edx,edx
+fffff805`15ed8677 488bcb          mov     rcx,rbx
+fffff805`15ed867a ff15c859f4ff    call    qword ptr [IntcOED!_imp_KeSetEvent (fffff805`15e1e048)]
+
+It looks uninitialized which is why nt!KiAcquireKobjectLockSafe is spinning indefinitely:
+3: kd> dt nt!_KEVENT ffffb303e732f2b0 Header.Lock
+   +0x000 Header      : 
+      +0x000 Lock        : 0n1772355968
+
+And does not look like a valid event:
+3: kd> !object ffffb303e732f2b0
+ffffb303e732f2b0: Not a valid object (ObjectType invalid)
+
+Looking at the previous frame, we can see where it came from:
+3: kd> .frame /r 4
+04 ffffb303`e6fd73a0 fffff805`1280c5f8 IntcOED!soundwire::CmdEngine::CmdCompletionWorkItemEvt+0x1cc
+rax=00000000cabbf8fd rbx=ffffcf069acce090 rcx=ffffb303e6fd72d0
+rdx=0000000000000000 rsi=ffffcf06959e7090 rdi=ffffcf06637833e0
+rip=fffff80515e16a7c rsp=ffffb303e6fd73a0 rbp=ffffcf06959e7090
+ r8=0000000000000000  r9=fffff80515ed85e0 r10=fffff8050facf250
+r11=0000000000000000 r12=fffff80515e2f078 r13=fffff80515e272b0
+r14=ffffcf06959e7090 r15=fffff80510525440
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00040282
+IntcOED!soundwire::CmdEngine::CmdCompletionWorkItemEvt+0x1cc:
+fffff805`15e16a7c 483bf5          cmp     rsi,rbp
+3: kd> ub
+IntcOED!soundwire::CmdEngine::CmdCompletionWorkItemEvt+0x1ab:
+fffff805`15e16a5b 4d8bc5          mov     r8,r13
+fffff805`15e16a5e 4889742420      mov     qword ptr [rsp+20h],rsi
+fffff805`15e16a63 e880a8f9ff      call    IntcOED!WPP_SF_LqII (fffff805`15db12e8)
+fffff805`15e16a68 4c8b4e10        mov     r9,qword ptr [rsi+10h]
+fffff805`15e16a6c 488b4e08        mov     rcx,qword ptr [rsi+8]
+fffff805`15e16a70 488bd6          mov     rdx,rsi
+fffff805`15e16a73 498bc1          mov     rax,r9
+fffff805`15e16a76 ff15a4780000    call    qword ptr [IntcOED!__guard_dispatch_icall_fptr (fffff805`15e1e320)]
+
+It appears that IntcOED uses already freed memory:
+3: kd> !pool ffffcf06959e7090
+Pool page ffffcf06959e7090 region is Nonpaged pool
+*ffffcf06959e7000 size:  9e0 previous size:    0  (Free ) *.... (Protected)
+…
+
+So from the data above, it looks like IntcOED calls KeSetEvent and passes a pointer to a data that does not represent an initialized event which is a violation of the API interface contract: https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kesetevent
+This causes nt!KiAcquireKobjectLockSafe to spin indefinitely as it busy-waits at elevated IRQL for a lock which will never be freed. This prevents other threads to run on the same processor and as a result leads to the Power IRP timeout. Since the D0 watchdog timeout is only 2 minutes:
+3: kd> dd nt!PopWatchdogResumeTimeout L1
+fffff805`104fb11c  00000078
+3: kd> ? 00000078
+Evaluate expression: 120 = 00000000`00000078
+
+So the Power Manager then crashes the System. This issue therefore is caused by the IntcOED.sys driver.

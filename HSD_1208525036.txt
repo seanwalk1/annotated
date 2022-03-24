@@ -1,0 +1,192 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1208525036/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	Power IRP timeout - bugcheck 9F
+[BUGCHECK]:	0x9F
+
+Here we have power IRP timeout - bugcheck 9F:
+1: kd> .bugcheck
+Bugcheck code 0000009F
+Arguments 00000000`00000003 ffffe001`f64bd060 ffffd000`a4e2b890 ffffe001`f4e06cf0
+
+Here is the timed-out IRP and device stack:
+1: kd> !irp ffffe001`f4e06cf0
+Irp is active with 5 stacks 3 is current (= 0xffffe001f4e06e50)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0  0 ffffe001fec58050 00000000 00000000-00000000    
+            \Driver\Netwtw04
+                Args: 00015500 00000000 00000005 00000003
+[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe001fe852e20 00000000 fffff80122e11f8c-ffffe001f93ff520 Success Error Cancel pending
+            \Driver\vwifibus    nt!PopSystemIrpCompletion
+                Args: 00015500 00000000 00000005 00000003
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffe001f93ff520    
+
+                Args: 00000000 00000000 00000000 00000000
+
+1: kd> !devstack ffffe001fe852e20
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffe001fe852e20  \Driver\vwifibus   ffffe001f568ae80  
+  ffffe001fec58050  \Driver\Netwtw04   ffffe001fec581a0  NDMP44
+  ffffe001f64bc040  \Driver\ACPI       ffffe001f59d5010  
+  ffffe001f64bd060  \Driver\pci        ffffe001f64bd1b0  NTPNP_PCI0019
+!DevNode ffffe001f64bcb30 :
+  DeviceInst is "PCI\VEN_8086&DEV_24F3&SUBSYS_11108086&REV_3A\A434D9FFFF1396CE00"
+  ServiceName is "Netwtw04"
+
+Here is the thread which is working on the IRP:
+1: kd> !poaction
+.
+  IRP: ffffe001f4e06cf0 (set/S4), PDO: ffffe001f64bd060, CURRENT: ffffe001fec58050, NOTIFY: ffffe001f64bcbc0
+.
+
+Irp worker threads (PopIrpThreadList - fffff80122d52100)
+  .
+  THREAD: ffffe001ff105040 (dynamic), IRP: ffffe001f4e06cf0, DEVICE: ffffe001fe852e20
+.
+
+1: kd> !thread ffffe001ff105040
+THREAD ffffe001ff105040  Cid 0004.178c  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffd000b33e8fa8  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffc0008e41d240
+Owning Process            ffffe001f4c1b680       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      38134028       Ticks: 19200 (0:00:05:00.000)
+Context Switch Count      77             IdealProcessor: 3             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.218
+Win32 Start Address nt!PopIrpWorker (0xfffff80122b88724)
+Stack Init ffffd000b33e9b90 Current ffffd000b33e8bf0
+Base ffffd000b33ea000 Limit ffffd000b33e3000 Call 0
+Priority 13 BasePriority 13 UnusualBoost 0 ForegroundBoost 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd000`b33e8c30 fffff801`22aee6ca : 00000000`00000004 00000000`00008000 ffffd000`b33e8df0 fffff800`adac826e : nt!KiSwapContext+0x76
+ffffd000`b33e8d70 fffff801`22aee159 : 00000000`00000000 fffff800`aec9d33c 00000000`00000000 00000000`00000000 : nt!KiSwapThread+0x15a
+ffffd000`b33e8e20 fffff801`22aeddc5 : ffffe001`fb29bfb8 ffffe001`fb29bfb8 ffffe001`fb29bfd0 00000000`00000000 : nt!KiCommitThreadWait+0x149
+ffffd000`b33e8eb0 fffff801`22b3e6ac : ffffd000`b33e8fa8 ffffd000`00000000 000001c0`b4e0a900 ffffe001`f4ffb000 : nt!KeWaitForSingleObject+0x375
+ffffd000`b33e8f70 fffff800`aec9a2cb : ffffe001`f6d0d600 fffff800`00000003 ffffe001`faaa5280 00000000`00000000 : nt!ExWaitForRundownProtectionReleaseCacheAware+0xa0
+ffffd000`b33e8fe0 fffff800`aec99c84 : ffffe001`fa603640 fffff800`ae72f000 ffffd000`b33e9180 ffffd000`b33e9438 : tcpip!FlpUninitializePacketProviderInterface+0x57
+ffffd000`b33e9020 fffff800`adad572d : ffffe001`f6848b50 00000000`00000008 ffffe001`f65e2c10 ffffd000`b33e9240 : tcpip!FlPnpEvent+0x138
+ffffd000`b33e90c0 fffff800`adad56ab : ffffe001`faaa5280 ffffd000`b33e9240 ffffe001`f65e2c10 fffff800`adac826e : ndis!ndisInvokeNetPnPEvent+0x49
+ffffd000`b33e9100 fffff800`adb13fce : 00000000`c00000bb ffffd000`b33e9240 ffffe001`f65e2c10 fffff800`adac81d3 : ndis!ndisDeliverNetPnPEventSynchronously+0x4b
+ffffd000`b33e9140 fffff800`adad5631 : ffffd000`b33e9390 ffffd000`b33e9409 ffffd000`b33e9390 ffffe001`fec581a0 : ndis!ndisPnPNotifyBinding+0xe2
+ffffd000`b33e9320 fffff800`adac9250 : ffffe001`f6848b50 ffffe001`fec595f8 ffffe001`fec595f8 00000000`00000001 : ndis!ndisPnPNotifyBindingUnlocked+0x35
+ffffd000`b33e9370 fffff800`adac919f : 00000000`00000000 00000000`00000000 ffffc000`90f44ed0 ffffe001`fec595f8 : ndis!ndisPauseProtocolInner+0x68
+ffffd000`b33e9470 fffff800`adad2dfe : ffffe001`fec581a0 ffffd000`b33e95b0 ffffe001`fec595f8 00000000`00000000 : ndis!ndisPauseProtocol+0x63
+ffffd000`b33e94b0 fffff800`adad2c07 : ffffe001`fec595f8 ffffe001`fec595f8 ffffe001`fec59670 ffffe001`fec581a0 : ndis!Ndis::BindEngine::Iterate+0x172
+ffffd000`b33e96c0 fffff800`adad2b81 : ffffe001`fec595f8 00000000`00000020 00000000`00000000 ffffd000`b33e9740 : ndis!Ndis::BindEngine::UpdateBindings+0x7b
+ffffd000`b33e96f0 fffff800`adad29fb : ffffe001`fec595f8 ffffe001`fec595f8 00000000`00000001 fffff800`adad2a5d : ndis!Ndis::BindEngine::DispatchPendingWork+0x69
+ffffd000`b33e9720 fffff800`ada425ed : ffffe001`fec581a0 ffffe001`00000001 ffffe001`fec595f8 00000000`00000004 : ndis!Ndis::BindEngine::ApplyBindChanges+0x33
+ffffd000`b33e9770 fffff800`adac7cf9 : ffffe001`fec581a0 00000000`00000005 00000000`00000000 00000000`00000000 : ndis!ndisPrepForLowPower+0x9d
+ffffd000`b33e9840 fffff800`adac7bce : 00000000`00000000 00000000`00000004 ffffe001`f4e06cf0 ffffe001`fec581a0 : ndis!ndisSetSystemPower+0x129
+ffffd000`b33e98c0 fffff800`ada54528 : ffffe001`f4e06cf0 ffffe001`f64bc040 ffffe001`f4e06e50 ffffe001`f77ce110 : ndis!ndisSetPower+0x96
+ffffd000`b33e98f0 fffff800`acfe0e1d : ffffd000`b33e9a10 ffffd000`b33e9af0 ffffe001`f4e06cf0 ffffe001`f77ce110 : ndis!ndisPowerDispatch+0xa8
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxIrp::PoCallDriver+0x10 (Inline Function @ fffff800`acfe0e1d)
+ffffd000`b33e9920 fffff800`acfc04d8 : ffffe001`fe852e20 ffffd000`b33e9a10 00000000`00000005 ffffd000`b33e99e8 : Wdf01000!FxPkgFdo::_PowerPassDown+0x6d [d:\th\minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 86]
+ffffd000`b33e9950 fffff800`acfbdff2 : ffffe001`f77ce110 00000000`00000000 00000000`00000002 ffffd000`b33e9b10 : Wdf01000!FxPkgFdo::DispatchSystemSetPower+0x178 [d:\th\minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 292]
+ffffd000`b33e99a0 fffff800`acfb11b1 : ffffe001`f4e06cf0 ffffe001`f568ab90 fffff801`22d52100 fffff801`22d52bc0 : Wdf01000!FxPkgPnp::Dispatch+0xb2 [d:\th\minkernel\wdf\framework\shared\irphandlers\pnp\fxpkgpnp.cpp @ 654]
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!DispatchWorker+0xa1 (Inline Function @ fffff800`acfb11b1)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxDevice::Dispatch+0xb5 (Inline Function @ fffff800`acfb11b1)
+ffffd000`b33e9a10 fffff801`22b8891a : ffffd000`b33e9af0 fffff801`00000001 fffff801`22d52100 fffff801`22d52140 : Wdf01000!FxDevice::DispatchWithLock+0x111 [d:\th\minkernel\wdf\framework\shared\core\fxdevice.cpp @ 1402]
+ffffd000`b33e9a70 fffff801`22b5b895 : ffffffff`fa0a1f00 fffff801`22b88724 ffffe001`fa55dea0 00000000`00000d34 : nt!PopIrpWorker+0x1f6
+ffffd000`b33e9b10 fffff801`22bbf906 : fffff801`22d95180 ffffe001`ff105040 fffff801`22b5b854 00000000`23c34600 : nt!PspSystemThreadStartup+0x41
+ffffd000`b33e9b60 00000000`00000000 : ffffd000`b33ea000 ffffd000`b33e3000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+The thread is waiting for rundown protection release while holding miniport lock. 
+There is another thread which is waiting for the miniport lock and until it is done outstanding NLBs are pending:
+1: kd> !thread ffffe001fade2800
+THREAD ffffe001fade2800  Cid 0004.3688  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffd000b43f8060  NotificationEvent
+Not impersonating
+DeviceMap                 ffffc0008e41d240
+Owning Process            ffffe001f4c1b680       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      38134028       Ticks: 19200 (0:00:05:00.000)
+Context Switch Count      235758         IdealProcessor: 3  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:21.218
+Win32 Start Address nt!ExpWorkerThread (0xfffff80122ac95c0)
+Stack Init ffffd000b43f9b90 Current ffffd000b43f7c50
+Base ffffd000b43fa000 Limit ffffd000b43f3000 Call 0
+Priority 12 BasePriority 12 UnusualBoost 0 ForegroundBoost 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd000`b43f7c90 fffff801`22aee6ca : 00000000`00000000 fffff800`adbb3308 ffffd000`a4e0f002 00000000`00000801 : nt!KiSwapContext+0x76
+ffffd000`b43f7dd0 fffff801`22aee159 : ffffe001`fade2800 ffffe001`fade2940 fffff801`22e0b340 ffffe001`ffeeacf0 : nt!KiSwapThread+0x15a
+ffffd000`b43f7e80 fffff801`22aeddc5 : 00000000`00000200 ffffe001`f6a3dad0 ffffd000`b43f8320 00000000`00000000 : nt!KiCommitThreadWait+0x149
+ffffd000`b43f7f10 fffff800`ada6523d : ffffd000`b43f8060 00000000`00000000 ffffd000`b43f8000 fffff800`adb5b900 : nt!KeWaitForSingleObject+0x375
+ffffd000`b43f7fd0 fffff800`adb10c01 : 00000000`00000000 00000000`00000000 00000000`0000000b ffffe001`fec581a0 : ndis!ndisAcquireMiniportPnPEventLock+0x16739
+ffffd000`b43f8010 fffff800`adac8190 : 00000000`00000000 00000000`00000080 ffffe001`fec581a0 ffffd000`b43f8700 : ndis!ndisPnPNotifyAllTransports+0x69
+ffffd000`b43f8150 fffff801`22a896f5 : ffffe001`fec581a0 ffffe001`fade2800 ffffe001`fec581a0 fffff800`adac80a0 : ndis!ndisFNetPnPEventInternal+0xf0
+ffffd000`b43f8260 fffff800`ada552a1 : ffffe001`f7b12610 ffffd000`b43f8700 ffffd000`b43f8700 ffffd000`b43f8658 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd000`b43f82b0 fffff800`ada428e5 : 00000001`00000018 00000008`00000000 ffffe001`ff097370 00000000`ffffffff : ndis!ndisExpandStack+0x19
+ffffd000`b43f82f0 fffff800`adac81c3 : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f8700 ffffc000`a61762d0 : ndis!NdisFNetPnPEvent+0x35
+ffffd000`b43f8380 fffff800`adac811d : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f8700 ffffe001`fd1a61e0 : ndis!ndisFForwardNetPnPEventToFilter+0x2f
+ffffd000`b43f8470 fffff801`22a896f5 : ffffe001`f6d1fa80 ffffe001`fade2800 ffffe001`f6d1fa80 fffff800`adac80a0 : ndis!ndisFNetPnPEventInternal+0x7d
+ffffd000`b43f8580 fffff800`ada552a1 : ffffe001`fd1a61e0 00000000`0000000b ffffd000`b43f8700 ffffd000`b43f89b8 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd000`b43f85d0 fffff800`ada428e5 : ffffe001`fade2900 00000000`00000000 00000000`00000000 00000000`00000000 : ndis!ndisExpandStack+0x19
+ffffd000`b43f8610 fffff800`adac826e : ffffe001`fd1a61e0 ffffe001`f6d1fa80 00000000`0000000b ffffe001`fade2940 : ndis!NdisFNetPnPEvent+0x35
+ffffd000`b43f86a0 fffff800`adac821b : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f8d80 fffff800`ad81db0f : ndis!ndisFInvokeNetPnPEvent+0x42
+ffffd000`b43f86e0 fffff800`adac811d : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f8d80 ffffe001`fa721010 : ndis!ndisFForwardNetPnPEventToFilter+0x87
+ffffd000`b43f87d0 fffff801`22a896f5 : ffffe001`fec581a0 ffffe001`fade2800 ffffe001`fec581a0 fffff800`adac80a0 : ndis!ndisFNetPnPEventInternal+0x7d
+ffffd000`b43f88e0 fffff800`ada552a1 : ffffe001`fa721010 ffffd000`b43f8d80 ffffd000`b43f8d80 ffffd000`b43f8cd8 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd000`b43f8930 fffff800`ada428e5 : ffffe001`fade2800 fffff801`22d95180 ffffe001`f7cc2080 00000000`00000000 : ndis!ndisExpandStack+0x19
+ffffd000`b43f8970 fffff800`adac81c3 : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f8d80 ffff411a`db88128d : ndis!NdisFNetPnPEvent+0x35
+ffffd000`b43f8a00 fffff800`adac811d : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f8d80 ffffe001`fa71a010 : ndis!ndisFForwardNetPnPEventToFilter+0x2f
+ffffd000`b43f8af0 fffff801`22a896f5 : ffffe001`fa607d80 ffffe001`fade2800 ffffe001`fa607d80 fffff800`adac80a0 : ndis!ndisFNetPnPEventInternal+0x7d
+ffffd000`b43f8c00 fffff800`ada552a1 : ffffe001`fa71a010 00000000`0000000b ffffd000`b43f8d80 ffffd000`b43f9038 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd000`b43f8c50 fffff800`ada428e5 : ffffe001`f66f91a0 fffff801`22b6c487 ffff0eca`ef07997e fffff801`22e65705 : ndis!ndisExpandStack+0x19
+ffffd000`b43f8c90 fffff800`adac826e : ffffe001`fa71a010 ffffe001`fa607d80 00000000`0000000b 00000000`00001000 : ndis!NdisFNetPnPEvent+0x35
+ffffd000`b43f8d20 fffff800`adac821b : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f9110 ffffe001`f6efa000 : ndis!ndisFInvokeNetPnPEvent+0x42
+ffffd000`b43f8d60 fffff800`adac811d : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f9110 ffffe001`fa603640 : ndis!ndisFForwardNetPnPEventToFilter+0x87
+ffffd000`b43f8e50 fffff801`22a896f5 : ffffe001`f6d0d6f0 ffffe001`fade2800 ffffe001`f6d0d6f0 fffff800`adac80a0 : ndis!ndisFNetPnPEventInternal+0x7d
+ffffd000`b43f8f60 fffff800`ada552a1 : ffffe001`fa603640 fffff800`ae72f000 ffffd000`b43f9110 ffffd000`b43f93c8 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd000`b43f8fb0 fffff800`ada428e5 : ffffe001`f67cb100 ffffd000`b43f9000 00000001`00000001 00000130`00000004 : ndis!ndisExpandStack+0x19
+ffffd000`b43f8ff0 fffff800`ae725dd4 : ffffd000`b43f9110 ffffe001`f6d0d6f0 fffff800`ae72f000 ffffe001`000001a8 : ndis!NdisFNetPnPEvent+0x35
+ffffd000`b43f9080 fffff800`adac826e : ffffe001`fa603640 00000000`0000000b ffffe001`fda24f40 fffff800`adda4d59 : vwififlt!FilterNetPnPEvent+0x54
+ffffd000`b43f90b0 fffff800`adac821b : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f9520 fffff800`ace26001 : ndis!ndisFInvokeNetPnPEvent+0x42
+ffffd000`b43f90f0 fffff800`adac811d : 00000000`00000000 ffffe001`fec581a0 ffffd000`b43f9520 ffffe001`fa71e950 : ndis!ndisFForwardNetPnPEventToFilter+0x87
+ffffd000`b43f91e0 fffff801`22a896f5 : ffffd000`b43f98a0 ffffe001`fade2800 ffffd000`b43f98a0 fffff800`adac80a0 : ndis!ndisFNetPnPEventInternal+0x7d
+ffffd000`b43f92f0 fffff800`ada552a1 : ffffe001`fa71e950 ffffe001`fa71e950 ffffd000`b43f9520 ffffd000`b43f98b0 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd000`b43f9340 fffff800`ada428e5 : ffffe001`ff8b5640 00000000`0000000f 00000000`00000000 ffffe001`f5a91840 : ndis!ndisExpandStack+0x19
+ffffd000`b43f9380 fffff800`adac81c3 : ffffe001`fec581a0 ffffd000`b43f98a0 ffffe001`fa71e950 00000000`00000000 : ndis!NdisFNetPnPEvent+0x35
+ffffd000`b43f9410 fffff800`adac90ad : ffffe001`fec581a0 ffffd000`b43f98a0 00000000`0000000b ffffd000`b43f9650 : ndis!ndisFForwardNetPnPEventToFilter+0x2f
+
+And the miniport lock is for the same miniport:
+1: kd> .thread /p /r ffffe001fade2800
+Implicit thread is now ffffe001`fade2800
+.
+1: kd> .frame /r 4
+04 ffffd000`b43f7fd0 fffff800`adb10c01 ndis!ndisAcquireMiniportPnPEventLock+0x16739
+rax=0000000000000000 rbx=ffffd000b43f8060 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffffd000b43f8060 rdi=ffffe001fec581a0
+rip=fffff800ada6523d rsp=ffffd000b43f7fd0 rbp=ffffe001fec58200
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000001 r13=ffffd000b43f98a0
+r14=ffffd000b43f8100 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+ndis!ndisAcquireMiniportPnPEventLock+0x16739:
+fffff800`ada6523d 488bcd          mov     rcx,rbp
+   +0xf30 PhysicalDeviceObject : 0xffffe001`f64bd060 _DEVICE_OBJECT
+1: kd> !devstack 0xffffe001`f64bd060
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffe001fe852e20  \Driver\vwifibus   ffffe001f568ae80  
+  ffffe001fec58050  \Driver\Netwtw04   ffffe001fec581a0  NDMP44
+  ffffe001f64bc040  \Driver\ACPI       ffffe001f59d5010  
+> ffffe001f64bd060  \Driver\pci        ffffe001f64bd1b0  NTPNP_PCI0019
+!DevNode ffffe001f64bcb30 :
+  DeviceInst is "PCI\VEN_8086&DEV_24F3&SUBSYS_11108086&REV_3A\A434D9FFFF1396CE00"
+
+So this looks like a deadlock in NDIS.SYS and not the driver issue.

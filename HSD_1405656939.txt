@@ -1,0 +1,107 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1405656939/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1) – Bugcheck D1 (see attached memory dump):
+The crash is caused by an execute access to an address with valid bit clear in the PTE:
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If kernel debugger is available get stack backtrace.
+Arguments:
+Arg1: fffff80497a6b566, memory referenced
+Arg2: 0000000000000002, IRQL
+Arg3: 0000000000000008, value 0 = read operation, 1 = write operation
+Arg4: fffff80497a6b566, address which referenced memory
+…
+
+This is the access and page is not valid:
+3: kd> r cr2
+cr2=fffff80497a6b566
+3: kd> u fffff80497a6b566 L1
+buttonconverter!EvtDevicePrepareHardware+0x196:
+fffff804`97a6b566 4438a6a0000000  cmp     byte ptr [rsi+0A0h],r12b
+3: kd> !pte fffff80497a6b566
+                                           VA fffff80497a6b566
+PXE at FFFFFA7D3E9F4F80    PPE at FFFFFA7D3E9F0090    PDE at FFFFFA7D3E0125E8    PTE at FFFFFA7C024BD358
+contains 0000000001009063  contains 0A00000268F51863  contains 0A00000253A38863  contains 980982597B680400
+pfn 1009      ---DA--KWEV  pfn 268f51    ---DA--KWEV  pfn 253a38    ---DA--KWEV  not valid
+                                                                                  Proto: FFFF980982597B68
+
+It is located in pageable section however:
+3: kd> ? fffff80497a6b566 - buttonconverter
+Evaluate expression: 46438 = 00000000`0000b566
+3: kd> !dh buttonconverter
+…
+
+SECTION HEADER #6
+    PAGE name
+    23E6 virtual size
+    A000 virtual address
+    2400 size of raw data
+    6800 file pointer to raw data
+       0 file pointer to relocation table
+       0 file pointer to line numbers
+       0 number of relocations
+       0 number of line numbers
+60000020 flags
+         Code
+         (no align specified)
+         Execute Read
+…
+
+So the problem here is that buttonconverter!EvtDevicePrepareHardware has been placed into pageable section of code but acquires a spinlock:
+3: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffa980`f31c6518 fffff800`5a283882 nt!DbgBreakPointWithStatus
+01 ffffa980`f31c6520 fffff800`5a28312d nt!KiBugCheckDebugBreak+0x12
+02 ffffa980`f31c6580 fffff800`5a1fa477 nt!KeBugCheck2+0x94d
+03 ffffa980`f31c6c90 fffff800`5a2056a9 nt!KeBugCheckEx+0x107
+04 ffffa980`f31c6cd0 fffff800`5a203c7d nt!KiBugCheckDispatch+0x69
+05 ffffa980`f31c6e10 fffff804`97a6b566 nt!KiPageFault+0x23d
+06 (Inline Function) --------`-------- buttonconverter!WdfSpinLockAcquire+0x22
+07 ffffa980`f31c6fa0 fffff804`90932868 buttonconverter!EvtDevicePrepareHardware+0x196
+08 ffffa980`f31c70d0 fffff804`90932763 Wdf01000!FxPnpDevicePrepareHardware::InvokeClient+0x28
+09 ffffa980`f31c7120 fffff804`90920eff Wdf01000!FxPrePostCallback::InvokeStateful+0x47
+0a (Inline Function) --------`-------- Wdf01000!FxPnpDevicePrepareHardware::Invoke+0x2a
+0b ffffa980`f31c7160 fffff804`909192b9 Wdf01000!FxPkgPnp::PnpPrepareHardware+0xef
+0c ffffa980`f31c71b0 fffff804`909211e9 Wdf01000!FxPkgPnp::PnpEventHardwareAvailable+0x49
+0d (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PnpEnterNewState+0xc9
+0e ffffa980`f31c71f0 fffff804`9091e1ff Wdf01000!FxPkgPnp::PnpProcessEventInner+0x1a9
+0f ffffa980`f31c72a0 fffff804`9093780e Wdf01000!FxPkgPnp::PnpProcessEvent+0x12f
+10 ffffa980`f31c7340 fffff804`909064b2 Wdf01000!FxPkgPnp::_PnpStartDevice+0x1e
+11 ffffa980`f31c7370 fffff804`90906c1f Wdf01000!FxPkgPnp::Dispatch+0xc2
+12 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x512
+13 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0x51e
+14 ffffa980`f31c73e0 fffff800`5a7e509d Wdf01000!FxDevice::DispatchWithLock+0x55f
+15 ffffa980`f31c74d0 fffff800`5a219005 nt!IovCallDriver+0x245
+16 ffffa980`f31c7510 fffff800`5a5d1f26 nt!IofCallDriver+0x14aee5
+17 ffffa980`f31c7550 fffff800`5a1aa320 nt!PnpAsynchronousCall+0xea
+18 ffffa980`f31c7590 fffff800`5a1a9600 nt!PnpSendIrp+0x54
+19 ffffa980`f31c7600 fffff800`5a5ce567 nt!PnpStartDevice+0x88
+1a ffffa980`f31c7690 fffff800`5a5cd8fb nt!PnpStartDeviceNode+0xdb
+1b ffffa980`f31c7720 fffff800`5a4b8450 nt!PipProcessStartPhase1+0x53
+1c ffffa980`f31c7760 fffff800`5a64c3cd nt!PipProcessDevNodeTree+0x428
+1d ffffa980`f31c79e0 fffff800`5a1a8d21 nt!PiProcessStartSystemDevices+0x59
+1e ffffa980`f31c7a30 fffff800`5a133518 nt!PnpDeviceActionWorker+0x3c1
+1f ffffa980`f31c7b00 fffff800`5a092fb7 nt!ExpWorkerThread+0xd8
+20 ffffa980`f31c7b90 fffff800`5a1ff7f6 nt!PspSystemThreadStartup+0x47
+21 ffffa980`f31c7be0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+Since spinlock acquisition raises IRQL:
+3: kd> !irql
+Debugger saved IRQL for processor 0x3 -- 2 (DISPATCH_LEVEL)
+
+Pageable code and data cannot be accessed at elevated IRQL: https://msdn.microsoft.com/en-us/library/windows/hardware/ff560244(v=vs.85).aspx
+“The function was marked as pageable and was running at an elevated IRQL (which includes obtaining a lock).”
+
+EvtDevicePrepareHardware or rather the data access that requires spinlock protection should be probable moved to non-paged code section.

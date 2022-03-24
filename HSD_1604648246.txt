@@ -1,0 +1,341 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604648246
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck 4D - NO_PAGES_AVAILABLE (4d) – see memory dump attached:
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+NO_PAGES_AVAILABLE (4d)
+No free pages available to continue operations.
+…
+Arguments:
+Arg1: 00000000001b50bf, Total number of dirty pages
+Arg2: 00000000001b50bc, Number of dirty pages destined for the pagefile(s).
+Arg3: 0000000000000001, Internal flags.
+Arg4: ffffffffc0000054, Most recent modified write error status.
+…
+
+The system has run out of clean pages:
+3: kd> !vm 3
+Page File: \??\C:\pagefile.sys
+  Current:  14242408 Kb  Free Space:  13863212 Kb
+  Minimum:   8912896 Kb  Maximum:     15523196 Kb
+Page File: \??\C:\swapfile.sys
+  Current:     16384 Kb  Free Space:     16376 Kb
+  Minimum:     16384 Kb  Maximum:     12244872 Kb
+No Name for Paging File
+  Current:  23686444 Kb  Free Space:  14058076 Kb
+  Minimum:  23686444 Kb  Maximum:     23686444 Kb
+
+Physical Memory:          2040812 (    8163248 Kb)
+Available Pages:              159 (        636 Kb)
+ResAvail Pages:           1771614 (    7086456 Kb)
+Locked IO Pages:                0 (          0 Kb)
+Free System PTEs:      4294984775 (17179939100 Kb)
+
+******* 18688 kernel stack PTE allocations have failed ******
+
+Modified Pages:           1790143 (    7160572 Kb)
+Modified PF Pages:        1790140 (    7160560 Kb)
+Modified No Write Pages:       58 (        232 Kb)
+NonPagedPool Usage:           127 (        508 Kb)
+NonPagedPoolNx Usage:       82070 (     328280 Kb)
+NonPagedPool Max:      4294967296 (17179869184 Kb)
+PagedPool  0:               35043 (     140172 Kb)
+PagedPool  1:                2926 (      11704 Kb)
+PagedPool  2:                2955 (      11820 Kb)
+PagedPool  3:                2919 (      11676 Kb)
+PagedPool  4:                2944 (      11776 Kb)
+PagedPool Usage:            46787 (     187148 Kb)
+PagedPool Maximum:     4294967296 (17179869184 Kb)
+Processor Commit:             595 (       2380 Kb)
+Session Commit:             20195 (      80780 Kb)
+Shared Commit:             116435 (     465740 Kb)
+Special Pool:                   0 (          0 Kb)
+Kernel Stacks:              14501 (      58004 Kb)
+Pages For MDLs:             22112 (      88448 Kb)
+Pages For AWE:                  0 (          0 Kb)
+NonPagedPool Commit:        72478 (     289912 Kb)
+PagedPool Commit:           46787 (     187148 Kb)
+Driver Commit:              16098 (      64392 Kb)
+Boot Commit:                 2640 (      10560 Kb)
+PFN Array Commit:           24462 (      97848 Kb)
+System PageTables:            775 (       3100 Kb)
+ProcessLockedFilePages:        23 (         92 Kb)
+Pagefile Hash Pages:          199 (        796 Kb)
+Sum System Commit:         337300 (    1349200 Kb)
+
+********** 36 commit requests have failed  **********
+
+Total Private:            4753832 (   19015328 Kb)
+Misc/Transient Commit:      11950 (      47800 Kb)
+Committed pages:          5103082 (   20412328 Kb)
+Commit limit:             5601414 (   22405656 Kb)
+…
+
+The paging device has multiple paging requests outstanding but I/O requests are not failing:
+3: kd> !storagekd.storclass
+Storage Class Devices
+
+Usage Legend: B = Boot, P = Paging, D = Dump, H = Hiber, R = Removable
+
+FDO                      # Device ID                        Usage   UP   DN  FL
+-------------------------------------------------------------------------------
+ffffa78c8d0bb060 [1,2]   0 INTEL SSDPEKKF128G7              BPDH     ?    ?   1
+
+Usage: !storclass <class device> <level [0-2]>
+       !storclass 0 <level [1-2]> to display summary with upper-level and down-level IRP counts
+
+Optical devices, such as DVD drives, can be listed with !wdfkd.wdfdriverinfo cdrom, and further explored 
+using the "!wdfkd.wdfdevice <device_handle>" and "!wdfkd.wdfdevicequeues <device_handle>" commands.
+
+3: kd> !storagekd.storclass ffffa78c8d0bb060 2
+Storage class device ffffa78c8d0bb060 with extension at ffffa78c8d0bb1b0
+
+DeviceGuid: {7a39796f-1f13-0322-1176-ddba7eb3978b}
+
+Classpnp Internal Information at ffffa78c8d0ba010
+
+    Transfer Packet Engine:
+
+     Packet          Status  DL Irp          Opcode  Sector/ListId   UL Irp 
+    --------         ------ --------         ------ --------------- --------
+    ffffa78c8d333b70 Queued ffffa78c931e4e10   00   ffffa78c90c871d0 
+    ffffa78c931d7cc0 Queued ffffa78c8f041010   00   ffffa78c9cb07b40 
+    ffffa78c8be729d0 Queued ffffa78c90639010   00   ffffa78c9116ab40 
+    ffffa78c92418e80 Queued ffffa78c91ecebc0   00   ffffa78c8fa30b40 
+    ffffa78c8ff1e3b0 Queued ffffa78c8c66b2a0   00   ffffa78c8f019010 \Windows\System32\WDI\LogFiles\WdiContextLog.etl.002
+    ffffa78c8d3de9b0 Queued ffffa78c90893e10   00   ffffa78c8c545b40 \Users\Administrator\AppData\Local\Microsoft\OneDrive\17.3.6816.0313\msvcr120.dll
+    ffffa78c8f4cd880 Queued ffffa78c905e4010   00   ffffa78c905ee4c0 
+    ffffa78c90dfc800 Queued ffffa78c8dba0790   00   ffffa78c8e881b40 
+    ffffa78c924b4980 Queued ffffa78c95c3f010   00   ffffa78c90b6db40 \Program Files (x86)\Windows Kits\10\tools\x64\pwrtestlog.etl
+    ffffa78c9067ea70 Queued ffffa78c8f454b50   00   ffffa78c90b6db40 \Program Files (x86)\Windows Kits\10\tools\x64\pwrtestlog.etl
+    ffffa78c8f93d3a0 Queued ffffa78c8ed90990   00   ffffa78c9cc80b40 
+    ffffa78c909a1390 Queued ffffa78c907d0010   00   ffffa78c900be8e0 
+    ffffa78c9082b980 Queued ffffa78c8c0953e0   00   ffffa78c8f023010 
+    ffffa78c90c51e80 Queued ffffa78c8ffd2460   00   ffffa78c90a2b1d0 \Windows\System32\TaskFlowDataEngine.dll
+    ffffa78c90b4ae80 Queued ffffa78c95b66a50   00   ffffa78c8e6f8b40 
+    ffffa78c8fc00010 Queued ffffa78c92797e10   00   ffffa78c90c4d010 
+    ffffa78c8f7bde80 Queued ffffa78c8f937ba0   00   ffffa78c9044db40 
+    ffffa78c9070c1c0 Queued ffffa78c90b46e10   00   ffffa78c907f46e0 
+    ffffa78c8dda2010 Queued ffffa78c93fe5e10   00   ffffa78c914481d0 
+    ffffa78c9018fc80 Queued ffffa78c90e46a30   00   ffffa78c9106e010 
+    ffffa78c903c5e80 Queued ffffa78c8c9b6b60   00   ffffa78c90a33b40 
+    ffffa78c8efbe010 Queued ffffa78c90e6c2c0   00   ffffa78c90a2f980 
+    ffffa78c90effbe0 Queued ffffa78c929d9b50   00   ffffa78c903211a0 
+    ffffa78c90331b70 Queued ffffa78c90374c10   00   ffffa78c9258cb40 
+    ffffa78c90a97bd0 Queued ffffa78c90cb4520   00   ffffa78c91a7d9d0 \Windows\System32\ucrtbase.dll
+    ffffa78c90367620 Queued ffffa78c8f4a5010   00   ffffa78c90ae69a0 
+    ffffa78c8ff08630 Queued ffffa78c92293e10   00   ffffa78c95963b40 
+    ffffa78c903a2510 Queued ffffa78c900fd1d0   00   ffffa78c9091a980 
+    ffffa78c8e3da150 Queued ffffa78c906412e0   00   ffffa78c8efc8010 
+    ffffa78c8c5976e0 Queued ffffa78c906f7410   00   ffffa78c90b4bb40 
+    ffffa78c9044fd10 Queued ffffa78c8dbd7e10   00   ffffa78c8d56e670 
+    ffffa78c8c865c00 Queued ffffa78c8ffb9c10   00   ffffa78c8ff85310 
+    ffffa78c906f2190 Queued ffffa78c8f43fe10   00   ffffa78c9a072010 \Windows\System32\diagtrack.dll
+    ffffa78c8e3b5290 Queued ffffa78c90c25e10   00   ffffa78c900b0100 
+    ffffa78c92c08a20 Queued ffffa78c9076e240   00   ffffa78c900b0100 
+    ffffa78c8d26f140 Queued ffffa78c933dae10   00   ffffa78c900b0100 
+    ffffa78c8ff24720 Queued ffffa78c90a1f4a0   00   ffffa78c900b0100 
+    ffffa78c92418b60 Queued ffffa78c9101bbe0   00   ffffa78c900b0100 
+    ffffa78c9054f880 Queued ffffa78c9006c2d0   00   ffffa78c900b0100 
+    ffffa78c8dbfd570 Queued ffffa78c95dc9e10   00   ffffa78c900b0100 
+    ffffa78c923519a0 Queued ffffa78c9028f740   00   ffffa78c900b0100 
+    ffffa78c8fbc0e80 Queued ffffa78c92ec1ae0   00   ffffa78c90c58b40 
+    ffffa78c904f6e80 Queued ffffa78c95285e10   00   ffffa78c90c58b40 
+    ffffa78c95fe0e80 Queued ffffa78c90b0de10   00   ffffa78c90c58b40 
+    ffffa78c8f02b340 Queued ffffa78c906606d0   00   ffffa78c90c58b40 
+    ffffa78c8f7cdd60 Queued ffffa78c907cae10   00   ffffa78c90c58b40 
+    ffffa78c90ad0e80 Queued ffffa78c8d3b82f0   00   ffffa78c90c58b40 
+    ffffa78c8efb9b30 Queued ffffa78c90596e10   00   ffffa78c90c58b40 
+    ffffa78c8c5409b0 Queued ffffa78c8fa32e10   00   ffffa78c90c58b40 
+    ffffa78c8f9df2b0 Queued ffffa78c8fd0a270   00   ffffa78c8ff22720 
+    ffffa78c8ef64510 Queued ffffa78c8f6a6750   00   ffffa78c951dd010 \$LogFile
+    ffffa78c8c5ad470 Queued ffffa78c90426bf0   00   ffffa78c8c0edb40 \Windows\System32\dps.dll
+    ffffa78c906ece80 Queued ffffa78c9064fe10   00   ffffa78c90b12160 
+    ffffa78c8f0a5510 Queued ffffa78c90927990   00   ffffa78c9b7dcb40 
+    ffffa78c8f686010 Queued ffffa78c8fe51d40   00   ffffa78c9016d940 
+    ffffa78c8c3c6360 Queued ffffa78c8d22e580   00   ffffa78c8c81f710 
+    ffffa78c8c0a2e80 Queued ffffa78c8fcd5980   00   ffffa78c98eb41d0 
+    ffffa78c8f47e010 Queued ffffa78c9048c420   00   ffffa78c8efe0010 
+    ffffa78c8c1828c0 Queued ffffa78c8de66760   00   ffffa78c8c146b40 
+    ffffa78c8ff61a90 Queued ffffa78c8fec6870   00   ffffa78c8fe87b40 \Windows\System32\drivers\dxgkrnl.sys
+    ffffa78c8f931c60 Queued ffffa78c9008b7b0   00   ffffa78c8e2b3010 
+    ffffa78c91366d50 Queued ffffa78c9030f6f0   00   ffffa78c8f43ab10 \ProgramData\Microsoft\Windows Defender\Definition Updates\Default\MpEngine.dll
+    ffffa78c909fc830 Queued ffffa78c91ea8e10   00   ffffa78c8f73d400 
+    ffffa78c8e65d690 Queued ffffa78c92938ba0   00   ffffa78c950ef9d0 \Windows\System32\drivers\csc.sys
+    ffffa78c902e1010 Queued ffffa78c95c62cd0   00   ffffa78c90ae8b40 
+    ffffa78c8ba20510 Queued ffffa78c8fcf4760   00   ffffa78c90f05b40 \Windows\System32\ntdll.dll
+    ffffa78c903f5ce0 Queued ffffa78c952f64a0   00   ffffa78c92c6e010 \ProgramData\Microsoft\Windows Defender\Scans\History\CacheManager\FF523590-4B44-47D8-824D-31F919440280-0.bin
+    ffffa78c8f990330 Queued ffffa78c8c493840   00   ffffa78c9310cb40 
+    ffffa78c8b981cf0 Queued ffffa78c8ba0a750   00   ffffa78c9532ea60 \Windows\SysWOW64\ntdll.dll
+    ffffa78c90cf8e80 Queued ffffa78c8c4ef630   00   ffffa78c8c5d7180 
+    ffffa78c8e2a26f0 Queued ffffa78c8c49dd20   00   ffffa78c90c1d010 
+    ffffa78c90a39b00 Queued ffffa78c8e5f40f0   00   ffffa78c92417980 
+    ffffa78c8fea9010 Queued ffffa78c9084f8c0   00   ffffa78c95b95b40 
+    ffffa78c905ad540 Queued ffffa78c90678010   00   ffffa78c92a4da70 \Windows\System32\PsmServiceExtHost.dll
+    ffffa78c908ff170 Queued ffffa78c90a57bb0   00   ffffa78c9774ab40 
+    ffffa78c8db039f0 Queued ffffa78c9016bd40   00   ffffa78c9005ca10 \Program Files\Intel Corporation\Intel(R)SystemCyclingUtility\Intel(R)SystemCyclingUtility.exe
+    ffffa78c90583e80 Queued ffffa78c8c5fc8d0   00   ffffa78c9b529b40 
+    ffffa78c92d8fe80 Queued ffffa78c8c65a090   00   ffffa78c92dfab40 \Windows\System32\rpcrt4.dll
+    ffffa78c9240ba70 Queued ffffa78c92723bd0   00   ffffa78c91f7cb40 \Windows\System32\wlansvc.dll
+    ffffa78c8fb3b010 Queued ffffa78c8ff599b0   00   ffffa78c909071d0 \Windows\System32\webio.dll
+    ffffa78c8d5e2a70 Queued ffffa78c8fe712c0   00   ffffa78c9ac52b40 
+    ffffa78c9024ae80 Queued ffffa78c90748010   00   ffffa78c8c0c9b40 
+    ffffa78c8fe26c00 Queued ffffa78c8c6e8e10   00   ffffa78c8ffc6b40 
+    ffffa78c8dd4d820 Queued ffffa78c90a42010   00   ffffa78c91325980 \Windows\System32\drivers\http.sys
+    ffffa78c8ba0db60 Queued ffffa78c914ecb80   00   ffffa78c8fa59b40 
+    ffffa78c8c55fe80 Queued ffffa78c90585210   00   ffffa78c8f4eab40 \Windows\System32\wbem\wbemcore.dll
+    ffffa78c8b98b8d0 Queued ffffa78c93c79dc0   00   ffffa78c90a54b40 
+    ffffa78c8c555700 Queued ffffa78c906fa5a0   00   ffffa78c8e2a3b40 \Windows\System32\ntdll.dll
+    ffffa78c909d7dd0 Queued ffffa78c8e970980   00   ffffa78c910b9b40 \Windows\System32\ntdll.dll
+    ffffa78c8dd2bc10 Queued ffffa78c90e91790   00   ffffa78c902d7b40 
+    ffffa78c90620c70 Queued ffffa78c931fce10   00   ffffa78c92124b40 
+    ffffa78c90449e80 Queued ffffa78c906ecc30   00   ffffa78c932a8b40 
+    ffffa78c9073be80 Queued ffffa78c8fc49c70   00   ffffa78c8c5c7a20 \Windows\System32\KernelBase.dll
+    ffffa78c8e3dc010 Queued ffffa78c905f4930   00   ffffa78c8e38e180 \Windows\System32\ntdll.dll
+    ffffa78c8c780010 Queued ffffa78c90961980   00   ffffa78c99897b40 \Windows\System32\ntdll.dll
+    ffffa78c8e3bac50 Queued ffffa78c8c561ba0   00   ffffa78c9b55b010 
+    ffffa78c9076fc60 Queued ffffa78c8e3ada50   00   ffffa78c8f55c570 
+    ffffa78c90f78980 Queued ffffa78c8e2d2b60   00   ffffa78c90a23010 
+
+    Pending Idle Requests: 0x0
+
+
+    Failed Requests:
+
+           Srb    Scsi                                   
+    Opcode Status Status Sense Code  Sector/ListId   Time Stamp 
+    ------ ------ ------ ---------- --------------- ------------
+      1a     06     02    05 24 00                  10:06:52.727   
+…
+
+The device has multiple power references but it is in D3 for S4:
+3: kd> !devstack ffffa78c8d0bb060
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffa78c8d0189d0  \Driver\partmgr    ffffa78c8d018b20  
+> ffffa78c8d0bb060  \Driver\Disk       ffffa78c8d0bb1b0  DR0
+  ffffa78c8d01dc60  \Driver\EhStorClassffffa78c8d01fe10  
+  ffffa78c8cc0d060  \Driver\stornvme   ffffa78c8cc0d1b0  <???>
+!DevNode ffffa78c8cc54d20 :
+  DeviceInst is "SCSI\Disk&Ven_NVMe&Prod_INTEL_SSDPEKKF12\5&3552cca7&0&000000"
+  ServiceName is "disk"
+3: kd> dt nt!_device_node ffffa78c8cc54d20  Parent
+   +0x010 Parent : 0xffffa78c`8cc6f010 _DEVICE_NODE
+3: kd> dt nt!_device_node  0xffffa78c`8cc6f010 FxDevice
+   +0x050 FxDevice : 0xffffa78c`8c1cfd60 _POP_FX_DEVICE
+3: kd> !fxdevice 0xffffa78c`8c1cfd60 
+!fxdevice 0xffffa78c8c1cfd60
+	DevNode: 0xffffa78c8cc6f010
+	UniqueId: "\_SB.PCI0.RP13.PXSX"
+	InstancePath: "PCI\VEN_8086&DEV_F1A5&SUBSYS_390A8086&REV_03\4&19f44e6c&0&00EC"
+	Device Power State: PowerDeviceD3
+	PEP Owner: Platform PEP
+	Platform PEP Entry point: intelpep!PepAcceptDeviceNotification
+	Acpi Plugin: 0
+	Acpi Handle: 0
+	Device Status Flags: SystemTransition DevicePowerRequired
+…
+
+The system has hibernated:
+3: kd> !poaction
+PopAction: fffff8019d1e8820
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Hibernate
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Hibernate
+  Hiber Context..: ffffa78c8d23b630
+
+Allocated power irps (PopIrpList - fffff8019d1e8ee0)
+  IRP: 0000000000000000 (wait-wake/S-1658941537), PDO: 0000000000000000
+
+Irp worker threads (PopIrpThreadList - fffff8019d1e7a10)
+  THREAD: ffffa78c8b6a2040 (static)
+  THREAD: ffffa78c8b6a9680 (static)
+  THREAD: ffffa78c8e1b3040 (dynamic)
+  THREAD: ffffa78c8fb62640 (dynamic)
+  THREAD: ffffa78c8fb26180 (dynamic)
+  THREAD: ffffa78c8f901040 (dynamic)
+  THREAD: ffffa78c8c133040 (dynamic)
+  THREAD: ffffa78c8fd06700 (dynamic)
+  THREAD: ffffa78c8e2e5040 (dynamic)
+  THREAD: ffffa78c8e2ac040 (dynamic)
+  THREAD: ffffa78c8dcd8040 (dynamic)
+  THREAD: ffffa78c8f9d9040 (dynamic)
+  THREAD: ffffa78c90101300 (dynamic)
+  THREAD: ffffa78c8dd47040 (dynamic)
+  THREAD: ffffa78c8dc59040 (dynamic)
+
+Broadcast in progress: FALSE
+…
+
+But it cannot resume because PO Policy thred hit a page fault which cannot be satisfied for the same reason (paging device is powered off):
+3: kd> !thread ffffa78c8fed5040
+THREAD ffffa78c8fed5040  Cid 0004.14fc  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrPageIn) KernelMode Non-Alertable
+    ffffa78c8b9dbaf0  NotificationEvent
+IRP List:
+    ffffa78c8e881b40: (0006,04c0) Flags: 00060043  Mdl: ffffa78c8b9dbbd0
+Not impersonating
+Owning Process            ffffa78c8b64a2c0       Image:         System
+Attached Process          ffffa78c8dede040       Image:         MemCompression
+Wait Start TickCount      3362319        Ticks: 6739 (0:00:01:45.296)
+Context Switch Count      47428          IdealProcessor: 0  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:02.125
+Win32 Start Address nt!ExpWorkerThread (0xfffff8019cec13e0)
+Stack Init ffffe0031887fb90 Current ffffe0031887dd90
+Base ffffe00318880000 Limit ffffe00318879000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffe003`1887ddd0 fffff801`9cf403e0 : ffffa78c`8fed5470 00000000`00000000 00000000`00000000 fffff801`00000000 : nt!KiSwapContext+0x76
+ffffe003`1887df10 fffff801`9cf3fd5e : ffffa78c`00000003 ffffa78c`8e881f28 00000000`1c0dc000 00000000`00000000 : nt!KiSwapThread+0x190
+ffffe003`1887dfd0 fffff801`9cf3f539 : ffffa78c`8d008cd0 00000000`00000000 ffffa78c`8fed5700 ffffa78c`8b9dbaf0 : nt!KiCommitThreadWait+0x10e
+ffffe003`1887e070 fffff801`9cee12dc : ffffa78c`8b9dbaf0 00000000`00000009 ffffa78c`8d027700 ffffa78c`8e881b00 : nt!KeWaitForSingleObject+0x1c9
+ffffe003`1887e150 fffff801`9cee0fb6 : 00000000`00000002 ffffe003`1887e310 00000000`00000000 00000000`00000000 : nt!MiWaitForInPageComplete+0xbc
+ffffe003`1887e280 fffff801`9cef0f83 : 00000000`c0033333 ffffa78c`8dede540 00000000`00000000 ffffe003`1887e530 : nt!MiIssueHardFault+0x326
+ffffe003`1887e360 fffff801`9d00a54e : 7fffa78c`8de58788 00000000`ffffffff ffffa78c`8cc0d060 fffff801`9d08d5d1 : nt!MmAccessFault+0x1213
+ffffe003`1887e530 fffff801`9d0dbef3 : ffffe003`1887e958 ffff9681`975fd000 fffff801`9ce88160 ffff9681`975fd000 : nt!KiPageFault+0x40e (TrapFrame @ ffffe003`1887e530)
+ffffe003`1887e6c8 fffff801`9ce88160 : ffff9681`975fd000 ffffa78c`8de57050 00000000`1a7009b0 ffff9681`975fd000 : nt!RtlDecompressBufferXpressLz+0x43
+ffffe003`1887e6e0 fffff801`9d0f1112 : 00000000`00000000 00000000`00000002 00000000`1a7009b0 ffffa78c`8de57000 : nt!RtlDecompressBufferEx+0x60
+ffffe003`1887e730 fffff801`9d0f13de : 00000000`00000004 ffffe003`1887e940 00000000`00000000 00000000`0000031b : nt!ST_STORE<SM_TRAITS>::StDmSinglePageCopy+0x246
+ffffe003`1887e810 fffff801`9d0f2232 : 00000000`00000001 00000000`000109b0 ffffa78c`8de57050 00000000`00001000 : nt!ST_STORE<SM_TRAITS>::StDmSinglePageTransfer+0xaa
+ffffe003`1887e860 fffff801`9d0f085a : ffffe003`ffffffff ffffa78c`984a8000 ffffe003`1887e940 ffffa78c`8c858ab0 : nt!ST_STORE<SM_TRAITS>::StDmpSinglePageRetrieve+0x1d6
+ffffe003`1887e900 fffff801`9d0ea6d6 : ffffa78c`8c858ab0 00000000`00000000 00000000`00000002 ffffa78c`8de58788 : nt!ST_STORE<SM_TRAITS>::StDmPageRetrieve+0xc2
+ffffe003`1887e9b0 fffff801`9d0ea5d1 : ffffa78c`8de57000 ffffe003`1887ead0 fffff801`9d0ea5b0 ffffa78c`8de58788 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectReadIssue+0x76
+ffffe003`1887ea10 fffff801`9cf167fb : ffffa78c`8fed5040 ffffe003`1887ead0 ffffa78c`8db7b1b0 00000000`00000003 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectReadCallout+0x21
+ffffe003`1887ea40 fffff801`9d0ea530 : 00000000`00000003 ffffa78c`984a8000 ffffa78c`8de57000 ffffa78c`8c858ab0 : nt!KeExpandKernelStackAndCalloutInternal+0x8b
+ffffe003`1887ea90 fffff801`9d0ebd71 : ffffe003`1887eb90 fffff801`9ce93b81 00000000`00000000 fffff801`9d0e903e : nt!SMKM_STORE<SM_TRAITS>::SmStDirectRead+0xcc
+ffffe003`1887eb60 fffff801`9d0e96c9 : 00000000`00000000 00000000`00000000 ffffe003`1887ec10 ffffa78c`8c858ab0 : nt!SMKM_STORE<SM_TRAITS>::SmStWorkItemQueue+0x41
+ffffe003`1887ebb0 fffff801`9d0e9947 : 00000000`0000000c 00000000`00000001 ffffa78c`8c858ab0 ffffa78c`8db7b1b0 : nt!SMKM_STORE_MGR<SM_TRAITS>::SmIoCtxQueueWork+0x1e1
+ffffe003`1887ec30 fffff801`9d0f39ce : ffffa78c`00000001 ffffa78c`8db7b260 00000000`00000000 ffffa78c`8de57000 : nt!SMKM_STORE_MGR<SM_TRAITS>::SmPageRead+0x1cf
+ffffe003`1887eca0 fffff801`9d02f4e2 : fffff801`9bd0f180 fffff801`9cec9bec ffffa78c`8be40040 fffff801`9cee120e : nt!SmPageRead+0x2e
+ffffe003`1887ecf0 fffff801`9cee0e9c : 00000000`00000002 ffffe003`1887ed80 00000000`00000000 00000000`00000000 : nt!MiIssueHardFaultIo+0x14de52
+ffffe003`1887ed40 fffff801`9cef0f83 : 00000000`c0033333 fffff801`9d20c6a0 00000000`00000000 ffffe003`1887eee0 : nt!MiIssueHardFault+0x20c
+ffffe003`1887ede0 fffff801`9d00a54e : ffffa78c`8fb62640 fffff801`9d08d9d8 00000000`00000000 00000000`00000002 : nt!MmAccessFault+0x1213
+ffffe003`1887efb0 fffff801`9d2fc750 : fffff801`9d2fb323 00004f50`00010001 ffffcb80`664cc210 ffffe003`1887f400 : nt!KiPageFault+0x40e (TrapFrame @ ffffe003`1887efb0)
+ffffe003`1887f148 fffff801`9d2fb323 : 00004f50`00010001 ffffcb80`664cc210 ffffe003`1887f400 00000000`00000000 : nt!ExpWnfFindStateName+0x10
+ffffe003`1887f150 fffff801`9d2f8dd6 : ffffe003`1887f208 00004f50`00010001 ffffe003`1887f390 fffff801`9bd0f180 : nt!ExpWnfLookupNameInstance+0x57
+ffffe003`1887f1a0 fffff801`9d00e003 : ffffa78c`8fed5268 ffffa78c`8fed5268 00000000`00000000 00000000`00000000 : nt!NtUpdateWnfStateData+0x1ba
+ffffe003`1887f2a0 fffff801`9cffee50 : fffff801`9d0628dd ffffe003`1887f540 fffff801`9ce181ed fffff801`9bd0f180 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffe003`1887f310)
+ffffe003`1887f4a8 fffff801`9d0628dd : ffffe003`1887f540 fffff801`9ce181ed fffff801`9bd0f180 fffff801`9d1e8f50 : nt!KiServiceLinkage
+ffffe003`1887f4b0 fffff801`9d2bc013 : ffffe003`1887f5c0 00000000`00000002 ffffe003`030c6f04 00000000`00000002 : nt!PoNotifySystemTimeSet+0x89c3d
+ffffe003`1887f510 fffff801`9d2bbf35 : 00000000`00989680 00000000`00000002 ffffe003`1887f6f0 00000000`00000002 : nt!ExpSetSystemTime+0xbf
+ffffe003`1887f580 fffff801`9d2ba120 : ffffe003`00000005 00000000`00000000 00000000`00000005 00000000`00000000 : nt!ExUpdateSystemTimeFromCmos+0xc1
+ffffe003`1887f5f0 fffff801`9d00e003 : 00000000`00000002 fffff801`00000005 ffffa78c`80000002 fffff801`9d2e4000 : nt!NtSetSystemPowerState+0xbf0
+ffffe003`1887f7a0 fffff801`9cffee50 : fffff801`9d57e400 00000000`00000000 00000000`80000002 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffe003`1887f7a0)
+ffffe003`1887f938 fffff801`9d57e400 : 00000000`00000000 00000000`80000002 00000000`00000000 00000000`00000000 : nt!KiServiceLinkage
+ffffe003`1887f940 fffff801`9d57e59d : ffffa78c`8fed5040 fffff801`9cec18a4 ffffa78c`8d93b010 fffff800`00000000 : nt!PopIssueActionRequest+0x28c
+ffffe003`1887f9e0 fffff801`9ce9ca8a : 00000000`00000001 00000000`00000002 ffffa78c`8b6b1500 00000000`00000000 : nt!PopPolicyWorkerAction+0x6d
+ffffe003`1887fa50 fffff801`9cec14d5 : ffffa78c`8fed5040 fffff801`9ce9ca10 ffffa78c`8b6b1550 ffffa78c`8f3ef7d0 : nt!PopPolicyWorkerThread+0x7a
+
+The nt!PoNotifySystemTimeSet cannot call ZwtUpdateWnfStateData directly as this can create this deadlock.
+This issue is fixed in RS4, this request is to backport the fix to RS3 as many go-to-market platforms are on RS3 and this issue impacts release criteria as OEMs cannot pass their required Sx cycle tests.

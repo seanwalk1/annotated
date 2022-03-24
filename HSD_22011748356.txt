@@ -1,0 +1,150 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22011748356
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck A - IRQL_NOT_LESS_OR_EQUAL (a) (see attached memory dump):
+kd> !analyze -show
+IRQL_NOT_LESS_OR_EQUAL (a)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If a kernel debugger is available get the stack backtrace.
+Arguments:
+Arg1: 0000000000000558, memory referenced
+Arg2: 00000000000000ff, IRQL
+Arg3: 0000000000000001, bitfield :
+     bit 0 : value 0 = read operation, 1 = write operation
+     bit 3 : value 0 = not an execute operation, 1 = execute operation (only on chips which support this level of status)
+Arg4: fffff8075074bbbe, address which referenced memory
+
+System is starting processors, so the crash occurred while starting another processor:
+kd> k
+# Child-SP          RetAddr               Call Site
+00 fffffd83`ade06698 fffff807`508984d4     nt!DbgBreakPointWithStatus
+01 fffffd83`ade066a0 fffff807`5065e17a     nt!KdCheckForDebugBreak+0x1a9fec
+02 fffffd83`ade066d0 fffff807`50661555     nt!KeAccumulateTicks+0x50a
+03 fffffd83`ade06730 fffff807`50770a58     nt!KiUpdateRunTime+0x65
+04 fffffd83`ade06780 fffff807`5065b11f     nt!KiUpdateTime+0x424
+05 fffffd83`ade06920 fffff807`50658ba2     nt!KeClockInterruptNotify+0x3cf
+06 (Inline Function) --------`--------     nt!HalpTimerClockInterruptEpilogCommon+0xc
+07 (Inline Function) --------`--------     nt!HalpTimerClockInterruptCommon+0xcc
+08 fffffd83`ade069b0 fffff807`50646d00     nt!HalpTimerClockInterrupt+0xe2
+09 fffffd83`ade069e0 fffff807`50818b1a     nt!KiCallInterruptServiceRoutine+0xa0
+0a fffffd83`ade06a20 fffff807`508190e7     nt!KiInterruptSubDispatchNoLockNoEtw+0xfa
+0b fffffd83`ade06a70 fffff807`50ed159d     nt!KiInterruptDispatchNoLockNoEtw+0x37
+0c fffffd83`ade06c00 fffff807`50ecb783     nt!KeStartAllProcessors+0x5a9
+0d fffffd83`ade07360 fffff807`50c1ce73     nt!Phase1InitializationDiscard+0x54b
+0e fffffd83`ade07500 fffff807`5071ff95     nt!Phase1Initialization+0x23
+0f fffffd83`ade07530 fffff807`5081afb8     nt!PspSystemThreadStartup+0x55
+10 fffffd83`ade07580 00000000`00000000     nt!KiStartSystemThread+0x28
+
+Switching to the “start processors” frame”
+kd> .frame /r c
+0c fffffd83`ade06c00 fffff807`50ecb783     nt!KeStartAllProcessors+0x5a9
+rax=ffffc880814d1180 rbx=0000000000000008 rcx=0000000000040246
+rdx=0000000800000000 rsi=ffffc880814d1180 rdi=0000000000000008
+rip=fffff80750ed159d rsp=fffffd83ade06c00 rbp=fffffd83ade06d00
+r8=0000000000000001  r9=0000000000001000 r10=fffff807507703c0
+r11=fffffd83ade06b90 r12=0000000000000000 r13=0000000000000000
+r14=fffff80751140600 r15=0000000000000001
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000202
+nt!KeStartAllProcessors+0x5a9:
+fffff807`50ed159d ebe9            jmp     nt!KeStartAllProcessors+0x594 (fffff807`50ed1588)
+
+The index of the starting processor is 1:
+kd> dv Index
+          Index = 1
+
+The address of the stack for the starting thread:
+kd> dt ProcessorState ContextFrame.Rsp
+Local var @ 0xfffffd83ade06d60 Type _KPROCESSOR_STATE
+   +0x0f0 ContextFrame     : 
+      +0x098 Rsp              : 0xfffffd83`ade2fff8
+
+From the bugcheck parameters, the RIP address of the exception:
+kd> .bugcheck
+Bugcheck code 0000000A
+Arguments 00000000`00000558 00000000`000000ff 00000000`00000001 fffff807`5074bbbe
+
+Searching for the IP bytes in the stack area:
+kd> s  0xfffffd83`ade2fff8-2000  0xfffffd83`ade2fff8 be bb 74 50
+fffffd83`ade2e1e8  be bb 74 50 07 f8 ff ff-01 01 00 01 00 01 01 01  ..tP............
+fffffd83`ade2e448  be bb 74 50 07 f8 ff ff-01 00 00 00 00 00 00 00  ..tP............
+fffffd83`ade2e930  be bb 74 50 07 f8 ff ff-00 00 00 00 00 00 00 00  ..tP............
+fffffd83`ade2e970  be bb 74 50 07 f8 ff ff-01 01 01 01 01 01 01 01  ..tP............
+fffffd83`ade2ebf8  be bb 74 50 07 f8 ff ff-10 00 00 00 00 00 00 00  ..tP............
+
+Earliest occurrence allows us to reconstruct crashing callstack:
+kd> k = fffffd83`ade2ebf8 
+ # Child-SP          RetAddr               Call Site
+00 fffffd83`ade2ebf8 fffff807`5074bbbe     nt!DbgBreakPointWithStatus
+01 fffffd83`ade2ec00 fffff807`5074967f     nt!MmResourcesAvailable+0x5e
+02 fffffd83`ade2ec80 ffff8002`97af2fa0     nt!ExpAllocatePoolWithTagFromNode+0x5f
+03 fffffd83`ade2ecd0 00000000`00000018     0xffff8002`97af2fa0
+04 fffffd83`ade2ecd8 fffff807`50709599     0x18
+05 fffffd83`ade2ece0 fffff807`50e5f550     nt!ExAllocatePoolWithTagPriority+0x29
+06 fffffd83`ade2ed20 fffff807`508d1363     nt!VeAllocatePoolWithTagPriority+0x1f0
+07 fffffd83`ade2eda0 fffff807`5074967f     nt!ExAllocateHeapPool+0x187c93
+08 fffffd83`ade2eee0 fffff807`50e3e545     nt!ExpAllocatePoolWithTagFromNode+0x5f
+09 fffffd83`ade2ef30 fffff807`507b35bb     nt!ExAllocatePool3+0x265
+0a fffffd83`ade2efb0 fffff807`50e2735c     nt!KiInitializePrcbThread+0x1b7
+0b fffffd83`ade2f060 fffff807`50e26b66     nt!KiInitializeIdleThread+0x74
+0c fffffd83`ade2f0c0 fffff807`50e1825d     nt!KiInitializeKernel+0x736
+0d fffffd83`ade2f3f0 00000000`00000000     nt!KiSystemStartup+0x24d
+
+Disassembling crashing function nt!MmResourcesAvailable in order to determine data accessed:
+kd> u nt!MmResourcesAvailable nt!MmResourcesAvailable+0x5e
+nt!MmResourcesAvailable:
+fffff807`5074bb60 48895c2420      mov     qword ptr [rsp+20h],rbx
+fffff807`5074bb65 55              push    rbp
+fffff807`5074bb66 56              push    rsi
+fffff807`5074bb67 57              push    rdi
+fffff807`5074bb68 4154            push    r12
+fffff807`5074bb6a 4156            push    r14
+fffff807`5074bb6c 4883ec50        sub     rsp,50h
+fffff807`5074bb70 33c0            xor     eax,eax
+fffff807`5074bb72 4c8d35c7659100  lea     r14,[nt!MiSystemPartition (fffff807`51062140)]
+fffff807`5074bb79 4889442440      mov     qword ptr [rsp+40h],rax
+fffff807`5074bb7e 48f7c2ff0f0000  test    rdx,0FFFh
+fffff807`5074bb85 0f57c0          xorps   xmm0,xmm0
+fffff807`5074bb88 41bc00000000    mov     r12d,0
+fffff807`5074bb8e 0f11442430      movups  xmmword ptr [rsp+30h],xmm0
+fffff807`5074bb93 65488b042588010000 mov   rax,qword ptr gs:[188h]
+fffff807`5074bb9c 458bdc          mov     r11d,r12d
+fffff807`5074bb9f 410f95c3        setne   r11b
+fffff807`5074bba3 8bf9            mov     edi,ecx
+fffff807`5074bba5 418bd8          mov     ebx,r8d
+fffff807`5074bba8 4c8bd2          mov     r10,rdx
+fffff807`5074bbab 8bf1            mov     esi,ecx
+fffff807`5074bbad 4c8b88b8000000  mov     r9,qword ptr [rax+0B8h]
+fffff807`5074bbb4 488bc2          mov     rax,rdx
+fffff807`5074bbb7 48c1e80c        shr     rax,0Ch
+fffff807`5074bbbb 4c03d8          add     r11,rax
+fffff807`5074bbbe 4d8b8958050000  mov     r9,qword ptr [r9+558h]
+
+We can see the data accessed was poi(poi(poi(GS[188h])+B8)+558) and bugcheck parameter indicates that this was NULL dreference:
+kd> .bugcheck
+Bugcheck code 0000000A
+Arguments 00000000`00000558 00000000`000000ff 00000000`00000001 fffff807`5074bbbe
+
+Get PRCB of the processor #1:
+kd> x nt!KiProcessorBlock
+fffff807`51115740 nt!KiProcessorBlock = struct _KPRCB *[2048]
+kd> dps fffff807`51115740 L2
+fffff807`51115740  fffff807`4fbbc180
+fffff807`51115748  ffffc880`814d1180
+
+GS:[188h] is the CurrentThread:
+kd> dt nt!_KPRCB ffffc880`814d1180 CurrentThread
+   +0x008 CurrentThread : 0xffffc880`814dd240 _KTHREAD
+
+CurrentThread+0xB8 is the ApcState.Process which is NULL:
+kd> dt 0xffffc880`814dd240 _KTHREAD ApcState.Process
+nt!_KTHREAD
+   +0x098 ApcState         : 
+      +0x020 Process          : (null) 
+kd> ? 98+20
+Evaluate expression: 184 = 00000000`000000b8
+
+nt!MmResourcesAvailable tries to access CurrentThread’s Process before it is available.

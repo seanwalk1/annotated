@@ -1,0 +1,292 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1406498951
+[AUTHOR]:	Mark Alward
+
+[ANALYSIS]:
+
+This is a bugcheck 1E seen during S3 cycling on an Intel NVMe drive:
+
+5: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffbf00`0e176688 fffff802`b20770b6 nt!KeBugCheckEx
+01 ffffbf00`0e176690 fffff802`b1feea2d nt!KiFatalExceptionHandler+0x22
+02 ffffbf00`0e1766d0 fffff802`b1ea7d94 nt!RtlpExecuteHandlerForException+0xd
+03 ffffbf00`0e176700 fffff802`b1ea6b36 nt!RtlDispatchException+0x404
+04 ffffbf00`0e176df0 fffff802`b1ff398e nt!KiDispatchException+0x1f6
+05 ffffbf00`0e1774a0 fffff802`b1ff1c34 nt!KiExceptionDispatch+0xce
+06 ffffbf00`0e177680 fffff80f`31e0fd40 nt!KiGeneralProtectionFault+0xf4
+07 ffffbf00`0e177810 fffff802`b1eeeb6c stornvme!NVMeCompletionDpcRoutine+0xf0 [onecore\drivers\storage\port\raid\miniport\stornvme\io.c @ 2742]
+08 ffffbf00`0e1778a0 fffff802`b1eee477 nt!KiExecuteAllDpcs+0x1dc
+09 ffffbf00`0e1779e0 fffff802`b1feb5fa nt!KiRetireDpcList+0xd7
+0a ffffbf00`0e177be0 00000000`00000000 nt!KiIdleLoop+0x5a
+
+Looking at the source for NVMeCompletionDpcRoutine leading up to the BSOD:
+        ...
+        srbToComplete = InterlockedExchangePointer((PVOID*)&submissionQueue->CmdId[commandId].Srb, NULL);
+
+        if (srbToComplete == NULL) {
+            ...
+        }
+
+        //
+        // Process completion routine and complete the Srb.
+        //
+        srbExtension = GetSrbExtension(srbToComplete);  <-- BSOD on this line
+
+In that frame, several values look bogus:
+
+5: kd> .frame 0n7;dv /t /v
+07 ffffbf00`0e177810 fffff802`b1eeeb6c stornvme!NVMeCompletionDpcRoutine+0xf0 [onecore\drivers\storage\port\raid\miniport\stornvme\io.c @ 2742]
+@r13              struct _SCSI_REQUEST_BLOCK * srbToComplete = 0x07060508`04010401
+@edx              unsigned short commandId = 0xffff
+
+commandId was FFFF, and the driver tried to index into an array using this value. The "srbToComplete" value it got was 
+a bad address.
+
+
+NVMe uses Submission Queues and Completion Queues mapped into host memory as the mechanism for issuing commands to the drive.
+Each queue has a Head and Tail pointer, like a traditional circular queue. Also, NVMe allows multiple submission and
+completion queues to gain better multicore performance. Command submission works like this:
+
+    1) Host writes a command to the location in the queue pointed to by Tail. The command has a format dictated by NVMe spec.
+       One field of interest is CommandID (CID). The CID is a 2 byte ID assigned by software, and allows matching completion 
+       entries to submission entries.
+    2) Host increments Tail, wrapping around if it reaches the end of the queue.
+    3) Host writes the new value of Tail to the SQyTDBL register in MMIO space (Submission Queue y tail doorbell).
+       The updated doorbell value notifies the controller that it can consume all entries up to the new tail location.
+    4) The NVMe drive processes the command and writes a completion entry to the corresponding Completion Queue. (each 
+       submission queue maps to exactly one completion queue). An interrupt is generated to notify the host.
+    5) Host reads the completion entry. Two fields - SQID (submission queue ID) and CID (command ID) - allow the host to 
+       figure out which command is being completed. The SQID is the index of the submission queue that submitted the command.
+       CID should just echo back the CID assigned by software when the command was submitted.
+       
+       The completion entry also contains a "submission queue Head" field that tells software the updated value of the queue's
+       head pointer, based on how many of the entries have been consumed. Basically, SW owns the Tail pointer (it updates the tail
+       when it submits commands) and the controller owns the Head pointer (it updates the head when it consumes commands).
+       
+From the stack frame, we can see the completion entry that was just read:
+
+5: kd> dt -r stornvme!NVME_COMPLETION_ENTRY 0xffffd604`e8a66000
+   +0x000 DW0              : 0
+   +0x004 Reserved         : 0
+   +0x008 DW2              : <unnamed-tag>
+      +0x000 SQHD             : 1
+      +0x002 SQID             : 5
+      +0x000 AsUlong          : 0x50001
+   +0x00c DW3              : <unnamed-tag>
+      +0x000 CID              : 0xffff
+      +0x002 Status           : NVME_COMMAND_STATUS
+         +0x000 P                : 0y1
+         +0x000 SC               : 0y00000001 (0x1)
+         +0x000 SCT              : 0y000
+         +0x000 Reserved         : 0y00
+         +0x000 M                : 0y0
+         +0x000 DNR              : 0y0
+         +0x000 AsUshort         : 3
+      +0x000 AsUlong          : 0x3ffff
+
+SQID is 5 - the command was submitted on queue 5.
+CID is FFFF - the command ID of the command was supposedly FFFF.
+Status - this translates to an "invalid opcode" error.
+
+We can inspect queue 5 to see the command that was submitted:
+
+5: kd> dt stornvme!_NVME_CONTROLLER_EXTENSION 0xffffd604`e6a6e010 NvmeQueues.
+   +0x0e0 NvmeQueues  : 
+      +0x000 SubmissionEntrySize : 0x40
+      +0x002 CompletionEntrySize : 0x10
+      +0x004 AdminQueueDepth : 0x100
+      +0x006 IoQueueDepth : 0x100
+      +0x008 IoSubmissionQueueCount : 8
+      +0x00a IoCompletionQueueCount : 8
+      +0x00c AdminCmdsBeingProcessedCount : 0
+      +0x010 AdminSubmissionQueue : _NVME_SUBMISSION_QUEUE
+      +0x098 AdminCompletionQueue : _NVME_COMPLETION_QUEUE
+      +0x140 IoSubmissionQueue : 0xffffd604`e8a2f2f0 _NVME_SUBMISSION_QUEUE
+      +0x148 IoCompletionQueue : 0xffffd604`e8a2f740 _NVME_COMPLETION_QUEUE
+
+5: dt -a8 stornvme!_NVME_SUBMISSION_QUEUE 0xffffd604`e8a2f2f0
+[0] @ ffffd604`e8a2f2f0 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781008 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a32000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a3a000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 1
+   +0x02a Priority         : 0
+   +0x02c Tail             : 0
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 0
+   +0x032 CompletionQueueID : 1
+   +0x034 ProcessorCount   : 0x53
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 0
+   +0x084 CompletedIoCount : 0x2f01
+
+[1] @ ffffd604`e8a2f378 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781010 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a33000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a3b000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 2
+   +0x02a Priority         : 0
+   +0x02c Tail             : 0
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 0
+   +0x032 CompletionQueueID : 2
+   +0x034 ProcessorCount   : 0x53
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 0
+   +0x084 CompletedIoCount : 0x51bf
+
+[2] @ ffffd604`e8a2f400 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781018 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a34000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a3c000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 3
+   +0x02a Priority         : 0
+   +0x02c Tail             : 0
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 0
+   +0x032 CompletionQueueID : 3
+   +0x034 ProcessorCount   : 0x53
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 0
+   +0x084 CompletedIoCount : 0x829b
+
+[3] @ ffffd604`e8a2f488 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781020 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a35000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a3d000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 4
+   +0x02a Priority         : 0
+   +0x02c Tail             : 0
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 0
+   +0x032 CompletionQueueID : 4
+   +0x034 ProcessorCount   : 0x53
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 0
+   +0x084 CompletedIoCount : 0x6624
+
+[4] @ ffffd604`e8a2f510 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781028 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a36000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a3e000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 5
+   +0x02a Priority         : 0
+   +0x02c Tail             : 1
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 1
+   +0x032 CompletionQueueID : 5
+   +0x034 ProcessorCount   : 0x54
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 1
+   +0x084 CompletedIoCount : 0x3c2a
+
+[5] @ ffffd604`e8a2f598 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781030 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a37000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a3f000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 6
+   +0x02a Priority         : 0
+   +0x02c Tail             : 0
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 0
+   +0x032 CompletionQueueID : 6
+   +0x034 ProcessorCount   : 0x53
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 0
+   +0x084 CompletedIoCount : 0x4ae2
+
+[6] @ ffffd604`e8a2f620 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781038 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a38000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a40000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 7
+   +0x02a Priority         : 0
+   +0x02c Tail             : 0
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 0
+   +0x032 CompletionQueueID : 7
+   +0x034 ProcessorCount   : 0x53
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 0
+   +0x084 CompletedIoCount : 0x2b1e
+
+[7] @ ffffd604`e8a2f6a8 
+---------------------------------------------
+   +0x000 BaseAddress      : _NVME_MEMORY_ADDRESS_PAIR
+   +0x010 TailDoorbell     : 0xffffbf00`0e781040 NVME_SUBMISSION_QUEUE_TAIL_DOORBELL
+   +0x018 CmdSlot          : 0xffffd604`e8a39000 _COMMAND_SLOT_CONTEXT
+   +0x020 CmdId            : 0xffffd604`e8a41000 _COMMAND_ID_CONTEXT
+   +0x028 QueueID          : 8
+   +0x02a Priority         : 0
+   +0x02c Tail             : 1
+   +0x02e Head             : 0
+   +0x030 NextCmdId        : 1
+   +0x032 CompletionQueueID : 8
+   +0x034 ProcessorCount   : 0x54
+   +0x038 Lock             : _STOR_DPC
+   +0x080 OutstandingIoCount : 1
+   +0x084 CompletedIoCount : 0x590d
+
+Looking at queue ID 5 (array index 4), OutstandingIoCount is 1 which seems consistent. CompletionQueueId is 5, meaning 
+it has configured SQ 5 to map to CQ 5. Tail is 1, indicating the last valid command is in slot 0. Dumping the first element
+at BaseAddress (the location of the queue in memory) shows the command submitted:
+
+5: kd> dt stornvme!NVME_COMMAND 0xffffd604e8a52000 
+   +0x000 CDW0             : NVME_COMMAND_DWORD0
+   +0x004 NSID             : 1
+   +0x008 Reserved0        : [2] 0
+   +0x010 MPTR             : 0
+   +0x018 PRP1             : 0x34101000  <- First page of transfer
+   +0x020 PRP2             : 0x00000001`533d1000 <- Pointer to list of remaining pages (scatter gather list)
+   +0x028 u                : <unnamed-tag>
+5: kd> dx -r1 (*((stornvme!NVME_COMMAND_DWORD0 *)0xffffd604e8a52000))
+(*((stornvme!NVME_COMMAND_DWORD0 *)0xffffd604e8a52000))                 [Type: NVME_COMMAND_DWORD0]
+    [+0x000 ( 7: 0)] OPC              : 0x1   <- WRITE opcode
+    [+0x000 ( 9: 8)] FUSE             : 0x0 
+    [+0x000 (14:10)] Reserved0        : 0x0 
+    [+0x000 (15:15)] PSDT             : 0x0   
+    [+0x000 (31:16)] CID              : 0x0   <- CID is 0 (not all F's!)
+    [+0x000] AsUlong          : 0x1 [Type: unsigned long]
+5: kd> dx -r1 (*((stornvme!NVME_CDW12_READ_WRITE *)0xffffd604e8a52030))
+(*((stornvme!NVME_CDW12_READ_WRITE *)0xffffd604e8a52030))                 [Type: NVME_CDW12_READ_WRITE]
+    [+0x000 (15: 0)] NLB              : 0x1f  <- 32 logical block transfer (4 pages)
+    [+0x000 (19:16)] Reserved0        : 0x0 [Type: unsigned long]
+    [+0x000 (23:20)] DTYPE            : 0x0 [Type: unsigned long]
+    [+0x000 (25:24)] Reserved1        : 0x0 [Type: unsigned long]
+    [+0x000 (29:26)] PRINFO           : 0x0 [Type: unsigned long]
+    [+0x000 (30:30)] FUA              : 0x0 [Type: unsigned long]
+    [+0x000 (31:31)] LR               : 0x0 [Type: unsigned long]
+    [+0x000] AsUlong          : 0x1f [Type: unsigned long]
+
+The CID is 0 and not all F's. So the completion entry looks invalid, since we didn't submit a command with a CID
+of FFFF. The PRP1 and PRP2 physical addresses also look like real memory addresses:
+
+!db 0x34101000
+...
+
+!db 0x00000001`533d1000
+...
+
+The submitters shared a PCIe trace for this issue which showed some interesting things:
+1) It confirmed the completion entry with a CID of 0xFFFF. It also clearly showed that no submission entry was ever 
+   submitted with that CID.
+2) It showed that 2 NVMe writes had been issued after a D0 transition. While reading from the PRP1 address (first physical page
+   to be transferred), there was a PCIe error. The Memory Read TLP issued by the controller did not get a TLP Completion 
+   from the Root Complex. So there was some issue performing DMA. The weird completion entry we got later might have been
+   a response to this error.
+   
+I asked submitters to dispatch the issue to MVE, since the issues appear to be in hardware.

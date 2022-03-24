@@ -1,0 +1,250 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209593901/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	DRIVER_POWER_STATE_FAILURE (9f) – Bugcheck 9F
+[BUGCHECK]:	0x9F
+
+This is DRIVER_POWER_STATE_FAILURE (9f) – Bugcheck 9F – (see attached memory dump).
+In this case this is device power IRP timeout:
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffff81093d5c7e40, Physical Device Object of the stack
+Arg3: ffffce805d1aeaa0, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffff81093e313010, The blocked IRP
+…
+
+The IRP is held by the Audio driver for Low-Power Audio device:
+3: kd> !irp ffff81093e313010
+Irp is active with 10 stacks 8 is current (= 0xffff81093e3132d8)
+…
+ [IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffff81093d5c7e40 00000000 fffff801628c1fd0-ffff81093d994df0    
+	       \Driver\ACPI	portcls!PowerIrpCompletionRoutine
+			Args: 00000000 00000000 00000000 00000003
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0  1 ffff81093d994ca0 00000000 00000000-00000000    pending
+	      *** ERROR: Module load completed but symbols could not be loaded for isstrtc.sys
+ \Driver\IntelSST
+			Args: 00015500 00000001 00000001 00000003
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff81093d994630 00000000 fffff80002b20a00-ffff81093e339760 Success Error Cancel pending
+	       \Driver\ksthunk	nt!PopRequestCompletion
+			Args: 00015500 00000001 00000001 00000003
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffff81093e339760    
+
+			Args: 00000000 00000000 00000000 00000000
+3: kd> !devstack ffff81093d994ca0
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffff81093d994630  \Driver\ksthunk    ffff81093d994780  00000071
+> ffff81093d994ca0  \Driver\IntelSST   ffff81093d994df0  00000070
+  ffff81093d5c7e40  \Driver\ACPI       ffff81093d4e7010  0000003b
+!DevNode ffff81093d5a2a50 :
+  DeviceInst is "ACPI\808622A8\1"
+  ServiceName is "IntelSST"
+3: kd> dt nt!_DEVICE_NODE ffff81093d5a2a50 UniqueId
+   +0x118 UniqueId : _UNICODE_STRING "\_SB.PCI0.LPEA"
+
+The Audio device is activated for S4 and therefore required to go to D0 which is why this D0 IRP is in flight:
+3: kd> dt nt!_device_node ffff81093d5a2a50 CurrentPowerState.DeviceState
+   +0x08c CurrentPowerState             : 
+      +0x000 DeviceState                   : 1 ( PowerDeviceD0 )
+3: kd> dt nt!_device_node ffff81093d5a2a50 fxdevice
+   +0x050 FxDevice : 0xffff8109`3e339870 _POP_FX_DEVICE
+3: kd> !fxdevice  0xffff8109`3e339870 
+!fxdevice 0xffff81093e339870
+	DevNode: 0xffff81093d5a2a50
+	UniqueId: "\_SB.PCI0.LPEA"
+	InstancePath: "ACPI\808622A8\1"
+	Device Power State: PowerDeviceD0
+	Device Unsatisfied DRIPS Constraint Time: 00:02:00.000
+	PEP Owner: Platform PEP
+	Platform PEP Entry point: intelpep!PepAcceptDeviceNotification
+	Acpi Plugin: 0
+	Acpi Handle: 0
+	Device Status Flags: SystemTransition PepD0Notify IrpInUse DevicePowerRequired 
+	Device Idle Timeout: 0x11e1a300
+	Device Power On: No Activity
+	Device Power Off: No Activity
+	Device Unregister: No Activity
+	Component Count: 1
+		Component 0: F0/F0 - IDLE   (RefCount = 2)
+…
+
+The System is going to S4 (hibernate state) and S4 IRP is in progress when this D0 IRP timed out:
+3: kd> !poaction
+PopAction: fffff80002d083c0
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Hibernate
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Hibernate
+  Hiber Context..: ffff81093dcf7430
+
+Allocated power irps (PopIrpList - fffff80002d08a30)
+  IRP: ffff81093e397960 (wait-wake/S0), PDO: ffff81093e346a50
+  IRP: ffff81093f207af0 (set/S4), PDO: ffff81093d5c7e40, NOTIFY: ffff81093d5a2ae0
+  IRP: ffff81093e313010 (set/D0,), PDO: ffff81093d5c7e40, CURRENT: ffff81093d994ca0
+…
+
+The Audio driver thread working on the timed-out D0 power IRP:
+3: kd> !stacks 2 isstrtc
+Proc.Thread  .Thread  Ticks   ThreadState Blocker
+…
+   4.0000e0  ffff81093d59e040 ffffab9c Blocked    nt!KiSwapContext+0x76
+                                        nt!KiSwapThread+0x17c
+                                        nt!KiCommitThreadWait+0x14f
+                                        nt!KeWaitForSingleObject+0x377
+                                        Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x26
+                                        Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x26
+                                        Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x26
+                                        Wdf01000!FxPowerIdleMachine::PowerReferenceWorker+0x4591a
+                                        Wdf01000!FxPowerIdleMachine::PowerReferenceWorker+0x4591a
+                                        Wdf01000!StopIdleWorker+0xb9
+                                        Wdf01000!StopIdleWorker+0xb9
+                                        Wdf01000!StopIdleWorker+0xb9
+                                        Wdf01000!imp_WdfDeviceStopIdleNoTrack+0x17
+                                        rtii2sac+0x120b1
+                                        isstrtc+0x4318
+                                        isstrtc+0x69c81
+                                        isstrtc+0x61a4f
+                                        isstrtc+0x6195c
+                                        portcls! ?? ::FNODOBFM::`string'+0x1239
+                                        portcls!DevicePowerWorker+0x99
+                                        portcls!EnqueuedIoWorkItemCallback+0x2d
+                                        nt!IopProcessWorkItem+0xf0
+                                        nt!ExpWorkerThread+0xe9
+                                        nt!PspSystemThreadStartup+0x41
+                                        nt!KiStartSystemThread+0x16
+…
+3: kd> .thread /p /r ffff81093d59e040
+Implicit thread is now ffff8109`3d59e040
+Implicit process is now ffff8109`3be65640
+…
+
+3: kd> kb
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # RetAddr           : Args to Child                                                           : Call Site
+00 fffff800`02a6cf5c : ffff8109`3d59e040 00000000`00000000 fffff800`02dc4940 fffff800`02d49180 : nt!KiSwapContext+0x76
+01 fffff800`02a6c9ff : ffff8109`3d59e040 ffff8109`3d59e180 fffff800`02dc4550 ffff8109`3e4fe6e0 : nt!KiSwapThread+0x17c
+02 fffff800`02a6e7c7 : ffff8109`00000000 fffff801`5fd1a386 ffff8109`3e4fe2d0 00000000`00000000 : nt!KiCommitThreadWait+0x14f
+03 fffff801`5fd3b1de : ffff8109`3e509be0 ffffce80`00000000 00000000`00000000 ffffce80`00000000 : nt!KeWaitForSingleObject+0x377
+04 (Inline Function) : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!MxEvent::WaitFor+0x17
+05 (Inline Function) : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxCREvent::EnterCRAndWait+0x1d
+06 fffff801`5fd63dda : ffff8109`3e509b20 ffff8109`3e4fe020 00000000`00000011 00000000`00000000 : Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x26
+07 (Inline Function) : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPowerIdleMachine::WaitForD0+0xc
+08 fffff801`5fd82e15 : ffff8109`00000001 ffff8109`3e3ba8e0 00000000`00000000 00000000`00000000 : Wdf01000!FxPowerIdleMachine::PowerReferenceWorker+0x4591a
+09 (Inline Function) : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPowerIdleMachine::PowerReference+0x20
+0a (Inline Function) : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgPnp::PowerReference+0x20
+0b fffff801`5fd840f7 : ffff8109`3e500000 ffff8109`3e5002f0 00000000`00000001 00000000`00000000 : Wdf01000!StopIdleWorker+0xb9
+0c fffff801`64f520b1 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : Wdf01000!imp_WdfDeviceStopIdleNoTrack+0x17
+0d fffff801`62804318 : ffff8109`3e343d00 ffffce80`5d2fba90 00000000`00000004 ffff8109`3e32f290 : rtii2sac+0x120b1
+0e fffff801`62869c81 : 00000000`00000000 ffff8109`3de20e88 ffffce80`5d2fba90 fffff801`62892e30 : isstrtc+0x4318
+0f fffff801`62861a4f : 00000000`00000000 00000000`00000001 ffff8109`3de20e88 ffff8109`3de20e80 : isstrtc+0x69c81
+10 fffff801`6286195c : ffff8109`3e3d1bf0 fffff801`00000001 00000000`00000002 ffff8109`3d994df0 : isstrtc+0x61a4f
+11 fffff801`628c8739 : ffff8109`3d994df0 00000000`00000000 00000000`00000001 00000000`00000000 : isstrtc+0x6195c
+12 fffff801`62902079 : ffff8109`3de20e88 00000000`00000001 ffff8109`3e313010 00000000`00000000 : portcls! ?? ::FNODOBFM::`string'+0x1239
+13 fffff801`628f47bd : ffff8109`3c6bd010 00000000`00000000 ffff8109`3d994ca0 00000000`00000000 : portcls!DevicePowerWorker+0x99
+14 fffff800`02a5bd80 : ffff8109`00000000 ffff8109`3db36060 ffff8109`3db36060 00000000`00000000 : portcls!EnqueuedIoWorkItemCallback+0x2d
+15 fffff800`02a9e1b9 : fffff800`02dc4100 ffff8109`3d59e040 fffff800`02a5bc90 fffff800`00000000 : nt!IopProcessWorkItem+0xf0
+16 fffff800`02a09729 : ffffce80`5d184180 00000000`00000080 ffff8109`3be65640 ffff8109`3d59e040 : nt!ExpWorkerThread+0xe9
+17 fffff800`02b56bb6 : ffffce80`5d184180 ffff8109`3d59e040 fffff800`02a096e8 00000000`00000000 : nt!PspSystemThreadStartup+0x41
+18 00000000`00000000 : ffffce80`5d2fc000 ffffce80`5d2f6000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+The Audio driver called Realtek Audio codec which issued WdfStopIdle request to KMDF to bring codec device to D0:
+3: kd> .frame /r b; dv /V Device
+0b ffffce80`5d2fb960 fffff801`5fd840f7 Wdf01000!StopIdleWorker+0xb9
+rax=0000000000000000 rbx=ffff81093e3ba8e0 rcx=0000000000000000
+rdx=0000000000000000 rsi=00007ef6c1affff8 rdi=0000000000000000
+rip=fffff8015fd82e15 rsp=ffffce805d2fb960 rbp=0000000000000001
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000100 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000001
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+Wdf01000!StopIdleWorker+0xb9:
+fffff801`5fd82e15 8bf8            mov     edi,eax
+@rsi              @rsi                       Device = 0x00007ef6`c1affff8
+
+The codec device however is already in D3 for S4 and WDF will not bring it back to D0 until S0 IRP arrives:
+3: kd> !wdfdevice 0x00007ef6c1affff8 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x00007ef6c1affff8
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffff81093e4fea40, attached ffff81093e4fa6f0, pdo ffff81093e4fa6f0
+
+Pnp state:  119 ( WdfDevStatePnpStarted )
+Power state:  31f ( WdfDevStatePowerDx )
+Power Pol state:  52c ( WdfDevStatePwrPolSystemAsleepNoWake )
+
+Default WDFIOTARGET: 00007ef6c1af5188
+
+Device is the power policy owner for the stack
+No pended pnp, power, wait-wake irps
+
+Pnp state history:
+[0] WdfDevStatePnpObjectCreated (0x100)
+[1] WdfDevStatePnpInit (0x105)
+[2] WdfDevStatePnpInitStarting (0x106)
+[3] WdfDevStatePnpHardwareAvailable (0x108)
+[4] WdfDevStatePnpEnableInterfaces (0x109)
+[5] WdfDevStatePnpStarted (0x119)
+
+Power state history:
+[0] WdfDevStatePowerWakingConnectInterrupt (0x335)
+[1] WdfDevStatePowerWakingDmaEnable (0x339)
+[2] WdfDevStatePowerStartSelfManagedIo (0x32b)
+[3] WdfDevStatePowerD0 (0x307)
+[4] WdfDevStatePowerGotoDx (0x31a)
+[5] WdfDevStatePowerNotifyingD0ExitToWakeInterrupts (0x359)
+[6] WdfDevStatePowerGotoDxIoStopped (0x31c)
+[7] WdfDevStatePowerDx (0x31f)
+
+Power policy state history:
+[0] WdfDevStatePwrPolS0WakeCompletePowerUp (0x543)
+[1] WdfDevStatePwrPolStartingDecideS0Wake (0x504)
+[2] WdfDevStatePwrPolStartedWakeCapable (0x531)
+[3] WdfDevStatePwrPolStartedWakeCapableCancelTimerForSleep (0x568)
+[4] WdfDevStatePwrPolSleeping (0x526)
+[5] WdfDevStatePwrPolSleepingNoWakePowerDown (0x527)
+[6] WdfDevStatePwrPolSleepingNoWakeCompletePowerDown (0x528)
+[7] WdfDevStatePwrPolSystemAsleepNoWake (0x52c)
+…
+
+So the whole issue is a deadlock – the S0 cannot be dispatched until S4 completes. The S4 cannot complete until Audio device completes it but Audio is waiting for D0 to complete which won’t complete until codec goes to D0 but WDF will not bring codec back to D0 until S0 arrives.
+This issue is caused by the Audio driver dependency on the codec state.
+
+The system is CHT:
+3: kd> !devnode 0 1 intelppm
+Dumping IopRootDeviceNode (= 0xffff81093bf24d30)
+DevNode 0xffff81093d5b3d30 for PDO 0xffff81093d5bce40
+  InstancePath is "ACPI\GenuineIntel_-_Intel64_Family_6_Model_76_-_______Intel(R)_Atom(TM)_x5-Z8500__CPU_@_1.44GHz\_1"
+
+http://ark.intel.com/products/85474/Intel-Atom-x5-Z8500-Processor-2M-Cache-up-to-2_24-GHz
+
+The driver is pretty old and likely fixed:
+3: kd> lmvi mrtii2sac
+Browse full module list
+start             end                 module name
+fffff801`64f40000 fffff801`64fa0000   rtii2sac   (no symbols)           
+    Symbol file: rtii2sac.sys
+    Image path: \SystemRoot\system32\DRIVERS\rtii2sac.sys
+    Image name: rtii2sac.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Sun Dec 20 21:47:33 2015 (56779275)
+    CheckSum:         00061132
+    ImageSize:        00060000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4

@@ -1,0 +1,231 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220486561
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+[BUGCHECK]:	0xD1
+
+
+This is DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1):
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If kernel debugger is available get stack backtrace.
+Arguments:
+Arg1: 0000000000000018, memory referenced
+Arg2: 0000000000000002, IRQL
+Arg3: 0000000000000001, value 0 = read operation, 1 = write operation
+Arg4: fffff8072c94bfc9, address which referenced memory
+…
+
+This is a write to a NULL-pointer:
+3: kd> u fffff8072c94bfc9 L1
+iacamera64!add_memory_range_without_host_addr+0xe9 [d:\w\s\repo\w\camerasw\source\camera\isp\hrt2\shared_memory_alloc_priv.c @ 460]:
+fffff807`2c94bfc9 896b18          mov     dword ptr [rbx+18h],ebp
+3: kd> r CR2
+cr2=0000000000000018
+
+The IRQL is elevated which is why we get Bugcheck DRIVER_IRQL_NOT_LESS_OR_EQUAL:
+3: kd> r cr8
+cr8=0000000000000002
+3: kd> !irql
+Debugger saved IRQL for processor 0x3 -- 2 (DISPATCH_LEVEL)
+
+Switching to the trap frame, we can see that NULL-dereference was done in iacamera64!create_new_memory_range:
+3: kd> k
+ # Child-SP          RetAddr           Call Site
+00 fffff485`63fe8e88 fffff801`ac6357e9 nt!KeBugCheckEx
+01 fffff485`63fe8e90 fffff801`ac633b7d nt!KiBugCheckDispatch+0x69
+02 fffff485`63fe8fd0 fffff807`2c94bfc9 nt!KiPageFault+0x23d
+03 (Inline Function) --------`-------- iacamera64!create_new_memory_range+0x60
+04 fffff485`63fe9160 fffff807`2c949bcb iacamera64!add_memory_range_without_host_addr+0xe9
+05 fffff485`63fe9190 fffff807`2c9494d2 iacamera64!shared_memory_map_frame_first_mapping_priv+0xcb
+06 fffff485`63fe91e0 fffff807`2c950ef6 iacamera64!share_memory_map_mappings+0xf2
+07 fffff485`63fe9260 fffff807`2c93c7db iacamera64!ISPMapFrame+0x276
+08 fffff485`63fe92f0 fffff807`2ca03d9e iacamera64!CCameraControl::MapFrame+0x14b
+09 fffff485`63fe9370 fffff807`2ca018aa iacamera64!CBasePin::ReceiveNewFrame+0x17e
+0a fffff485`63fe9400 fffff807`29b08e00 iacamera64!CPSysPin::Process+0x14a
+0b fffff485`63fe9450 fffff807`29b08ce7 ks!CKsPin::ProcessingObjectWork+0xf0
+0c fffff485`63fe9490 fffff807`29b09d3a ks!CKsPin::Process+0x77
+0d fffff485`63fe94c0 fffff807`29b0d7b6 ks!CKsQueue::AddFrame+0x1a6
+0e fffff485`63fe9500 fffff807`29b42cbf ks!CKsQueue::TransferKsIrp+0x456
+0f fffff485`63fe9590 fffff807`29b23ee7 ks!CKsPin::DispatchDeviceIoControl+0x20f
+10 fffff485`63fe95f0 fffff807`29b05812 ks!KsDispatchIrp+0x647
+11 fffff485`63fe96b0 fffff807`2c93314e ks!CKsDevice::PassThroughIrp+0x112
+12 fffff485`63fe96f0 fffff801`ac569f89 iacamera64!CCaptureDevice::DeviceIoControl+0x11e
+13 (Inline Function) --------`-------- nt!IopfCallDriver+0x44
+14 fffff485`63fe9720 fffff807`2d7a1529 nt!IofCallDriver+0x59
+15 fffff485`63fe9760 fffff807`2d7a1023 ksthunk!CKernelFilterDevice::DispatchIrp+0xf9
+16 fffff485`63fe97c0 fffff801`ac569f89 ksthunk!CKernelFilterDevice::DispatchIrpBridge+0x13
+17 (Inline Function) --------`-------- nt!IopfCallDriver+0x44
+18 fffff485`63fe97f0 fffff801`ac9f17b1 nt!IofCallDriver+0x59
+19 (Inline Function) --------`-------- nt!IoCallDriverWithTracing+0x21
+1a (Inline Function) --------`-------- nt!IopCallDriverReference+0xb1
+1b fffff485`63fe9830 fffff801`ac9f101c nt!IopSynchronousServiceTail+0x1b1
+1c fffff485`63fe98f0 fffff801`ac9f0996 nt!IopXxxControlFile+0x66c
+1d fffff485`63fe9a20 fffff801`ac635353 nt!NtDeviceIoControlFile+0x56
+1e fffff485`63fe9a90 00007ffb`059e1054 nt!KiSystemServiceCopyEnd+0x13
+1f 0000008c`f357f1f8 00000000`00000000 0x00007ffb`059e1054
+3: kd> .frame /r 4
+04 fffff485`63fe9160 fffff807`2c949bcb iacamera64!add_memory_range_without_host_addr+0xe9
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=00000000000f6b06 rsi=0000000000000000 rdi=00000000002fd000
+rip=fffff8072c94bfc9 rsp=fffff48563fe9160 rbp=0000000000000000
+ r8=0000000000004f75  r9=00000000009eec00 r10=00000000009eea00
+r11=ffffffffffffffff r12=0000000000000000 r13=0000000000000000
+r14=0000000000001000 r15=00000000002fd000
+iopl=0         nv up ei ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000286
+iacamera64!add_memory_range_without_host_addr+0xe9:
+fffff807`2c94bfc9 896b18          mov     dword ptr [rbx+18h],ebp ds:002b:00000000`00000018=????????
+3: kd> dv /v
+fffff485`63fe9190             idm = 0x15129000
+@ebp                    vied_addr = 0
+@rdi                        bytes = 0x2fd000
+@rsi                    dvmm_node = 0x00000000`00000000
+@rbx                            m = 0x00000000`00000000
+                    free_mem_list = struct _LIST_ENTRY
+
+The dereferenced pointer was supposed to point to an allocated memory buffer:
+3: kd> u fffff807`2c94bfc9-0x60
+iacamera64!kalloc [inlined in iacamera64!add_memory_range_without_host_addr+0x89]:
+fffff807`2c94bf69 ba58000000      mov     edx,58h
+fffff807`2c94bf6e b900020000      mov     ecx,200h
+fffff807`2c94bf73 41b842555300    mov     r8d,535542h
+fffff807`2c94bf79 ff1581a30600    call    qword ptr [iacamera64!_imp_ExAllocatePoolWithTag (fffff807`2c9b6300)]
+fffff807`2c94bf7f 488bd8          mov     rbx,rax
+fffff807`2c94bf82 4885c0          test    rax,rax
+fffff807`2c94bf85 743e            je      iacamera64!add_memory_range_without_host_addr+0xe5 (fffff807`2c94bfc5)
+fffff807`2c94bf87 33d2            xor     edx,edx
+
+As iacamera64!free_mem_list is empty, the iacamera64!create_new_memory_range in invoked to allocate the memory:
+3: kd> u iacamera64!add_memory_range_without_host_addr L2b
+iacamera64!add_memory_range_without_host_addr:
+fffff807`2c94bee0 48895c2408      mov     qword ptr [rsp+8],rbx
+fffff807`2c94bee5 48896c2410      mov     qword ptr [rsp+10h],rbp
+fffff807`2c94beea 4889742418      mov     qword ptr [rsp+18h],rsi
+fffff807`2c94beef 57              push    rdi
+fffff807`2c94bef0 4883ec20        sub     rsp,20h
+fffff807`2c94bef4 488b05ad790800  mov     rax,qword ptr [iacamera64!free_mem_list (fffff807`2c9d38a8)]
+fffff807`2c94befb 488d0da6790800  lea     rcx,[iacamera64!free_mem_list (fffff807`2c9d38a8)]
+fffff807`2c94bf02 498bf1          mov     rsi,r9
+fffff807`2c94bf05 498bf8          mov     rdi,r8
+fffff807`2c94bf08 8bea            mov     ebp,edx
+fffff807`2c94bf0a 483bc1          cmp     rax,rcx
+fffff807`2c94bf0d 745a            je      iacamera64!add_memory_range_without_host_addr+0x89 (fffff807`2c94bf69)
+fffff807`2c94bf0f 8b4848          mov     ecx,dword ptr [rax+48h]
+fffff807`2c94bf12 488bd8          mov     rbx,rax
+fffff807`2c94bf15 85c9            test    ecx,ecx
+fffff807`2c94bf17 75f9            jne     iacamera64!add_memory_range_without_host_addr+0x32 (fffff807`2c94bf12)
+fffff807`2c94bf19 488b10          mov     rdx,qword ptr [rax]
+fffff807`2c94bf1c 488b4808        mov     rcx,qword ptr [rax+8]
+fffff807`2c94bf20 48394208        cmp     qword ptr [rdx+8],rax
+fffff807`2c94bf24 753c            jne     iacamera64!add_memory_range_without_host_addr+0x82 (fffff807`2c94bf62)
+fffff807`2c94bf26 483901          cmp     qword ptr [rcx],rax
+fffff807`2c94bf29 7537            jne     iacamera64!add_memory_range_without_host_addr+0x82 (fffff807`2c94bf62)
+fffff807`2c94bf2b 488911          mov     qword ptr [rcx],rdx
+fffff807`2c94bf2e 48894a08        mov     qword ptr [rdx+8],rcx
+fffff807`2c94bf32 33c9            xor     ecx,ecx
+fffff807`2c94bf34 48894840        mov     qword ptr [rax+40h],rcx
+fffff807`2c94bf38 48894810        mov     qword ptr [rax+10h],rcx
+fffff807`2c94bf3c 894818          mov     dword ptr [rax+18h],ecx
+fffff807`2c94bf3f 48894828        mov     qword ptr [rax+28h],rcx
+fffff807`2c94bf43 0f1005e68c0700  movups  xmm0,xmmword ptr [iacamera64!GUID_NULL (fffff807`2c9c4c30)]
+fffff807`2c94bf4a 48897850        mov     qword ptr [rax+50h],rdi
+fffff807`2c94bf4e c7404801000000  mov     dword ptr [rax+48h],1
+fffff807`2c94bf55 0f114030        movups  xmmword ptr [rax+30h],xmm0
+fffff807`2c94bf59 48894008        mov     qword ptr [rax+8],rax
+fffff807`2c94bf5d 488900          mov     qword ptr [rax],rax
+fffff807`2c94bf60 eb67            jmp     iacamera64!add_memory_range_without_host_addr+0xe9 (fffff807`2c94bfc9)
+fffff807`2c94bf62 b903000000      mov     ecx,3
+fffff807`2c94bf67 cd29            int     29h
+fffff807`2c94bf69 ba58000000      mov     edx,58h
+fffff807`2c94bf6e b900020000      mov     ecx,200h
+fffff807`2c94bf73 41b842555300    mov     r8d,535542h
+fffff807`2c94bf79 ff1581a30600    call    qword ptr [iacamera64!_imp_ExAllocatePoolWithTag (fffff807`2c9b6300)]
+fffff807`2c94bf7f 488bd8          mov     rbx,rax
+3: kd> dq iacamera64!free_mem_list L1
+fffff807`2c9d38a8  fffff807`2c9d38a8
+3: kd> ? iacamera64!free_mem_list 
+Evaluate expression: -8765279749976 = fffff807`2c9d38a8
+
+So in effect, this is how the code works:
+void __fastcall add_memory_range_without_host_addr(unsigned int idm, unsigned int vied_addr, unsigned __int64 bytes, void *dvmm_node)
+{
+...
+_memory_range *m; // rbx@2 MAPDST
+…
+  if ( free_mem_list.Flink == &free_mem_list )
+  {
+    m = (_memory_range *)ExAllocatePoolWithTag((POOL_TYPE)512, 0x58ui64, 0x535542u);
+    if ( m )
+    {
+      memset(m, 0, 0x58ui64);
+      m->page_addr = 0i64;
+      m->host_addr = 0i64;
+      m->vied_addr = 0;
+      m->vtl0_buffer_handle = 0i64;
+      m->actual_size = v6;
+      m->status = 1;
+      m->vtl1_buffer_guid = GUID_NULL;
+      m->list.Blink = &m->list;
+      m->list.Flink = &m->list;
+    }
+    else
+    {
+      m = NULL;
+    }
+  }
+  else
+  {
+…
+  }
+  m->vied_addr = vied_addr;
+…
+
+What this means is that if allocation fails, then m will be assigned NULL but will be dereferenced anyway and this is the problem here.
+We can see that system is experiencing memory pressure and pool allocations have been failing:
+3: kd> !vm 1
+Paging File Name paged out
+  Current:   4456448 Kb  Free Space:   4222236 Kb
+  Minimum:   4456448 Kb  Maximum:      9717248 Kb
+Paging File Name paged out
+  Current:     16384 Kb  Free Space:     16376 Kb
+  Minimum:     16384 Kb  Maximum:      2747800 Kb
+No Name for Paging File
+  Current:  13767192 Kb  Free Space:  12867424 Kb
+  Minimum:  13767192 Kb  Maximum:     13767192 Kb
+
+Physical Memory:          1012486 (    4049944 Kb)
+Available Pages:             5932 (      23728 Kb)
+ResAvail Pages:                 0 (          0 Kb)
+
+********** Running out of physical memory **********
+
+Locked IO Pages:                0 (          0 Kb)
+Free System PTEs:      4294982172 (17179928688 Kb)
+Modified Pages:              2158 (       8632 Kb)
+Modified PF Pages:           2036 (       8144 Kb)
+Modified No Write Pages:        1 (          4 Kb)
+NonPagedPool Usage:         16031 (      64124 Kb)
+NonPagedPoolNx Usage:      627697 (    2510788 Kb)
+NonPagedPool Max:      4294967296 (17179869184 Kb)
+PagedPool  0:               28079 (     112316 Kb)
+PagedPool  1:                2794 (      11176 Kb)
+PagedPool  2:                2726 (      10904 Kb)
+PagedPool  3:                2738 (      10952 Kb)
+PagedPool  4:                2758 (      11032 Kb)
+PagedPool Usage:            39095 (     156380 Kb)
+PagedPool Maximum:     4294967296 (17179869184 Kb)
+
+********** 2 pool allocations have failed **********
+…
+
+which explains why this one failed as well. So this is a programmatic error in iacamera64!create_new_memory_range().

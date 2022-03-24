@@ -1,0 +1,259 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/14012298027
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck A0 - INTERNAL_POWER_ERROR (a0) (see attached memory dump):
+8: kd> !analyze -show
+INTERNAL_POWER_ERROR (a0)
+The power policy manager experienced a fatal error.
+Arguments:
+Arg1: 00000000000000f0, The system failed to complete(suspend) a power transition in a timely manner.
+Arg2: 0000000000000005, The system power state in transition.
+Arg3: 000000000000000e, The sleep checkpoint most recently reached.
+Arg4: ffffb88614e3c040, A pointer to the thread currently processing the request.
+
+Power Manager is waiting for the sleeper handoff event:
+8: kd> !thread ffffb88614e3c040
+THREAD ffffb88614e3c040  Cid 0004.04b0  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    fffffd0ee580f760  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffa88d426137e0
+Owning Process            ffffb885f92b30c0       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      96105          Ticks: 34373 (0:00:08:57.078)
+Context Switch Count      17             IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.031
+Win32 Start Address nt!PopTransitionToSleep (0xfffff8064d734240)
+Stack Init fffffd0ee60c7c10 Current fffffd0ee60c7670
+Base fffffd0ee60c8000 Limit fffffd0ee60c1000 Call 0000000000000000
+Priority 8 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffffd0e`e60c76b0 fffff806`4d088ad4 : 00000000`00000000 ffffde00`c50ac180 fffffd0e`00000000 ffffb886`14e3c040 : nt!KiSwapContext+0x76
+fffffd0e`e60c77f0 fffff806`4d0837ca : 00000000`00000000 00000000`00000000 ffffb886`14e3c040 00000000`d366d86c : nt!KiSwapThread+0x190
+fffffd0e`e60c7860 fffff806`4d084fb0 : fffffd0e`e580f760 fffffd0e`00000000 fffffd0e`00000000 fffffd0e`e580f760 : nt!KiCommitThreadWait+0x13a
+fffffd0e`e60c7910 fffff806`4d7314b1 : ffffb885`00000001 fffff806`00000000 fffff806`4da20a00 ffffde00`c50ac100 : nt!KeWaitForSingleObject+0x140
+fffffd0e`e60c79b0 fffff806`4d73456c : 00000000`00000000 ffffffff`ffffffff fffffd0e`e60c7b30 00000000`00000000 : nt!PopEndMirroring+0x91
+fffffd0e`e60c7a70 fffff806`4d734375 : 00000000`00000000 00000000`00000000 00000000`00000001 00000000`00000000 : nt!MmDuplicateMemory+0x1a0
+fffffd0e`e60c7b00 fffff806`4d0291b5 : ffffb886`14e3c000 ffffb886`14e3c040 fffff806`4d734240 00000000`00000000 : nt!PopTransitionToSleep+0x135
+fffffd0e`e60c7b90 fffff806`4d1c2f58 : fffff806`4bb44180 ffffb886`14e3c040 fffff806`4d029160 00000000`00000246 : nt!PspSystemThreadStartup+0x55
+fffffd0e`e60c7be0 00000000`00000000 : fffffd0e`e60c8000 fffffd0e`e60c1000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+The Power Manager Action thread is waiting for the PPM lock:
+8: kd> x nt!PopAction
+fffff806`4da41380 nt!PopAction = <no type information>
+8: kd> dt nt!_POP_POWER_ACTION fffff806`4da41380 ActionWorkerThread
+   +0x1b0 ActionWorkerThread : 0xffffb886`038c90c0 _KTHREAD
+
+8: kd> !thread 0xffffb886`038c90c0
+THREAD ffffb886038c90c0  Cid 0004.0270  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    fffff8064da41b88  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffa88d426137e0
+Owning Process            ffffb885f92b30c0       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      96423          Ticks: 34055 (0:00:08:52.109)
+Context Switch Count      5995           IdealProcessor: 2  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:02.562
+Win32 Start Address nt!ExpWorkerThread (0xfffff8064d038250)
+Stack Init fffffd0ee580fc10 Current fffffd0ee580f1b0
+Base fffffd0ee5810000 Limit fffffd0ee5809000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffffd0e`e580f1f0 fffff806`4d088ad4 : 00000000`00000000 ffffde00`c4b85180 fffffd0e`00000000 ffffb886`038c90c0 : nt!KiSwapContext+0x76
+fffffd0e`e580f330 fffff806`4d0837ca : ffffb886`00000000 00000000`00000000 ffffb886`038c90c0 fffff806`4d0b18ca : nt!KiSwapThread+0x190
+fffffd0e`e580f3a0 fffff806`4d084fb0 : fffff806`4da41b88 fffff806`00000000 fffffd0e`00000000 fffff806`4da41b88 : nt!KiCommitThreadWait+0x13a
+fffffd0e`e580f450 fffff806`4d0dad9c : fffffd0e`00000000 fffff806`00000000 00000000`00000000 fffff806`4d733500 : nt!KeWaitForSingleObject+0x140
+fffffd0e`e580f4f0 fffff806`4d159ed0 : 00000000`00000000 fffff806`4da42298 00000000`00000000 00000000`00000000 : nt!PpmAcquireLock+0x30
+fffffd0e`e580f530 fffff806`4d72d94f : 00000000`00000000 fffffd0e`e580f640 fffffd0e`e580f678 fffffd0e`e580f678 : nt!PpmCheckPausePpmEngineForSx+0x10
+fffffd0e`e580f560 fffff806`4d73415c : ffff2870`62037822 fffffd0e`00000006 00000000`00000002 00000000`80000004 : nt!PopTransitionSystemPowerStateEx+0x72b
+fffffd0e`e580f620 fffff806`4d1cd275 : fffffd0e`00000000 00001f80`0108745d 00000000`0063939e ffffb886`038c90c0 : nt!NtSetSystemPowerState+0x4c
+fffffd0e`e580f800 fffff806`4d1bf760 : fffff806`4d4f738e 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x25 (TrapFrame @ fffffd0e`e580f800)
+fffffd0e`e580f998 fffff806`4d4f738e : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiServiceLinkage
+fffffd0e`e580f9a0 fffff806`4d4f7059 : 00000000`00000000 00000000`00000100 00000000`00000001 00000000`00000000 : nt!PopIssueActionRequest+0x216
+fffffd0e`e580fa40 fffff806`4d11ec24 : 00000000`00000001 00000000`00000000 ffffffff`ffffffff fffff806`4da41b00 : nt!PopPolicyWorkerAction+0x79
+fffffd0e`e580fab0 fffff806`4d038349 : ffffb886`00000001 ffffb886`038c90c0 00000000`80000000 ffffb886`038c90c0 : nt!PopPolicyWorkerThread+0x94
+fffffd0e`e580faf0 fffff806`4d0291b5 : ffffb886`038c90c0 ffffb886`038c90c0 00000000`00000080 002fa47f`bd9bbfff : nt!ExpWorkerThread+0xf9
+fffffd0e`e580fb90 fffff806`4d1c2f58 : ffffde00`c5167180 ffffb886`038c90c0 fffff806`4d029160 efefefef`efefefef : nt!PspSystemThreadStartup+0x55
+fffffd0e`e580fbe0 00000000`00000000 : fffffd0e`e5810000 fffffd0e`e5809000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+Switching to the thread context:
+8: kd> .thread /p /r 0xffffb886`038c90c0
+Implicit thread is now ffffb886`038c90c0
+Implicit process is now ffffb885`f92b30c0
+Loading User Symbols
+
+8: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 fffffd0e`e580f1f0 fffff806`4d088ad4 nt!KiSwapContext+0x76
+01 fffffd0e`e580f330 fffff806`4d0837ca nt!KiSwapThread+0x190
+02 fffffd0e`e580f3a0 fffff806`4d084fb0 nt!KiCommitThreadWait+0x13a
+03 fffffd0e`e580f450 fffff806`4d0dad9c nt!KeWaitForSingleObject+0x140
+04 fffffd0e`e580f4f0 fffff806`4d159ed0 nt!PpmAcquireLock+0x30
+05 fffffd0e`e580f530 fffff806`4d72d94f nt!PpmCheckPausePpmEngineForSx+0x10
+06 fffffd0e`e580f560 fffff806`4d73415c nt!PopTransitionSystemPowerStateEx+0x72b
+07 fffffd0e`e580f620 fffff806`4d1cd275 nt!NtSetSystemPowerState+0x4c
+08 fffffd0e`e580f800 fffff806`4d1bf760 nt!KiSystemServiceCopyEnd+0x25
+09 fffffd0e`e580f998 fffff806`4d4f738e nt!KiServiceLinkage
+0a fffffd0e`e580f9a0 fffff806`4d4f7059 nt!PopIssueActionRequest+0x216
+0b fffffd0e`e580fa40 fffff806`4d11ec24 nt!PopPolicyWorkerAction+0x79
+0c fffffd0e`e580fab0 fffff806`4d038349 nt!PopPolicyWorkerThread+0x94
+0d fffffd0e`e580faf0 fffff806`4d0291b5 nt!ExpWorkerThread+0xf9
+0e fffffd0e`e580fb90 fffff806`4d1c2f58 nt!PspSystemThreadStartup+0x55
+0f fffffd0e`e580fbe0 00000000`00000000 nt!KiStartSystemThread+0x28
+
+In the calling frame:
+8: kd> .frame /r 5
+05 fffffd0e`e580f530 fffff806`4d72d94f nt!PpmCheckPausePpmEngineForSx+0x10
+rax=0000000000000000 rbx=fffffd0ee580f640 rcx=0000000000000000
+rdx=0000000000000000 rsi=fffffd0ee580f678 rdi=0000000000000000
+rip=fffff8064d159ed0 rsp=fffffd0ee580f530 rbp=fffffd0ee580f5e0
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=fffffd0ee580f730 r13=0000000080000000
+r14=fffffd0ee580f7bc r15=0000000000000002
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+nt!PpmCheckPausePpmEngineForSx+0x10:
+fffff806`4d159ed0 33c9            xor     ecx,ecx
+
+We can obtain address of the lock:
+8: kd> ub
+nt!PfpScenCtxWaiterTimedOut+0x27:
+fffff806`4d159ebb cc              int     3
+fffff806`4d159ebc cc              int     3
+fffff806`4d159ebd cc              int     3
+fffff806`4d159ebe cc              int     3
+fffff806`4d159ebf cc              int     3
+nt!PpmCheckPausePpmEngineForSx:
+fffff806`4d159ec0 4883ec28        sub     rsp,28h
+fffff806`4d159ec4 488d0db57c8e00  lea     rcx,[nt!PpmPerfPolicyLock (fffff806`4da41b80)]
+fffff806`4d159ecb e89c0ef8ff      call    nt!PpmAcquireLock (fffff806`4d0dad6c)
+
+And determine current owner:
+8: kd> dq fffff806`4da41b80 L2
+fffff806`4da41b80  ffffb886`0f8b1040 00000000`00060001
+
+The owner is waiting for the pagefault to be satisfied:
+8: kd> !thread  ffffb886`0f8b1040
+THREAD ffffb8860f8b1040  Cid 0004.1ce0  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrPageIn) KernelMode Non-Alertable
+    ffffb885f92493a0  NotificationEvent
+IRP List:
+    ffffb8861e52cb40: (0006,04c0) Flags: 40060043  Mdl: ffffb885f9249490
+Not impersonating
+Owning Process            ffffb885f92b30c0       Image:         System
+Attached Process          ffffb886108e0240       Image:         MemCompression
+Wait Start TickCount      96423          Ticks: 34055 (0:00:08:52.109)
+Context Switch Count      16204          IdealProcessor: 2  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:00.187
+Win32 Start Address nt!ExpWorkerThread (0xfffff8064d038250)
+Stack Init fffffd0ee5907c10 Current fffffd0ee59068e0
+Base fffffd0ee5908000 Limit fffffd0ee5901000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffffd0e`e5906920 fffff806`4d088ad4 : 00000000`00000000 ffffde00`c4b85180 fffffd0e`00000000 ffffb886`0f8b1040 : nt!KiSwapContext+0x76
+fffffd0e`e5906a60 fffff806`4d0837ca : ffffb886`00000000 00000000`00000000 ffffb886`0f8b1040 ffffb886`1d6f13b0 : nt!KiSwapThread+0x190
+fffffd0e`e5906ad0 fffff806`4d084fb0 : ffffb885`f92493a0 ffffb885`00000000 fffffd0e`00000000 ffffb885`f92493a0 : nt!KiCommitThreadWait+0x13a
+fffffd0e`e5906b80 fffff806`4d0406e8 : ffffb886`1e52cb00 ffffb886`00000009 00000000`00000000 ffffb885`fc547e00 : nt!KeWaitForSingleObject+0x140
+fffffd0e`e5906c20 fffff806`4d040c05 : fffffd0e`e5906e50 fffffd0e`e5906d00 fffffd0e`e5906db0 fffff806`00000000 : nt!MiWaitForInPageComplete+0xcc
+fffffd0e`e5906d10 fffff806`4d084566 : 00000000`c0000016 fffffd0e`e5906f20 00000000`c0033333 00000000`c0000016 : nt!MiIssueHardFault+0x1a5
+fffffd0e`e5906e10 fffff806`4d1c9a1e : 00800800`00000000 ffe40094`ffffb236 ffffde00`c9103000 00000000`00000000 : nt!MmAccessFault+0x276
+fffffd0e`e5906f20 fffff806`4d0fd9e0 : ffffde00`c9103000 ffffb886`108e1050 fffff806`4d0bfd50 ffffde00`c9103000 : nt!KiPageFault+0x35e (TrapFrame @ fffffd0e`e5906f20)
+fffffd0e`e59070b8 fffff806`4d0bfd50 : ffffde00`c9103000 ffffde00`c9103000 00000000`00000002 000001af`e5dfa2d0 : nt!RtlDecompressBufferXpressLz+0x50
+fffffd0e`e59070d0 fffff806`4d0bfa58 : ffffb886`108e2788 00000000`00000000 ffffde00`c9103000 00000000`00000084 : nt!RtlDecompressBufferEx+0x60
+fffffd0e`e5907120 fffff806`4d0bf8e5 : 00000000`00000004 fffff806`4d0bf4b6 00000000`00000000 00000000`00000001 : nt!ST_STORE<SM_TRAITS>::StDmSinglePageCopy+0x150
+fffffd0e`e59071e0 fffff806`4d0bf184 : 00000000`00000001 00000000`0001a2d0 ffffb886`108e1000 ffffb886`00002000 : nt!ST_STORE<SM_TRAITS>::StDmSinglePageTransfer+0xa5
+fffffd0e`e5907230 fffff806`4d0befb4 : 00000000`ffffffff ffffb886`0e4b9000 fffffd0e`e5907310 ffffb886`2417fa50 : nt!ST_STORE<SM_TRAITS>::StDmpSinglePageRetrieve+0x180
+fffffd0e`e59072d0 fffff806`4d0bff31 : ffffb886`0e4b9000 00000000`00000000 00000000`00000000 fffff806`4d084297 : nt!ST_STORE<SM_TRAITS>::StDmPageRetrieve+0xc8
+fffffd0e`e5907380 fffff806`4d02f641 : ffffb886`108e1000 ffffb886`2417fa50 ffffb886`0e4b9000 ffffb886`108e29c0 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectReadIssue+0x85
+fffffd0e`e5907400 fffff806`4d0b9ba7 : ffffb886`0f8b1040 fffffd0e`e5907509 00000000`00000000 fffff806`00000000 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectReadCallout+0x21
+fffffd0e`e5907430 fffff806`4d02f547 : fffff806`4d02f620 fffffd0e`e59074d0 00000000`00000003 00000000`00000000 : nt!KeExpandKernelStackAndCalloutInternal+0x77
+fffffd0e`e59074a0 fffff806`4d02cc5c : fffffd0e`e59075a0 00000000`00000200 00000000`000003ff fffff806`4db419c0 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectRead+0xc7
+fffffd0e`e5907570 fffff806`4d02c690 : 00000000`0000000c 00000000`000003ff fffffd0e`e5907620 fffff806`4db419c0 : nt!SMKM_STORE<SM_TRAITS>::SmStWorkItemQueue+0x1ac
+fffffd0e`e59075c0 fffff806`4d02af77 : 00000000`0000000c 00000000`00000002 ffffb886`2417fa50 ffffb885`f9249ad0 : nt!SMKM_STORE_MGR<SM_TRAITS>::SmIoCtxQueueWork+0xc0
+fffffd0e`e5907650 fffff806`4d1186b3 : ffffb885`00000002 ffffb885`f9249b90 fffffd0e`00000000 ffffb886`108e1000 : nt!SMKM_STORE_MGR<SM_TRAITS>::SmPageRead+0x167
+fffffd0e`e59076c0 fffff806`4d040238 : ffffb885`f9249a80 fffff806`4da6cfc0 fffffd0e`e5907888 fffff806`4d083ec3 : nt!SmPageRead+0x33
+fffffd0e`e5907710 fffff806`4d040eee : 00000000`00000002 fffffd0e`e59077a0 00000000`00000001 ffffb885`f9249a80 : nt!MiIssueHardFaultIo+0x10c
+fffffd0e`e5907760 fffff806`4d084566 : 00000000`c0000016 fffffd0e`e5907920 00000000`c0033333 00000000`00000010 : nt!MiIssueHardFault+0x48e
+fffffd0e`e5907810 fffff806`4d1c9a1e : ffffb886`0f8b1040 00000000`00000000 ffffb886`0f8b1040 00000000`00000000 : nt!MmAccessFault+0x276
+fffffd0e`e5907920 fffff806`4d539238 : fffff806`4d3254b1 fffff806`4db43440 ffffb885`f929dcb0 00000000`00000000 : nt!KiPageFault+0x35e (TrapFrame @ fffffd0e`e5907920)
+fffffd0e`e5907ab8 fffff806`4d3254b1 : fffff806`4db43440 ffffb885`f929dcb0 00000000`00000000 00000000`00000b00 : nt!PpmReinitializeHeteroEngine
+fffffd0e`e5907ac0 fffff806`4d038349 : ffffb886`0f8b1040 ffffb885`f9250db0 fffff280`00007390 00000000`003ef853 : nt!PpmHeteroHgsUpdateWorker+0x21
+fffffd0e`e5907af0 fffff806`4d0291b5 : ffffb886`0f8b1040 ffffb886`0f8b1040 00000000`00000080 00000000`00000000 : nt!ExpWorkerThread+0xf9
+fffffd0e`e5907b90 fffff806`4d1c2f58 : fffff806`4bb44180 ffffb886`0f8b1040 fffff806`4d029160 00000000`00000246 : nt!PspSystemThreadStartup+0x55
+fffffd0e`e5907be0 00000000`00000000 : fffffd0e`e5908000 fffffd0e`e5901000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+But the paging disk is already in D3 for S4:
+8: kd> !storagekd.storclass
+Storage Class Devices
+
+Usage Legend: B = Boot, P = Paging, D = Dump, H = Hiber, R = Removable
+
+FDO                      # Device ID                        Usage   UP   DN  FL
+-------------------------------------------------------------------------------
+ffffb8860385c200 [1,2]   0 Samsung SSD 960 EVO 250GB        BPDH     ?    ?   1
+
+Usage: !storclass <class device> <level [0-2]>
+       !storclass 0 <level [1-2]> to display summary with upper-level and down-level IRP counts
+
+Optical devices, such as DVD drives, can be listed with !wdfkd.wdfdriverinfo cdrom, and further explored 
+using the "!wdfkd.wdfdevice <device_handle>" and "!wdfkd.wdfdevicequeues <device_handle>" commands.
+
+8: kd> !devstack ffffb8860385c200 
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffb8860383d940  \Driver\partmgr    ffffb8860383da90  
+> ffffb8860385c200  \Driver\disk       ffffb8860385c350  <???>
+  ffffb88602d729e0  \Driver\EhStorClassffffb88604276de0  
+  ffffb885fc554050  \Driver\stornvme   ffffb885fc5541a0  <???>
+!DevNode ffffb885fc553360 :
+  DeviceInst is "SCSI\Disk&Ven_NVMe&Prod_Samsung_SSD_960\5&28b63a9a&0&000000"
+  ServiceName is "<???>"
+8: kd> dt nt!_device_node ffffb885fc553360 CurrentPowerState.DeviceState
+   +0x09c CurrentPowerState             : 
+      +0x000 DeviceState                   : 4 ( PowerDeviceD3 )
+
+8: kd> dt nt!_device_node ffffb885fc553360 Notify
+   +0x0a0 Notify : _PO_DEVICE_NOTIFY
+8: kd> ? ffffb885fc553360+a0
+Evaluate expression: -78589373107200 = ffffb885`fc553400
+8: kd> !poaction
+PopAction: fffff8064da41380
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Hibernate
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Hibernate
+…
+Level 0 (ffffb8860e46aa40) 0/50	Non-Paged, PnP
+  ReadyS0:
+     ffffb885f92fdac0: 00000000 \Driver\ACPI_HAL	
+  WaitS0:
+…
+     ffffb885fc553400: 00000000 \Driver\partmgr	
+…
+
+The pageafult occurred because nt!PpmReinitializeHeteroEngine is in the pageable section PAGE:
+8: kd> !dh nt
+
+File Type: EXECUTABLE IMAGE
+…
+
+SECTION HEADER #9
+    PAGE name
+  3B3FFE virtual size
+  559000 virtual address
+  3B4000 size of raw data
+…
+8: kd> ? nt!PpmReinitializeHeteroEngine - nt
+Evaluate expression: 7451192 = 00000000`0071b238
+8: kd> ? nt!PpmReinitializeHeteroEngine - nt > 559000 
+Evaluate expression: 1 = 00000000`00000001
+8: kd> ? nt!PpmReinitializeHeteroEngine - nt < 559000+3B3FFE 
+Evaluate expression: 1 = 00000000`00000001
+
+Placing nt!PpmReinitializeHeteroEngine in the pageable section leads to a deadlock – the Action thread is waiting for the paging I/O but the paging I/O will not resume until S0 and S0 will not happen until S4 completes which is blocked by the Action thread.

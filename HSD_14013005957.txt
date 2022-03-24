@@ -1,0 +1,122 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/14013005957
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck 139 - KERNEL_SECURITY_CHECK_FAILURE (139) – see attached memory dump:
+15: kd> !analyze -show
+KERNEL_SECURITY_CHECK_FAILURE (139)
+A kernel component has corrupted a critical data structure.  The corruption
+could potentially allow a malicious user to gain control of this machine.
+Arguments:
+Arg1: 0000000000000003, A LIST_ENTRY has been corrupted (i.e. double remove).
+Arg2: fffffc0a9d9b7050, Address of the trap frame for the exception that caused the bugcheck
+Arg3: fffffc0a9d9b6fa8, Address of the exception record for the exception that caused the bugcheck
+Arg4: 0000000000000000, Reserved
+
+The device node is being removed:
+15: kd> k
+ # Child-SP          RetAddr               Call Site
+00 fffffc0a`9d9b6578 fffff807`730bb9b2     nt!DbgBreakPointWithStatus
+01 fffffc0a`9d9b6580 fffff807`730baf96     nt!KiBugCheckDebugBreak+0x12
+02 fffffc0a`9d9b65e0 fffff807`72fac947     nt!KeBugCheck2+0x946
+03 fffffc0a`9d9b6cf0 fffff807`72fbe729     nt!KeBugCheckEx+0x107
+04 fffffc0a`9d9b6d30 fffff807`72fbeb50     nt!KiBugCheckDispatch+0x69
+05 fffffc0a`9d9b6e70 fffff807`72fbcee3     nt!KiFastFailDispatch+0xd0
+06 fffffc0a`9d9b7050 fffff807`72f25478     nt!KiRaiseSecurityCheckFailure+0x323
+07 (Inline Function) --------`--------     nt!RtlFailFast+0x5
+08 (Inline Function) --------`--------     nt!FatalListEntryError+0x5
+09 (Inline Function) --------`--------     nt!RemoveEntryList+0x2d
+0a fffffc0a`9d9b71e0 fffff807`732ac2bb     nt!PpDevNodeRemoveFromTree+0x1a8
+0b fffffc0a`9d9b7210 fffff807`732ab1f8     nt!PnpUnlinkDeviceRemovalRelations+0xaf
+0c fffffc0a`9d9b72a0 fffff807`732c86bf     nt!PnpProcessQueryRemoveAndEject+0x3d4
+0d fffffc0a`9d9b7380 fffff807`7320901e     nt!PnpProcessTargetDeviceEvent+0xeb
+0e fffffc0a`9d9b73b0 fffff807`72e29349     nt!PnpDeviceEventWorker+0x2ce
+0f fffffc0a`9d9b7430 fffff807`72e1a1b5     nt!ExpWorkerThread+0xf9
+10 fffffc0a`9d9b74d0 fffff807`72fb3e98     nt!PspSystemThreadStartup+0x55
+11 fffffc0a`9d9b7520 00000000`00000000     nt!KiStartSystemThread+0x28
+
+Switching to the frame:
+15: kd> .frame /r a
+0a fffffc0a`9d9b71e0 fffff807`732ac2bb     nt!PpDevNodeRemoveFromTree+0x1a8
+rax=ffffe6844cc72a10 rbx=ffffe6844b61aac0 rcx=0000000000000003
+rdx=ffffe6844cc72a10 rsi=ffffe6844b61ab70 rdi=ffffe6845fa384a8
+rip=fffff80772f25478 rsp=fffffc0a9d9b71e0 rbp=fffffc0a9d9b7201
+ r8=fffffc0a9d9b7188  r9=000000000000003e r10=ffffe6844d9bb6d0
+r11=7ffff80773854440 r12=0000000000000000 r13=ffffe6844258e340
+r14=ffffe6844258e340 r15=ffffaa8b28534b50
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+nt!PpDevNodeRemoveFromTree+0x1a8:
+fffff807`72f25478 cd29            int     29h
+
+15: kd> !devnode ffffe6844b61aac0
+DevNode 0xffffe6844b61aac0 for PDO 0xffffe68447c1bda0
+  Parent 0xffffe6844258e340   Sibling 0000000000   Child 0000000000   
+  InstancePath is "INTELAUDIO\DSP_CTLR_DEV_43C8&VEN_8086&DEV_0222&SUBSYS_72708086&REV_0000\4&310ea389&0&0800"
+  ServiceName is "IntcOED"
+  State = DeviceNodeDeleted (0x314)
+  Previous State = DeviceNodeRemoved (0x312)
+  StateHistory[16] = DeviceNodeRemoved (0x312)
+  StateHistory[15] = DeviceNodeQueryRemoved (0x310)
+…
+
+We can observe that node’s power children list contains pointer to a non-existent device node:
+15: kd> dt DeviceNode Notify.PowerChildren.Flink
+Local var @ rbx Type _DEVICE_NODE*
+   +0x0a0 Notify                     : 
+      +0x010 PowerChildren              :  [ 0xffffe684`5e2a0dc8 - 0xffffe684`5fa384a8 ]
+         +0x000 Flink                      : 0xffffe684`5e2a0dc8 _LIST_ENTRY [ 0xffffe684`5fa384a8 - 0xffffe684`4b61ab70 ]
+15: kd> dt nt!_PO_RELATION 0xffffe684`5e2a0dc8-0x18 ChildLink.Flink
+   +0x000 ChildLink       :  [ 0xffffe684`4cc72a10 - 0xffffe684`4cc72a10 ]
+      +0x000 Flink           : 0xffffe684`4cc72a10 _LIST_ENTRY [ 0x00000000`00000005 - 0x00000000`00000001 ]
+
+The memory block is not allocated for a device node:
+15: kd> !pool 0xffffe684`4cc72a10
+Pool page ffffe6844cc72a10 region is Nonpaged pool
+ ffffe6844cc72020 size:  480 previous size:    0  (Allocated)  MiIo
+ ffffe6844cc724b0 size:  480 previous size:    0  (Allocated)  MiIo
+*ffffe6844cc72940 size:  280 previous size:    0  (Allocated) *NSIk
+		Pooltag NSIk : NSI RPC Tansactions, Binary : nsi.dll
+ ffffe6844cc72bc0 size:   b0 previous size:    0  (Free)       ..Hd
+ ffffe6844cc72c80 size:  280 previous size:    0  (Allocated)  Ioin
+ ffffe6844cc72f00 size:  100 previous size:    0  (Free)       ..Hd
+
+Contrasting this with a state from a working system:
+0: kd> !devnode 0 1 IntcOED
+Dumping IopRootDeviceNode (= 0xffffda0fa9cceca0)
+DevNode 0xffffda0fb2329a20 for PDO 0xffffda0fb788bd70
+  InstancePath is "INTELAUDIO\DSP_CTLR_DEV_43C8&VEN_8086&DEV_0222&SUBSYS_72708086&REV_0000\4&310ea389&0&0800"
+  ServiceName is "IntcOED"
+…
+0: kd> dt nt!_DEVICE_NODE  0xffffda0fb2329a20 Notify.PowerChildren.Flink
+   +0x0a0 Notify                     : 
+      +0x010 PowerChildren              :  [ 0xffffda0f`c54fbb88 - 0xffffda0f`c54fbb88 ]
+         +0x000 Flink                      : 0xffffda0f`c54fbb88 _LIST_ENTRY [ 0xffffda0f`b2329ad0 - 0xffffda0f`b2329ad0 ]
+0: kd> dq 0xffffda0f`c54fbb88-0x18 L1
+ffffda0f`c54fbb70  ffffda0f`b86ebba0
+
+The memory block is allocated for a device node:
+0: kd> !pool ffffda0f`b86ebba0
+Pool page ffffda0fb86ebba0 region is Nonpaged pool
+ ffffda0fb86eb000 size:   30 previous size:    0  (Free)       ....
+ ffffda0fb86eb040 size:  a00 previous size:    0  (Allocated)  Thre
+ ffffda0fb86eba40 size:   80 previous size:    0  (Free)       ...:
+*ffffda0fb86ebad0 size:  320 previous size:    0  (Allocated) *Dnod
+		Pooltag Dnod : Device node structure
+ ffffda0fb86ebdf0 size:  1f0 previous size:    0  (Free)       ...:
+
+And power child node is present:
+0: kd> !devnode ffffda0f`b86ebba0-c0
+DevNode 0xffffda0fb86ebae0 for PDO 0xffffda0fb6120d40
+  Parent 0xffffda0fb2329a20   Sibling 0xffffda0fb8376ae0   Child 0xffffda0fb9956ae0   
+  InstancePath is "INTELAUDIO\FUNC_01&VEN_10EC&DEV_0711&SUBSYS_10EC11C2&REV_1000\5&30795745&0&0001"
+  ServiceName is "IntcAzAudAddService"
+  State = DeviceNodeStarted (0x308)
+…
+
+On our case the power child is gone already:
+15: kd> !devnode 0 1 IntcAzAudAddService
+Dumping IopRootDeviceNode (= 0xffffe6843e125cc0)
+
+This results in a the corrupted state of the power children list.

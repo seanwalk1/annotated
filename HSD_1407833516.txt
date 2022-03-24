@@ -1,0 +1,390 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1407833516
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 1A1 - WIN32K_CALLOUT_WATCHDOG_LIVEDUMP (1a1): 
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+WIN32K_CALLOUT_WATCHDOG_LIVEDUMP (1a1)
+A callout to Win32k did not return promptly.
+Arguments:
+Arg1: ffffda8f3710b040, Thread blocking prompt return from a Win32k callout.
+Arg2: 0000000000000000, Reserved.
+Arg3: 0000000000000000, Reserved.
+Arg4: 0000000000000000, Reserved
+…
+
+The Win32k callout has not returned and prompted Win32k to generate live dump.
+Switching to the callout thread, we can see it is blocked trying to exclusively acquire a lock:
+0: kd> .thread /p /r ffffda8f3710b040
+Implicit thread is now ffffda8f`3710b040
+Implicit process is now ffffda8f`35f65180
+Loading User Symbols
+PEB is paged out (Peb.Ldr = 000000ae`5d51f018).  Type ".hh dbgerr001" for details
+0: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 fffff909`e6ee4730 fffff801`16eea28c nt!KiSwapContext+0x76
+01 fffff909`e6ee4870 fffff801`16ee9a48 nt!KiSwapThread+0x2cc
+02 fffff909`e6ee4940 fffff801`16ee9106 nt!KiCommitThreadWait+0x138
+03 fffff909`e6ee49e0 fffff801`16fcb46d nt!KeWaitForSingleObject+0x206
+04 fffff909`e6ee4ac0 fffff801`16ee7575 nt!ExpWaitForResource+0x6d
+05 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceExclusive+0x19
+06 fffff909`e6ee4b40 fffff801`16ee65cf nt!ExpAcquireResourceExclusiveLite+0x475
+07 (Inline Function) --------`-------- nt!ExAcquireResourceExclusiveLite+0x28
+08 fffff909`e6ee4c10 fffff611`c101083c nt!ExEnterCriticalRegionAndAcquireResourceExclusive+0x3f
+09 (Inline Function) --------`-------- win32kbase!PrivateAPI::EnterCritAvoidingDitHitTestHazard+0x11
+0a (Inline Function) --------`-------- win32kbase!PrivateAPI::EnterCrit+0x45
+0b (Inline Function) --------`-------- win32kbase!EnterLeaveCrit::{ctor}+0x45
+0c fffff909`e6ee4c50 fffff611`c104c8ef win32kbase!UserPowerInfoCallout+0xa54
+0d fffff909`e6ee5050 fffff611`c0ea103b win32kbase!W32CalloutDispatch+0xff
+0e fffff909`e6ee50d0 fffff801`17446531 win32k!W32CalloutDispatchThunk+0xb
+0f fffff909`e6ee5100 fffff801`173b1cbb nt!ExCallSessionCallBack+0x91
+10 fffff909`e6ee51c0 fffff801`17435684 nt!PsInvokeWin32Callout+0xdb
+11 fffff909`e6ee51f0 fffff801`16f99cd3 nt!PopInvokeWin32Callout+0x128
+12 fffff909`e6ee52d0 fffff801`17434604 nt!PopGetConsoleDisplayRequestCount+0x7b
+13 fffff909`e6ee5330 fffff801`16fe514f nt!PopPolicySystemIdle+0x34
+14 fffff909`e6ee5410 fffff801`16f7c995 nt!PopPolicyWorkerThread+0x8f
+15 fffff909`e6ee5440 fffff801`16ff7155 nt!ExpWorkerThread+0xf5
+16 fffff909`e6ee54d0 fffff801`170821ac nt!PspSystemThreadStartup+0x55
+17 fffff909`e6ee5520 00000000`00000000 nt!KiStartSystemThread+0x1c
+
+Switching to the frame, we can determine the address of the lock:
+0: kd> .frame /r 9
+09 (Inline Function) --------`-------- win32kbase!PrivateAPI::EnterCritAvoidingDitHitTestHazard+0x11
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=0000000000000000 rsi=fffff909e6ee5338 rdi=0000000000000000
+rip=fffff611c101083c rsp=fffff909e6ee4c50 rbp=fffff909e6ee4d50
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=fffff909e6ee5330
+r14=0000000000000004 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+win32kbase!PrivateAPI::EnterCritAvoidingDitHitTestHazard+0x11 [inlined in win32kbase!UserPowerInfoCallout+0xa54]:
+fffff611`c101083c 0f1f440000      nop     dword ptr [rax+rax]
+0: kd> ub
+win32kbase!EtwTraceAcquireExclusiveUserCrit+0x1d [inlined in win32kbase!UserPowerInfoCallout+0xa2c]:
+fffff611`c1010814 0f1f440000      nop     dword ptr [rax+rax]
+fffff611`c1010819 48894308        mov     qword ptr [rbx+8],rax
+fffff611`c101081d b201            mov     dl,1
+fffff611`c101081f 488d8d88000000  lea     rcx,[rbp+88h]
+fffff611`c1010826 e8bd610b00      call    win32kbase!InputTraceLogging::Perf::CritAcquire::CritAcquire (fffff611`c10c69e8)
+fffff611`c101082b 488bdf          mov     rbx,rdi
+fffff611`c101082e 488b0d73f11c00  mov     rcx,qword ptr [win32kbase!gpresUser (fffff611`c11df9a8)]
+fffff611`c1010835 48ff15c4321f00  call    qword ptr [win32kbase!_imp_ExEnterCriticalRegionAndAcquireResourceExclusive (fffff611`c1203b00)]
+
+This allows us to see current owner of the lock:
+0: kd> !locks poi(win32kbase!gpresUser)
+
+Resource @ 0xffffda8f367f8ad0    Exclusively owned
+    Contention Count = 294347
+    NumberOfSharedWaiters = 6
+    NumberOfExclusiveWaiters = 16
+     Threads: ffffda8f3a215080-01<*> ffffda8f359a2080-01    ffffda8f3555f080-01    ffffda8f3591d080-01    
+              ffffda8f391a1080-01    ffffda8f34ad1080-01    ffffda8f37ae1080-01    
+
+     Threads Waiting On Exclusive Access:
+              ffffda8f37c33080       ffffda8f36a06080       ffffda8f37105080       ffffda8f34a78080       
+              ffffda8f3710b040       ffffda8f34d66080       ffffda8f3501b080       ffffda8f3554b080       
+              ffffda8f2851b080       ffffda8f35128040       ffffda8f36b0a080       ffffda8f36f34080       
+              ffffda8f3c2ae080       ffffda8f36ced080       ffffda8f36f2c080       ffffda8f395330c0       
+1 total locks
+
+Switching to the context of the current lock owner, we can see it is in turn also blocked trying to exclusively acquire a lock:
+0: kd> .thread /p /r ffffda8f3a215080
+Implicit thread is now ffffda8f`3a215080
+Implicit process is now ffffda8f`35f65180
+Loading User Symbols
+PEB is paged out (Peb.Ldr = 000000ae`5d51f018).  Type ".hh dbgerr001" for details
+0: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 fffff909`e6678d20 fffff801`16eea28c nt!KiSwapContext+0x76
+01 fffff909`e6678e60 fffff801`16ee9a48 nt!KiSwapThread+0x2cc
+02 fffff909`e6678f30 fffff801`16ee9106 nt!KiCommitThreadWait+0x138
+03 fffff909`e6678fd0 fffff801`16fcb46d nt!KeWaitForSingleObject+0x206
+04 fffff909`e66790b0 fffff801`16ee67dd nt!ExpWaitForResource+0x6d
+05 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceExclusive+0x1a
+06 (Inline Function) --------`-------- nt!ExpAcquireResourceExclusiveLite+0x143
+07 fffff909`e6679130 fffff801`2c45c575 nt!ExAcquireResourceExclusiveLite+0x18d
+08 (Inline Function) --------`-------- dxgkrnl!DXGDEVICE::AcquireDeviceLockExclusive+0x79
+09 fffff909`e66791c0 fffff801`2c544fde dxgkrnl!DXGDEVICEACCESSLOCKEXCLUSIVECDD::DXGDEVICEACCESSLOCKEXCLUSIVECDD+0xb1
+0a fffff909`e6679200 fffff611`c12797f4 dxgkrnl!DxgkCddCreateAllocation+0x17e
+0b fffff909`e6679550 fffff611`c1279634 cdd!CDDPDEV::CreateAllocation+0x158
+0c fffff909`e66796b0 fffff611`c1277a95 cdd!CddBitmapHw::RecreateDeviceAllocations+0xc4
+0d fffff909`e6679740 fffff611`c1278a4d cdd!CddBitmapHw::InitBitmap+0x95
+0e fffff909`e6679770 fffff611`c14812ee cdd!DrvCreateDeviceBitmapEx+0x24d
+0f fffff909`e66798c0 fffff611`c1480d90 win32kfull!hsurfCreateCompatibleSurface+0x30a
+10 fffff909`e66799d0 fffff611`c14f1b38 win32kfull!GreCreateCompatibleBitmapInternal+0x298
+11 fffff909`e6679b40 fffff611`c14f15c2 win32kfull!CreateOrGetRedirectionBitmap+0x1dc
+12 fffff909`e6679bf0 fffff611`c14f1d4c win32kfull!SetRedirectedWindow+0xc6
+13 fffff909`e6679c60 fffff611`c1504a7d win32kfull!_SetLayeredWindowAttributes+0x94
+14 fffff909`e6679d30 fffff611`c14ed152 win32kfull!ComposeWindow+0x9d
+15 fffff909`e6679d60 fffff611`c14ece78 win32kfull!ComposeWindowIfNeeded+0x5e
+16 fffff909`e6679d90 fffff611`c14a5e6e win32kfull!SetVisible+0xa8
+17 fffff909`e6679dc0 fffff611`c14a3809 win32kfull!zzzChangeStates+0x91a
+18 fffff909`e6679f70 fffff611`c14def4c win32kfull!zzzBltValidBits+0x129
+19 fffff909`e667a090 fffff611`c14a7f57 win32kfull!xxxEndDeferWindowPosEx+0x1c8
+1a fffff909`e667a160 fffff611`c14a7da5 win32kfull!xxxSetWindowPosAndBand+0xc3
+1b fffff909`e667a1f0 fffff611`c164678d win32kfull!xxxSetWindowPos+0x79
+1c fffff909`e667a270 fffff611`c1646fbe win32kfull!xxxShowGhostWindow+0x291
+1d fffff909`e667a320 fffff611`c1490f2d win32kfull!xxxRegisterGhostWindow+0x18e
+1e fffff909`e667a390 fffff801`1708bf85 win32kfull!NtUserCallTwoParam+0x4d
+1f fffff909`e667a3c0 00007ffc`384615e4 nt!KiSystemServiceCopyEnd+0x25
+20 0000007b`fbd7f4b8 00000000`00000000 0x00007ffc`384615e4
+
+Switching to the frame, we can determine the address of the lock:
+0: kd> .frame /r 8
+08 (Inline Function) --------`-------- dxgkrnl!DXGDEVICE::AcquireDeviceLockExclusive+0x79
+rax=0000000000000000 rbx=ffff8b845ebc58a0 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000040000000 rdi=fffff909e6679300
+rip=fffff8012c45c575 rsp=fffff909e66791c0 rbp=fffff909e6679300
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000015 r13=fffff63c84423058
+r14=ffff8b845ebc58a0 r15=ffff8b845eaf3230
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dxgkrnl!DXGDEVICE::AcquireDeviceLockExclusive+0x79 [inlined in dxgkrnl!DXGDEVICEACCESSLOCKEXCLUSIVECDD::DXGDEVICEACCESSLOCKEXCLUSIVECDD+0xb1]:
+fffff801`2c45c575 0f1f440000      nop     dword ptr [rax+rax]
+0: kd> ub
+dxgkrnl!DXGDEVICE::AcquireDeviceLockExclusive+0x53 [inlined in dxgkrnl!DXGDEVICEACCESSLOCKEXCLUSIVECDD::DXGDEVICEACCESSLOCKEXCLUSIVECDD+0x8b]:
+fffff801`2c45c54f 803daa21080000  cmp     byte ptr [dxgkrnl!bTracingEnabled (fffff801`2c4de700)],0
+fffff801`2c45c556 408af0          mov     sil,al
+fffff801`2c45c559 740d            je      dxgkrnl!DXGDEVICEACCESSLOCKEXCLUSIVECDD::DXGDEVICEACCESSLOCKEXCLUSIVECDD+0xa4 (fffff801`2c45c568)
+fffff801`2c45c55b f6055e39080040  test    byte ptr [dxgkrnl!Microsoft_Windows_DxgKrnlEnableBits (fffff801`2c4dfec0)],40h
+fffff801`2c45c562 0f85f2ab0100    jne     dxgkrnl!DXGDEVICEACCESSLOCKEXCLUSIVECDD::DXGDEVICEACCESSLOCKEXCLUSIVECDD+0x1ac96 (fffff801`2c47715a)
+fffff801`2c45c568 488b4b68        mov     rcx,qword ptr [rbx+68h]
+fffff801`2c45c56c b201            mov     dl,1
+fffff801`2c45c56e 48ff15d39b0900  call    qword ptr [dxgkrnl!_imp_ExAcquireResourceExclusiveLite (fffff801`2c4f6148)]
+
+This allows us to see current owner of the lock:
+0: kd> !locks poi(ffff8b845ebc58a0+68)
+
+Resource @ 0xffffda8f36862150    Exclusively owned
+    Contention Count = 25
+    NumberOfExclusiveWaiters = 1
+     Threads: ffffda8f3a210080-01<*> 
+
+     Threads Waiting On Exclusive Access:
+              ffffda8f3a215080       
+1 total locks
+
+Switching to the context of the current lock owner, we can see it is in turn also blocked trying to acquire yet another lock in shared mode:
+0: kd> .thread /p /r ffffda8f3a210080
+Implicit thread is now ffffda8f`3a210080
+Implicit process is now ffffda8f`35741080
+Loading User Symbols
+PEB is paged out (Peb.Ldr = 000000d9`ba63a018).  Type ".hh dbgerr001" for details
+0: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 fffff909`e625d700 fffff801`16eea28c nt!KiSwapContext+0x76
+01 fffff909`e625d840 fffff801`16ee9a48 nt!KiSwapThread+0x2cc
+02 fffff909`e625d910 fffff801`16ee9106 nt!KiCommitThreadWait+0x138
+03 fffff909`e625d9b0 fffff801`16fcb46d nt!KeWaitForSingleObject+0x206
+04 fffff909`e625da90 fffff801`16ee6e6f nt!ExpWaitForResource+0x6d
+05 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceShared+0x19
+06 fffff909`e625db10 fffff801`16ee6920 nt!ExpAcquireResourceSharedLite+0x48f
+07 fffff909`e625dbc0 fffff801`2c53cc62 nt!ExAcquireResourceSharedLite+0x40
+08 fffff909`e625dc00 fffff801`2c549af7 dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0xe2
+09 (Inline Function) --------`-------- dxgkrnl!COREACCESS::AcquireShared+0x41
+0a (Inline Function) --------`-------- dxgkrnl!COREADAPTERACCESS::AcquireShared+0x41
+0b fffff909`e625dc60 fffff801`2c5496f9 dxgkrnl!DxgkpCddSyncGPUAccess+0x3a7
+0c fffff909`e625dd90 fffff611`c127f7f1 dxgkrnl!DxgkCddSyncGPUAccess+0xb9
+0d fffff909`e625dde0 fffff611`c127d2f9 cdd!CDDPDEV::SyncGPUAccess+0x39
+0e (Inline Function) --------`-------- cdd!CddBitmapStagingApertureMem::SyncGPUAccess+0xf
+0f fffff909`e625de20 fffff611`c127cee9 cdd!CStagingPoolBase::AllocateRect+0x309
+10 fffff909`e625dea0 fffff611`c127c23a cdd!CStagingPool::GetGdiSurface+0x139
+11 (Inline Function) --------`-------- cdd!STAGINGSURFACEACCESS::StartAccess+0x3a
+12 fffff909`e625df30 fffff611`c127b283 cdd!BitBltBitmap+0x35a
+13 fffff909`e625e5c0 fffff611`c127f33f cdd!DrvBitBltInternal+0x1a3
+14 (Inline Function) --------`-------- cdd!DrvBitBlt+0x48
+15 fffff909`e625e880 fffff611`c152a89a cdd!DrvCopyBits+0x4f
+16 (Inline Function) --------`-------- win32kfull!OffCopyBits+0x91
+17 fffff909`e625e8f0 fffff611`c14cecb2 win32kfull!INVOKEOFFCOPYBITS+0x13a
+18 fffff909`e625e9c0 fffff611`c154b314 win32kfull!SpBitBlt+0x1b2
+19 fffff909`e625eef0 fffff611`c14c911a win32kfull!SpCopyBits+0x44
+1a fffff909`e625ef60 fffff611`c154714b win32kfull!NtGdiBitBltInternal+0xbda
+1b fffff909`e625f2e0 fffff801`1708bf85 win32kfull!NtGdiBitBlt+0x5b
+1c fffff909`e625f350 00007ffc`384611a4 nt!KiSystemServiceCopyEnd+0x25
+1d 000000d9`8037ecf8 00000000`00000000 0x00007ffc`384611a4
+
+Switching to the frame, we can determine the address of the lock:
+0: kd> .frame /r 8
+08 fffff909`e625dc00 fffff801`2c549af7 dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0xe2
+rax=0000000000000000 rbx=ffffda8f35fa7000 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffffda8f35741000 rdi=ffffffffffffffff
+rip=fffff8012c53cc62 rsp=fffff909e625dc00 rbp=ffffda8f34536000
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000040000300 r13=ffff8b845eaf3230
+r14=ffffda8f28df5060 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0xe2:
+fffff801`2c53cc62 0f1f440000      nop     dword ptr [rax+rax]
+0: kd> ub
+dxgkrnl!TraceDxgkETWPreAdapterLock [inlined in dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0xb7]:
+fffff801`2c53cc37 803dc21afaff00  cmp     byte ptr [dxgkrnl!bTracingEnabled (fffff801`2c4de700)],0
+fffff801`2c53cc3e 7412            je      dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0xd2 (fffff801`2c53cc52)
+fffff801`2c53cc40 488b05490bfaff  mov     rax,qword ptr [dxgkrnl!DxgkControlGuid_Context+0x10 (fffff801`2c4dd790)]
+fffff801`2c53cc47 480fbae018      bt      rax,18h
+fffff801`2c53cc4c 0f8240c40900    jb      dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x9c512 (fffff801`2c5d9092)
+fffff801`2c53cc52 488b8b90000000  mov     rcx,qword ptr [rbx+90h]
+fffff801`2c53cc59 b201            mov     dl,1
+fffff801`2c53cc5b 48ff15de94fbff  call    qword ptr [dxgkrnl!_imp_ExAcquireResourceSharedLite (fffff801`2c4f6140)]
+
+This allows us to see current owner of the lock:
+0: kd> !locks poi(ffffda8f35fa7000+90)
+
+Resource @ 0xffffda8f35e87e50    Exclusively owned
+    Contention Count = 164
+    NumberOfSharedWaiters = 4
+     Threads: ffffda8f348c5500-01<*> ffffda8f36b39080-01    ffffda8f3a210080-01    ffffda8f3593b080-01    
+              ffffda8f34c41040-01    
+1 total locks
+
+The current lock owner is owned exclusively by the DirectX Power Arbiter thread:
+0: kd> !thread ffffda8f348c5500
+THREAD ffffda8f348c5500  Cid 0004.01f0  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffda8f3532d050  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffff8b8459413a20
+Owning Process            ffffda8f27cb7080       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      157971         Ticks: 38910 (0:00:10:07.968)
+Context Switch Count      299            IdealProcessor: 10             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.046
+Win32 Start Address dxgkrnl!DpiPowerArbiterThread (0xfffff8012c5c0640)
+Stack Init fffff909e39b2550 Current fffff909e39b20a0
+Base fffff909e39b3000 Limit fffff909e39ac000 Call 0000000000000000
+Priority 15 BasePriority 8 PriorityDecrement 112 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff909`e39b20e0 fffff801`16eea28c : 00000000`00000000 ffffda8f`348c5500 fffff909`e39b2240 00000000`000a4f86 : nt!KiSwapContext+0x76
+fffff909`e39b2220 fffff801`16ee9a48 : 00000000`00000000 ffffda8f`359a91f0 00000000`00000001 00000000`00000000 : nt!KiSwapThread+0x2cc
+fffff909`e39b22f0 fffff801`16ee9106 : ffffda8f`35a9abd0 00000000`00000000 00000000`00000000 ffffda8f`348c5640 : nt!KiCommitThreadWait+0x138
+fffff909`e39b2390 fffff801`2c5c06a1 : ffffda8f`3532d050 00000000`00000000 00000000`00000000 ffffda8f`3532cf00 : nt!KeWaitForSingleObject+0x206
+fffff909`e39b2470 fffff801`16ff7155 : ffffda8f`348c5500 00000000`00000080 fffff801`2c5c0640 0000347d`bd9bbfff : dxgkrnl!DpiPowerArbiterThread+0x61
+fffff909`e39b24d0 fffff801`170821ac : fffff801`15f61180 ffffda8f`348c5500 fffff801`16ff7100 00000000`00000000 : nt!PspSystemThreadStartup+0x55
+fffff909`e39b2520 00000000`00000000 : fffff909`e39b3000 fffff909`e39ac000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x1c
+
+The Power Arbiter will not release the lock until the GFX adapter goes back to D0.
+From the PCIe bus tree we can determine the GFX device stack: 
+0: kd> !pcitree
+Bus 0x0 (FDO Ext ffffda8f27ee91a0)
+…
+  Bus 0xb3 (FDO Ext ffffda8f28df2190)
+    (d=0,  f=0) 10de1b00 devext 0xffffda8f28df51b0 devstack 0xffffda8f28df5060 0300 Display Controller/VGA
+…
+
+This allows us to determine GFX device PnP Device node:
+0: kd> !devstack ffffda8f28df5060
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffda8f3532c030  \Driver\nvlddmkm   ffffda8f3532c180  
+  ffffda8f27cbf040  \Driver\ACPI       ffffda8f28d6d020  
+> ffffda8f28df5060  \Driver\pci        ffffda8f28df51b0  NTPNP_PCI0116
+!DevNode ffffda8f28debca0 :
+  DeviceInst is "PCI\VEN_10DE&DEV_1B00&SUBSYS_123810DE&REV_A1\4&58acacf&0&0018"
+  ServiceName is "nvlddmkm"
+
+We can then see outstanding D0 IRP in-flight for the GFX device and the device driver currently owns it:
+0: kd> !poaction
+PopAction: fffff801172be7c0
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Sleeping3
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Sleeping3
+  Hiber Context..: 0000000000000000
+
+Allocated power irps (PopIrpList - fffff801172bee80)
+…
+  IRP: ffffda8f34b81010 (set/S0), PDO: ffffda8f28df5060, CURRENT: ffffda8f3532c030, NOTIFY: ffffda8f28debd30
+  IRP: ffffda8f3a7cc010 (set/D0,), PDO: ffffda8f28df5060, CURRENT: ffffda8f3532c030
+…
+
+Irp worker threads (PopIrpThreadList - fffff801172b7560)
+…
+  THREAD: ffffda8f3598e080 (dynamic), IRP: ffffda8f3a7cc010, DEVICE: ffffda8f3532c030
+….
+
+The D0 IRP is owned by NVIDIA GFX driver:
+0: kd> !irp ffffda8f3a7cc010
+Irp is active with 4 stacks 3 is current (= 0xffffda8f3a7cc170)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+[IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffda8f28df5060 00000000 fffff8012c46e560-fffff909e409f150    
+	       \Driver\pci	dxgkrnl!DpiFdoPowerCompletionRoutine
+			Args: 00000000 00000000 00000000 00000002
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffda8f3532c030 00000000 fffff80117030ee0-ffffda8f3951ad10 Success Error Cancel pending
+	       \Driver\nvlddmkm	nt!PopRequestCompletion
+			Args: 00041100 00000001 00000001 00000002
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffda8f3951ad10    
+
+			Args: 00000000 00000000 00000000 00000000
+
+The thread processing the IRP was running NVIDIA GFX driver code at the time IPI for the live dump was accepted:
+0: kd> !thread ffffda8f3598e080
+THREAD ffffda8f3598e080  Cid 0004.0ba4  Teb: 0000000000000000 Win32Thread: 0000000000000000 RUNNING on processor 4
+Not impersonating
+DeviceMap                 ffff8b8459413a20
+Owning Process            ffffda8f27cb7080       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      196843         Ticks: 38 (0:00:00:00.593)
+Context Switch Count      71             IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.593
+Win32 Start Address nt!PopIrpWorker (0xfffff801170317d0)
+Stack Init fffff909e409f550 Current fffff909e409ed50
+Base fffff909e40a0000 Limit fffff909e4099000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!IopLiveDumpCaptureProcessorContext+0x21 (Inline Function @ fffff801`17399e42)
+fffff909`e3067c10 fffff801`16ef0a57 : ffffc681`24bc2f80 ffffda8f`28229000 00000000`00000000 ffffc681`24bc2f80 : nt!IopLiveDumpCorralDpc+0x42
+fffff909`e3067c50 fffff801`16ef00be : 00000000`00000002 00000000`00989680 ffffda8f`352dd080 00000000`000176ea : nt!KiExecuteAllDpcs+0x2e7
+fffff909`e3067da0 fffff801`17081bb5 : 0000ae82`89661a43 ffffc681`24bc0180 fffff909`e409e690 00000000`00000000 : nt!KiRetireDpcList+0x1ae
+fffff909`e3067fb0 fffff801`170819a0 : ffffda8f`37133df8 00000000`00000000 fffff909`e409e720 00000000`00000000 : nt!KyRetireDpcList+0x5 (TrapFrame @ fffff909`e3067e70)
+fffff909`e409e5e0 fffff801`1708108c : ffffda8f`37133000 fffff909`e409e690 ffffda8f`27d04000 00000000`00000000 : nt!KiDispatchInterruptContinue
+fffff909`e409e610 fffff801`2fb3b315 : fffff801`2fb5d438 ffffda8f`37133000 00000000`00000000 00000000`00000000 : nt!KiDpcInterrupt+0x2dc (TrapFrame @ fffff909`e409e610)
+fffff909`e409e7a8 fffff801`2fb5d438 : ffffda8f`37133000 00000000`00000000 00000000`00000000 00000000`00000000 : nvlddmkm+0x1cb315
+fffff909`e409e7b0 fffff801`2fb5d34d : 00000000`00000000 00000000`00084100 ffffda8f`37133000 fffff801`2fb65c1b : nvlddmkm+0x1ed438
+fffff909`e409e820 fffff801`2fd558bd : 00000000`00000000 00000000`00000000 ffffda8f`37133000 fffff909`e409e8c0 : nvlddmkm+0x1ed34d
+fffff909`e409e860 fffff801`2fd7dbfd : ffffda8f`37133000 ffffda8f`371a9000 ffffda8f`34e2a020 00000000`00000000 : nvlddmkm+0x3e58bd
+fffff909`e409e8a0 fffff801`2fdd4bb8 : 00000000`003567e0 ffffda8f`37133000 ffffda8f`35a760c0 fffff801`2fd57668 : nvlddmkm+0x40dbfd
+fffff909`e409e8f0 fffff801`2fce7291 : ffffda8f`34e28630 ffffda8f`34e2a020 ffffda8f`34e28630 ffffda8f`37133000 : nvlddmkm+0x464bb8
+fffff909`e409e960 fffff801`2fce70b6 : 00000000`00000005 00000000`00000000 ffffda8f`371a9000 ffffda8f`37133000 : nvlddmkm+0x377291
+fffff909`e409e9b0 fffff801`2ff41693 : ffffda8f`371a9000 ffffda8f`37339000 ffffda8f`371a9000 ffffda8f`37133000 : nvlddmkm+0x3770b6
+fffff909`e409ea30 fffff801`2fb5e767 : 00000000`00000004 fffff909`e409eae9 ffffda8f`371a9008 fffff801`2fb5e7ba : nvlddmkm+0x5d1693
+fffff909`e409ea70 fffff801`2fc3a849 : ffffda8f`07efdd00 ffffda8f`00000005 ffffda8f`348ea1c0 ffffda8f`3720b000 : nvlddmkm+0x1ee767
+fffff909`e409eb50 fffff801`2fc3a951 : 00000001`00000001 fffff909`00000003 ffffda8f`37133000 ffffda8f`37269000 : nvlddmkm+0x2ca849
+fffff909`e409ebf0 fffff801`2fb2b779 : ffffda8f`37205000 00000000`00000001 ffffda8f`37205000 00000000`00000001 : nvlddmkm+0x2ca951
+fffff909`e409ec20 fffff801`2faa38fd : 00000000`0000000e 00000000`ffffffff ffffda8f`3532c030 00000000`00000004 : nvlddmkm+0x1bb779
+fffff909`e409ed60 fffff801`2faa31a6 : ffffda8f`35465000 ffffda8f`3598e1c0 00000000`00000000 fffff801`2fa82f96 : nvlddmkm+0x1338fd
+fffff909`e409eeb0 fffff801`3041b05c : ffffda8f`35465000 00000000`00000002 00000000`00000001 00000000`ffffffff : nvlddmkm+0x1331a6
+fffff909`e409ef00 fffff801`2c59f82e : fffff801`3041af9d 00000000`00000001 ffffda8f`35465000 00000000`00000002 : nvlddmkm+0xaab05c
+fffff909`e409efb0 fffff801`2c59ef3e : 00000000`00000000 fffff909`e409f0c1 00000000`00000001 fffff909`e409f0c1 : dxgkrnl!DpiDxgkDdiSetPowerState+0x5a
+fffff909`e409f010 fffff801`2c59fd7a : ffffda8f`3a7cc010 00000000`00000000 00000000`00000001 00000000`00000000 : dxgkrnl!DpiFdoSetAdapterPowerState+0x3de
+fffff909`e409f120 fffff801`2c59f350 : 00000000`00000000 fffff801`16f695d1 ffffda8f`3a7cc010 ffffda8f`3a7cc000 : dxgkrnl!DpiFdoHandleDevicePower+0x39a
+fffff909`e409f1b0 fffff801`2c5a0761 : ffffda8f`3a7cc010 ffffda8f`3532c180 ffffda8f`3532c030 00000000`ff030000 : dxgkrnl!DpiFdoDispatchPower+0x20
+fffff909`e409f1e0 fffff801`2faeca3b : ffffda8f`3a7cc170 fffff909`e409f389 00000000`00000000 ffffda8f`35465000 : dxgkrnl!DpiDispatchPower+0xe1
+fffff909`e409f300 fffff801`2faebcd2 : ffffda8f`3532c030 fffff801`00000000 ffffda8f`3598e080 fffff801`00000000 : nvlddmkm+0x17ca3b
+fffff909`e409f3f0 fffff801`170319f6 : ffffda8f`3598e080 fffff909`e409f4a0 ffffda8f`3a7cc010 ffffda8f`2a2ea800 : nvlddmkm+0x17bcd2
+fffff909`e409f420 fffff801`16ff7155 : ffffffff`fa0a1f00 fffff801`170317d0 ffffda8f`3a4d0190 00160000`000c0000 : nt!PopIrpWorker+0x226
+fffff909`e409f4d0 fffff801`170821ac : fffff801`15f61180 ffffda8f`3598e080 fffff801`16ff7100 b4d6370c`22775eac : nt!PspSystemThreadStartup+0x55
+fffff909`e409f520 00000000`00000000 : fffff909`e40a0000 fffff909`e4099000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x1c
+
+The bottom line: Win32k callout was not completed on time because it is indirectly blocked by NVIDIA driver not completing D0 power state change quickly enough for callout watchdog not to fire.

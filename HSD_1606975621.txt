@@ -1,0 +1,125 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1606975621
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 10d - WDF_VIOLATION (10d) (see attached memory dump):
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+WDF_VIOLATION (10d)
+The Kernel-Mode Driver Framework was notified that Windows detected an error
+in a framework-based driver. In general, the dump file will yield additional
+information about the driver that caused this bug check.
+Arguments:
+Arg1: 0000000000000004, A NULL parameter was passed to a function that required a non-
+	NULL value. Use the "ln" debugger command with the value of
+	Parameter 3 as its argument to determine the function which
+	requires a non-NULL parameter.
+Arg2: 0000000000000000, Reserved.
+Arg3: fffff80641ce902d, The caller's address.
+Arg4: ffffdf011ebe9ba0, Reserved.
+…
+
+Bthhfenum has passed NULL to WDF. Looking at the callstack:
+1: kd> k
+ # Child-SP          RetAddr           Call Site
+00 fffff286`4a22a1a8 fffff805`433acc23 nt!KeBugCheckEx
+01 (Inline Function) --------`-------- Wdf01000!Mx::MxBugCheckEx+0x14
+02 fffff286`4a22a1b0 fffff805`433accb4 Wdf01000!FxVerifierBugCheckWorker+0x1f
+03 fffff286`4a22a1f0 fffff805`4336c7cf Wdf01000!FxVerifierNullBugCheck+0x44
+04 fffff286`4a22a230 fffff806`41ce902d Wdf01000!imp_WdfObjectGetTypedContextWorker+0x1b1ff
+05 (Inline Function) --------`-------- bthhfenum!WdfObjectGetTypedContextWorker+0x29
+06 (Inline Function) --------`-------- bthhfenum!GetAudioDriverContext+0x29
+07 fffff286`4a22a280 fffff806`41cee194 bthhfenum!HandleScoAvailabilityChange+0xa9
+08 fffff286`4a22a2d0 fffff806`41cea943 bthhfenum!SetScoState+0x114
+09 fffff286`4a22a320 fffff805`43354636 bthhfenum!ScoCloseCompletionRoutine+0x163
+0a fffff286`4a22a370 fffff805`433576e8 Wdf01000!FxRequestBase::CompleteSubmitted+0xe6
+0b (Inline Function) --------`-------- Wdf01000!FxIoTarget::CompleteRequest+0x8
+0c (Inline Function) --------`-------- Wdf01000!FxIoTarget::RequestCompletionRoutine+0xa5
+0d fffff286`4a22a400 fffff805`421df677 Wdf01000!FxIoTarget::_RequestCompletionRoutine+0xe8
+0e fffff286`4a22a470 fffff805`429fb9d5 nt!IopUnloadSafeCompletion+0x57
+0f fffff286`4a22a4a0 fffff805`420f3788 nt!IovpLocalCompletionRoutine+0x175
+10 fffff286`4a22a500 fffff805`429fb315 nt!IopfCompleteRequest+0x538
+11 fffff286`4a22a5e0 fffff805`4229da4f nt!IovCompleteRequest+0x1e1
+12 fffff286`4a22a6d0 fffff806`43271767 nt!IofCompleteRequest+0x1aa82f
+13 fffff286`4a22a700 fffff806`4331c5ba bthport!BthCompleteRequestEx+0xcf
+14 fffff286`4a22a770 fffff806`4331c322 bthport!ScoCxn_CompleteSignal+0x216
+15 fffff286`4a22a7f0 fffff806`433214af bthport!ScoCxn_CompleteSignalRequest+0xba
+16 fffff286`4a22a870 fffff806`43321379 bthport!ScoCxn_CloseConfigComplete+0x9f
+17 fffff286`4a22a8e0 fffff806`43347721 bthport!ScoCxn_DisconnectConfigComplete+0xf9
+18 fffff286`4a22a960 fffff806`4331eb62 bthport!MultiStepOperation_StepComplete+0xc9
+19 fffff286`4a22a990 fffff805`4218c437 bthport!ScoCxn_EnterPassiveCallback+0xa2
+1a fffff286`4a22aa00 fffff805`4216a6dc nt!IopProcessWorkItem+0x127
+1b fffff286`4a22aa70 fffff805`421de896 nt!ExpWorkerThread+0x18c
+1c fffff286`4a22ab10 fffff805`4227047a nt!PspSystemThreadStartup+0x56
+1d fffff286`4a22ab60 00000000`00000000 nt!KiStartSystemThread+0x2a
+
+Swtiching to the frame:
+1: kd> .frame /r 7
+07 fffff286`4a22a280 fffff806`41cee194 bthhfenum!HandleScoAvailabilityChange+0xa9
+rax=0000000000000000 rbx=ffffdf011f175d10 rcx=000000000000010d
+rdx=0000000000000004 rsi=fffff80641cf8148 rdi=ffffdf011f168d50
+rip=fffff80641ce902d rsp=fffff2864a22a280 rbp=0000000000000000
+ r8=0000000000000000  r9=fffff80641ce902d r10=7efeff6c746d4445
+r11=8101010101010100 r12=0000000000000000 r13=0000000000000000
+r14=000020fee0e8a5d8 r15=000020fee19e75d8
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+bthhfenum!HandleScoAvailabilityChange+0xa9:
+fffff806`41ce902d 488bf8          mov     rdi,rax
+
+And disassembling backward:
+1: kd> ub
+bthhfenum!HandleScoAvailabilityChange+0x77:
+fffff806`41ce8ffb 83b88001000000  cmp     dword ptr [rax+180h],0
+fffff806`41ce9002 757c            jne     bthhfenum!HandleScoAvailabilityChange+0xfc (fffff806`41ce9080)
+fffff806`41ce9004 488b0d15f60000  mov     rcx,qword ptr [bthhfenum!WdfFunctions_01015 (fffff806`41cf8620)]
+fffff806`41ce900b 488b9020010000  mov     rdx,qword ptr [rax+120h]
+fffff806`41ce9012 4c8b059ff00000  mov     r8,qword ptr [bthhfenum!_WDF_AUDIODRIVER_CONTEXT_TYPE_INFO+0x18 (fffff806`41cf80b8)]
+fffff806`41ce9019 488b8150060000  mov     rax,qword ptr [rcx+650h]
+fffff806`41ce9020 488b0d01f60000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff806`41cf8628)]
+fffff806`41ce9027 ff15cb110100    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff806`41cfa1f8)]
+1: kd> ub
+bthhfenum!HandleScoAvailabilityChange+0x4a:
+fffff806`41ce8fce e8a58fffff      call    bthhfenum!WPP_RECORDER_SF_ (fffff806`41ce1f78)
+fffff806`41ce8fd3 488b0546f60000  mov     rax,qword ptr [bthhfenum!WdfFunctions_01015 (fffff806`41cf8620)]
+fffff806`41ce8fda 488bd3          mov     rdx,rbx
+fffff806`41ce8fdd 4c8b0534f00000  mov     r8,qword ptr [bthhfenum!_WDF_FDO_DEVICE_DATA_TYPE_INFO+0x18 (fffff806`41cf8018)]
+fffff806`41ce8fe4 488b0d3df60000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff806`41cf8628)]
+fffff806`41ce8feb 488b8050060000  mov     rax,qword ptr [rax+650h]
+fffff806`41ce8ff2 ff1500120100    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff806`41cfa1f8)]
+fffff806`41ce8ff8 488bd8          mov     rbx,rax
+
+We can see that NULL was AudioDriverFile handle in the deviceData:
+1: kd> dv /V
+<unavailable>     <unavailable>                 device = <value unavailable>
+fffff286`4a22a2d8 @rsp+0x0058             scoAvailable = 0n0
+@rbx              @rbx                      deviceData = 0xffffdf01`1f175d10
+<unavailable>     <unavailable>     audioDriverContext = <value unavailable>
+1: kd> dt deviceData  AudioDriverFile
+Local var @ rbx Type _FDO_DEVICE_DATA*
+   +0x120 AudioDriverFile : (null) 
+
+Looking at the driver’s log, we can see that bthhfenum!Bus_EvtFileClose has closed the file:
+1: kd> !wdflogdump bthhfenum.sys -d
+Trace searchpath is: 
+
+Trace format prefix is: %7!u!: %!FUNC! - 
+Trying to extract TMF information from - d:\symcache\BthHFEnum.pdb\7C3CF1B38D46554AF57B1AFAD8DFD6C91\BthHFEnum.pdb
+--- start of log ---
+…
+12793: Bus_EvtFileClose - Bus_EvtFileClose
+12794: Bus_EvtFileClose - Closing audio driver file.
+…
+---- end of log ----
+
+And it sets the file object to NULL:
+1: kd> u bthhfenum!Bus_EvtFileClose+0x1df L1
+bthhfenum!Bus_EvtFileClose+0x1df:
+fffff806`41ce3eef 4883a62001000000 and     qword ptr [rsi+120h],0
+
+Unlike other places in the driver, bthhfenum!HandleScoAvailabilityChange does not check AudioDriverFile for NULL which causes this issue.

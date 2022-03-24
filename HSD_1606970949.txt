@@ -1,0 +1,189 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1606970949
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This looks like a deadlock between 2 threads one of which is trying to destroy a window and another is trying to process mouse input:
+0: kd> !locks
+**** DUMP OF ALL RESOURCE OBJECTS ****
+KD: Scanning for held locks................................................................
+
+Resource @ 0xffffc50f25f49a10    Exclusively owned
+    Contention Count = 36009
+    NumberOfSharedWaiters = 14
+    NumberOfExclusiveWaiters = 49
+     Threads: ffffc50f29a36080-01<*> ffffc50f27891080-01    ffffc50f28c26080-01    ffffc50f2a2d40c0-01    
+              ffffc50f29ac3080-01    ffffc50f29a3f080-01    ffffc50f2764f040-01    ffffc50f28c05080-01    
+              ffffc50f28c28080-01    ffffc50f28e28040-01    ffffc50f28ed2080-01    ffffc50f278ea080-01    
+              ffffc50f29443080-01    ffffc50f297ad080-01    ffffc50f29476080-01    
+
+     Threads Waiting On Exclusive Access:
+              ffffc50f28c20080       ffffc50f28c94080       ffffc50f275bc080       ffffc50f274e0080       
+              ffffc50f2903a080       ffffc50f29735080       ffffc50f27e74080       ffffc50f1c988080       
+              ffffc50f284ed0c0       ffffc50f29810080       ffffc50f27491080       ffffc50f2909b080       
+              ffffc50f280de080       ffffc50f2a2e2080       ffffc50f2908f080       ffffc50f27614080       
+              ffffc50f279e8080       ffffc50f27618040       ffffc50f2946f080       ffffc50f25a5f0c0       
+              ffffc50f2810c080       ffffc50f1c90d080       ffffc50f29667040       ffffc50f28bbe080       
+              ffffc50f28bc2080       ffffc50f277bf480       ffffc50f28029080       ffffc50f1c986080       
+              ffffc50f2769e080       ffffc50f27fdf080       ffffc50f1c9aa080       ffffc50f27fa7080       
+              ffffc50f27f88080       ffffc50f28110080       ffffc50f296a9080       ffffc50f28c1c040       
+              ffffc50f297a9080       ffffc50f299ca080       ffffc50f291c5080       ffffc50f28bd1080       
+              ffffc50f267fb080       ffffc50f2748c080       ffffc50f27893080       ffffc50f276c9080       
+              ffffc50f28c96080       ffffc50f291960c0       ffffc50f295e6080       ffffc50f295eb040       
+              ffffc50f274e4080       
+…
+
+Thread #1 (ffffc50f29a36080) owns a number of locks and is waiting to a lock A:
+0: kd> .thread /p /r ffffc50f29a36080
+Implicit thread is now ffffc50f`29a36080
+Implicit process is now ffffc50f`29a37080
+Loading User Symbols
+....................................................
+0: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 ffff9087`0192e710 fffff807`57c27ae5 nt!KiSwapContext+0x76
+01 ffff9087`0192e850 fffff807`57c27278 nt!KiSwapThread+0x2d5
+02 ffff9087`0192e920 fffff807`57c266be nt!KiCommitThreadWait+0x148
+03 ffff9087`0192e9c0 fffff807`57d0120d nt!KeWaitForSingleObject+0x22e
+04 ffff9087`0192eaa0 fffff807`57c22ed5 nt!ExpWaitForResource+0x6d
+05 ffff9087`0192eb20 fffff807`57c2230f nt!ExpAcquireResourceExclusiveLite+0x405
+06 ffff9087`0192ebe0 fffffb65`fe4270c6 nt!ExEnterCriticalRegionAndAcquireResourceExclusive+0x3f
+07 ffff9087`0192ec20 fffffb65`ff078872 win32kbase!tagDomLock::LockExclusive+0x26
+08 ffff9087`0192ec50 fffffb65`ff0787f4 win32kfull!CDLOs<DLT_DESKTOP,DLT_QUEUEMGMT>::CDLOe<DLT_FOREGROUND,DLT_RAWINPUT>::lock+0x52
+09 ffff9087`0192ec80 fffffb65`ff078666 win32kfull!CDLOs<DLT_DESKTOP,DLT_QUEUEMGMT>::CDLOe<DLT_FOREGROUND,DLT_RAWINPUT>::CDLOe<DLT_FOREGROUND,DLT_RAWINPUT><tagObjLock>+0x144
+0a ffff9087`0192ecb0 fffffb65`fefebf9e win32kfull!SetNewForegroundQueue+0x36
+0b ffff9087`0192ee60 fffffb65`fefe2d0c win32kfull!xxxSetForegroundWindow2+0x13e
+0c ffff9087`0192f020 fffffb65`fefe3715 win32kfull!xxxSetForegroundWindowWithOptions+0x20c
+0d ffff9087`0192f100 fffffb65`fef9c276 win32kfull!xxxActivateWindowWithOptions+0x221
+0e ffff9087`0192f1a0 fffffb65`fe4b2545 win32kfull!xxxDestroyWindow+0x6b6
+0f ffff9087`0192f2a0 fffffb65`fe432705 win32kbase!xxxDestroyWindowIfSupported+0x25
+10 ffff9087`0192f2d0 fffffb65`fe430c9e win32kbase!HMDestroyUnlockedObjectWorker+0x69
+11 ffff9087`0192f300 fffffb65`fe424f6a win32kbase!DestroyThreadsObjects+0x1ee
+12 ffff9087`0192f3e0 fffffb65`fe429b2e win32kbase!xxxDestroyThreadInfo+0x632
+13 ffff9087`0192f670 fffffb65`ff0111dd win32kbase!UserThreadCallout+0x52e
+14 ffff9087`0192f840 fffffb65`fe42d17b win32kfull!W32pThreadCallout+0xbd
+15 ffff9087`0192f870 fffffb65`fe26103b win32kbase!W32CalloutDispatch+0x44b
+16 ffff9087`0192faa0 fffff807`581d583e win32k!W32CalloutDispatchThunk+0xb
+17 ffff9087`0192fad0 fffff807`581e2336 nt!ExCallCallBack+0x3e
+18 ffff9087`0192fb00 fffff807`582a6f03 nt!PspExitThread+0x4f6
+19 ffff9087`0192fc10 fffff807`57c297f6 nt!KiSchedulerApcTerminate+0x33
+1a ffff9087`0192fc50 fffff807`57dc3d40 nt!KiDeliverApc+0x466
+1b ffff9087`0192fd00 fffff807`57dd103f nt!KiInitiateUserApc+0x70
+1c ffff9087`0192fe40 00007ff9`7acb05f0 nt!KiSystemServiceExit+0x9f
+1d 00000000`023bfd00 00007ff9`789810c4 ntdll!KiUserCallbackDispatch
+1e 00000000`023bfda8 00007ff9`79869422 win32u!ZwUserPeekMessage+0x14
+1f 00000000`023bfdb0 00007ff9`798692fe USER32!_PeekMessage+0x42
+20 00000000`023bfe20 00007ff9`67b13732 USER32!PeekMessageW+0x9e
+21 00000000`023bfe90 00007ff9`67b1368f gdiplus!BackgroundThreadProc+0x82
+22 00000000`023bff00 00007ff9`7a2a6304 gdiplus!DllRefCountSafeThreadThunk+0x1f
+23 00000000`023bff30 00007ff9`7ac5f801 KERNEL32!BaseThreadInitThunk+0x14
+24 00000000`023bff60 00000000`00000000 ntdll!RtlUserThreadStart+0x21
+
+Switching to the frame, we can determine address of the lock A:
+0: kd> .frame /r 7
+07 ffff9087`0192ec20 fffffb65`ff078872 win32kbase!tagDomLock::LockExclusive+0x26
+rax=0000000000000000 rbx=fffffb65fe6264f0 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000001 rdi=ffff90870192ece0
+rip=fffffb65fe4270c6 rsp=ffff90870192ec20 rbp=ffff90870192ef60
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=fffffb65ff262ee8 r13=fffffb0785c4e8a0
+r14=ffff90870192ed10 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+win32kbase!tagDomLock::LockExclusive+0x26:
+fffffb65`fe4270c6 0f1f440000      nop     dword ptr [rax+rax]
+0: kd> dt this
+Local var @ rbx Type tagDomLock*
+   +0x000 _pe              : 0xffffc50f`25f4a790 _ERESOURCE
+
+Current owner of the lock A is thread #2:
+0: kd> !locks 0xffffc50f`25f4a790
+
+Resource @ 0xffffc50f25f4a790    Shared 1 owning threads
+    Contention Count = 1
+    NumberOfExclusiveWaiters = 1
+     Threads: ffffc50f27492080-01<*> 
+
+     Threads Waiting On Exclusive Access:
+              ffffc50f29a36080       
+1 total locks
+
+Switching to the thread #2 (ffffc50f27492080) context:
+0: kd> .thread /p /r ffffc50f27492080
+Implicit thread is now ffffc50f`27492080
+Implicit process is now ffffc50f`267f9200
+Loading User Symbols
+....................
+
+It is waiting for a lock B:
+0: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 ffff9086`fda89330 fffff807`57c27ae5 nt!KiSwapContext+0x76
+01 ffff9086`fda89470 fffff807`57c27278 nt!KiSwapThread+0x2d5
+02 ffff9086`fda89540 fffff807`57c266be nt!KiCommitThreadWait+0x148
+03 ffff9086`fda895e0 fffff807`57d0120d nt!KeWaitForSingleObject+0x22e
+04 ffff9086`fda896c0 fffff807`57c229ba nt!ExpWaitForResource+0x6d
+05 ffff9086`fda89740 fffff807`57c2223a nt!ExpAcquireResourceSharedLite+0x52a
+06 ffff9086`fda897f0 fffffb65`fe48af3e nt!ExEnterCriticalRegionAndAcquireResourceShared+0x4a
+07 ffff9086`fda89830 fffffb65`ff0513e0 win32kbase!tagDomLock::LockShared+0xe
+08 ffff9086`fda89860 fffffb65`ff051378 win32kfull!CLockDomainsShared<DLT_PROCESSINFO,DLT_THREADINFO,DLT_INPUTDELEGATION,DLT_DESKTOP,DLT_THREADRUNDOWN,DLT_WINDOW>::lock+0x4c
+09 ffff9086`fda89890 fffffb65`ff050b6b win32kfull!CLockDomainsShared<DLT_PROCESSINFO,DLT_THREADINFO,DLT_INPUTDELEGATION,DLT_DESKTOP,DLT_THREADRUNDOWN,DLT_WINDOW>::CLockDomainsShared<DLT_PROCESSINFO,DLT_THREADINFO,DLT_INPUTDELEGATION,DLT_DESKTOP,DLT_THREADRUNDOWN,DLT_WINDOW>+0x128
+0a ffff9086`fda898c0 fffffb65`ff0516c7 win32kfull!EditionPostRawMouseInputMessage+0x4b
+0b ffff9086`fda89c70 fffffb65`ff0508a1 win32kfull!xxxMoveEventAbsolute+0x2b7
+0c ffff9086`fda89f30 fffffb65`fe4ad3dc win32kfull!EditionCommitMousePosAndMove+0x91
+0d ffff9086`fda89fa0 fffffb65`fe4ad252 win32kbase!ApiSetEditionCommitMousePosAndMove+0xcc
+0e ffff9086`fda8a020 fffffb65`fe426533 win32kbase!CMouseProcessor::CommitMousePosAndMoveCursor+0x126
+0f ffff9086`fda8a150 fffffb65`fe59ecd2 win32kbase!CMouseProcessor::ProcessMouseInputData+0x137
+10 ffff9086`fda8a1d0 fffffb65`fe593d66 win32kbase!CMouseProcessor::ProcessInput+0x43e
+11 ffff9086`fda8a360 fffffb65`fe586baf win32kbase!CMouseSensor::ProcessInput+0x56
+12 ffff9086`fda8a3a0 fffffb65`fe434281 win32kbase!CBaseInput::OnReadNotification+0x47f
+13 ffff9086`fda8a4d0 fffffb65`fe433ee2 win32kbase!CBaseInput::OnDispatcherObjectSignaled+0x391
+14 ffff9086`fda8a630 fffffb65`fe415bdb win32kbase!CBaseInput::_OnDispatcherObjectSignaled+0x12
+15 ffff9086`fda8a660 fffffb65`fe4158a8 win32kbase!LegacyInputDispatcher::Dispatch+0x53
+16 ffff9086`fda8a690 fffffb65`ff053e24 win32kbase!LegacyInputDispatcher::WaitAndDispatch+0xf8
+17 ffff9086`fda8a7b0 fffffb65`ff053a2d win32kfull!xxxDesktopThreadWaiter+0x128
+18 ffff9086`fda8a850 fffffb65`fe46dd07 win32kfull!xxxDesktopThread+0x4dd
+19 ffff9086`fda8a960 fffffb65`ff03c6b0 win32kbase!xxxCreateSystemThreads+0xa7
+1a ffff9086`fda8a9d0 fffff807`57dd0f95 win32kfull!NtUserCallNoParam+0x70
+1b ffff9086`fda8aa00 00007ff9`78981144 nt!KiSystemServiceCopyEnd+0x25
+1c 00000029`4da3fba8 00007ff9`77a832da win32u!ZwUserCallNoParam+0x14
+1d 00000029`4da3fbb0 00007ff9`7ac5f80f winsrvext!StartCreateSystemThreads+0x1a
+1e 00000029`4da3fbe0 00000000`00000000 ntdll!RtlUserThreadStart+0x2f
+
+Switching to the frame:
+0: kd> .frame /r 8
+08 ffff9086`fda89860 fffffb65`ff051378 win32kfull!CLockDomainsShared<DLT_PROCESSINFO,DLT_THREADINFO,DLT_INPUTDELEGATION,DLT_DESKTOP,DLT_THREADRUNDOWN,DLT_WINDOW>::lock+0x4c
+rax=0000000000000000 rbx=ffff9086fda89960 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000002 rdi=ffff9086fda89970
+rip=fffffb65ff0513e0 rsp=ffff9086fda89860 rbp=ffff9086fda899c0
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=000000000000011f r13=0000000000000000
+r14=0000000000010039 r15=00000000383cce1a
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+win32kfull!CLockDomainsShared<DLT_PROCESSINFO,DLT_THREADINFO,DLT_INPUTDELEGATION,DLT_DESKTOP,DLT_THREADRUNDOWN,DLT_WINDOW>::lock+0x4c:
+fffffb65`ff0513e0 0f1f440000      nop     dword ptr [rax+rax]
+0: kd> ub
+win32kfull!CLockDomainsShared<DLT_PROCESSINFO,DLT_THREADINFO,DLT_INPUTDELEGATION,DLT_DESKTOP,DLT_THREADRUNDOWN,DLT_WINDOW>::lock+0x28:
+fffffb65`ff0513bc 4863c6          movsxd  rax,esi
+fffffb65`ff0513bf 488d5330        lea     rdx,[rbx+30h]
+fffffb65`ff0513c3 48c1e005        shl     rax,5
+fffffb65`ff0513c7 4803d0          add     rdx,rax
+fffffb65`ff0513ca 48ff15b7e82800  call    qword ptr [win32kfull!_imp_?AddLockListEntryShtagDomLockQEBAXAEAUtagLockListEntryZ (fffffb65`ff2dfc88)]
+fffffb65`ff0513d1 0f1f440000      nop     dword ptr [rax+rax]
+fffffb65`ff0513d6 488b0f          mov     rcx,qword ptr [rdi]
+fffffb65`ff0513d9 48ff15a0e82800  call    qword ptr [win32kfull!_imp_?LockSharedtagDomLockQEBAXXZ (fffffb65`ff2dfc80)]
+
+We determine address of the lock B and its owner – thread #1
+0: kd> !locks poi(poi(ffff9086fda89970))
+
+Resource @ 0xffffc50f25f4a610    Exclusively owned
+    Contention Count = 803
+    NumberOfSharedWaiters = 1
+     Threads: ffffc50f29a36080-01<*> ffffc50f27492080-01    
+1 total locks
+
+So thread 1, owns lock B and is waiting for the lock A which is owned by the thread 2 which is waiting for the lock B – deadlock I win32kfull.sys.
+

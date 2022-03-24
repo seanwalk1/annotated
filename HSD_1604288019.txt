@@ -1,0 +1,72 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604288019/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+Mssysinfo32 shows EC Firmware version 1.14.
+ 
+The EC version is stored in SMBIOS table in hex:
+http://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.1.1.pdf
+
+From the memory dump, looking at the table, we can see that actual value in the SMBIOS table is 0x0E:
+0: kd> !sysinfo smbios -csv -noheaders
+3,0,0,No,1946
+00,18,0000,01,02,f000,03,00,0000072378099880,23,07,23,21,01,0e,Intel Corp.,GELKRVPA.X64.0035.B33.1702150552,02/15/2017
+02,11,0001,01,02,03,04,05,09,06,0000,01,00,0000,Intel Corp.,GLK RVP1 DDR4 (05),A0,To be filled by O.E.M,                     ,To be filled by O.E.M
+03,18,0002,01,0b,02,03,04,03,03,01,01,00000000,00,00,00,00,00,00,00,Intel Corp.,To be filled by O.E.M,                     ,                     
+0a,06,000f,83,01,Video Device
+0a,06,0010,85,01,Network Device
+0a,06,0011,87,01,Intel(R) High Definition Audio Device
+07,13,0014,01,0180,0018,0018,0020,0020,00,04,04,01,L1 Cache
+07,13,0015,01,0180,0020,0020,0020,0020,00,04,03,07,L1 Cache
+07,13,0016,01,0181,1000,1000,0020,0020,00,05,05,08,L2 Cache
+04,30,0017,01,03,01,02,bfebfbff000706a0,03,87,0064,0000,01f4,41,01,0015,0016,0000,04,05,06,U3E1,Intel(R) Corporation,Genuine Intel(R) CPU @ 1.10GHz,                      ,                      ,To Be Filled By O.E.M.
+10,17,0018,03,03,03,01000000,fffe,0002
+11,28,0019,0018,fffe,0008,0008,0800,0d,00,01,02,1a,0080,0960,03,04,05,06,ChannelA-DIMM0,BANK 0,Micron,        ,          ,4ATF25664HZ-2G3B1   
+11,28,001a,0018,fffe,0008,0008,0800,0d,00,01,02,1a,0080,0960,03,04,05,06,ChannelA-DIMM1,BANK 1,Micron,        ,          ,4ATF25664HZ-2G3B1   
+13,1f,001b,00000000,003fffff,0018,04
+01,1b,001c,01,02,03,04,00000000-0000-0000-0000-000000000000,06,Intel Corp.,Geminilake,A1,To be filled by O.E.M,To be filled by O.E.M,IA Notebook
+
+Same information as OS stored SMBIOS in the registry:
+0: kd> !reg q \REGISTRY\MACHINE\HARDWARE\DESCRIPTION\System\BIOS
+
+
+Sorry <\REGISTRY\MACHINE\HARDWARE\DESCRIPTION\System\BIOS> is not cached 
+
+===========================================================================================
+Falling back to traversing the tree of nodes.
+
+Hive         ffffb482fb682000
+KeyNode      ffffb482fb6d4f7c
+
+[ValueType]         [ValueName]                   [ValueData]
+REG_DWORD           BiosMajorRelease              23
+REG_DWORD           BiosMinorRelease              21
+REG_DWORD           ECFirmwareMajorRelease        1
+REG_DWORD           ECFirmwareMinorRelease        e
+REG_SZ              BaseBoardManufacturer         Intel Corp.
+REG_SZ              BaseBoardProduct              GLK RVP1 DDR4 (05)
+REG_SZ              BaseBoardVersion              A0
+REG_SZ              BIOSReleaseDate               02/15/2017
+REG_SZ              BIOSVendor                    Intel Corp.
+REG_SZ              BIOSVersion                   GELKRVPA.X64.0035.B33.1702150552
+REG_SZ              SystemFamily                  IA Notebook
+REG_SZ              SystemManufacturer            Intel Corp.
+REG_SZ              SystemProductName             Geminilake
+REG_SZ              SystemSKU                     To be filled by O.E.M
+REG_SZ              SystemVersion                 A1
+
+0xE is 14 decimal.
+Mssysinfo32 prints it in decimal, same as !sysinfo in the debugger:
+0: kd> !sysinfo smbios -v
+[SMBIOS Data Tables v3.0]
+…
+  EC Firmware Major Revision    1
+  EC Firmware Minor Revision    14
+…
+
+So msinfo32 displays EC version correctly as it is stored in the SMBIOS table.
+
+If you see something different in the BIOS screens, either it is different source and recorded incorrectly there, or decimal value gets treated as hex and converted to decimal again (0x14 = 20).
+
+So from the evidence above, I see msinfo32 works correctly. I see no changes in this code path in RS2 and I can see it works properly on other systems – yet another reason to look at the BIOS implementation on GLK.

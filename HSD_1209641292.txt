@@ -1,0 +1,369 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209641292/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	power IRP timeout – bugcheck 9F
+[BUGCHECK]:	0x9F
+
+This is power IRP timeout – bugcheck 9F DRIVER_POWER_STATE_FAILURE (9f):
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffe189523c5650, Physical Device Object of the stack
+Arg3: ffff8780df062c40, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffe189557797d0, The blocked IRP
+…
+
+Here is the timed-out IRP:
+1: kd> !irp ffffe189557797d0
+Irp is active with 4 stacks 3 is current (= 0xffffe18955779930)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffe189523c5650 00000000 fffff803120971f0-ffff8780df65fd78    
+	       \Driver\ACPI	Wdf01000!FxIoTarget::_SyncCompletionRoutine (IopUnloadSafeCompletion)
+			Args: 00000000 00000000 00000000 00000002
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe189539c8040 00000000 fffff80203199380-ffffe18954eca0b0 Success Error Cancel pending
+	       \Driver\IntelBatteryManagement	nt!PopRequestCompletion
+			Args: 00051100 00000001 00000001 00000002
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffe18954eca0b0    
+
+			Args: 00000000 00000000 00000000 00000000
+
+The IRP is owned by the WC PMIC Battery device:
+1: kd> !devstack ffffe189539c8040
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffe189539c8040  \Driver\IntelBatteryManagementffffe189539a9840  
+  ffffe189523c5650  \Driver\ACPI       ffffe189514a0240  0000001f
+!DevNode ffffe18952d8c650 :
+  DeviceInst is "ACPI\INT33FE\2&daba3ff&0"
+  ServiceName is "IntelBatteryManagement"
+1: kd> dt nt!_DEVICE_NODE ffffe18952d8c650 UniqueId
+   +0x118 UniqueId : _UNICODE_STRING "\_SB.WIDR"
+1: kd> !amli dns \_SB.WIDR._DDN
+
+ACPI Name Space: \_SB.WIDR._DDN (ffffe1895239ca90)
+String(_DDN:Str="WC PMIC Battery Device")
+
+The thread processing the IRP is currently running code in PMI.SYS driver:
+1: kd> !wdfdriverinfo IntelBatteryManagement
+…
+
+    !wdfdevice 0x00001e76ac656aa8 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerWaking, WdfDevStatePwrPolSystemWakeDeviceToD0
+        context:  dt 0xffffe189539a9840 IntelBatteryManagement!DEVICE_CONTEXT (size is 0x7c0 bytes)
+        <no associated attribute callbacks>
+        !wdfdevicequeues 0x00001e76ac656aa8
+…
+1: kd> !wdfdevice 0x00001e76ac656aa8 ff
+…
+
+owning thread:  ffffe189539da040
+…
+1: kd> !thread ffffe189539da040
+THREAD ffffe189539da040  Cid 0004.01fc  Teb: 0000000000000000 Win32Thread: 0000000000000000 RUNNING on processor 1
+Not impersonating
+DeviceMap                 ffffb184624175a0
+Owning Process            ffffe18951480040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      10937          Ticks: 1 (0:00:00:00.015)
+Context Switch Count      3360           IdealProcessor: 3  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:01:59.031
+Win32 Start Address nt!ExpWorkerThread (0xfffff8020313c0b0)
+Stack Init ffff8780df882d10 Current ffff8780df8820c0
+Base ffff8780df883000 Limit ffff8780df87d000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffff8780`df062c08 fffff802`032ab3f7 : 00000000`0000009f 00000000`00000003 ffffe189`523c5650 ffff8780`df062c40 : nt!KeBugCheckEx
+ffff8780`df062c10 fffff802`032ab302 : ffffe189`54eca0b0 fffff802`02251be8 00000000`00000000 00000000`00000008 : nt!PopIrpWatchdogBugcheck+0xeb
+ffff8780`df062c70 fffff802`0313660d : ffff8780`df02a180 00000000`00000000 ffff8780`df062e68 ffff8780`df062e60 : nt!PopIrpWatchdog+0x22
+ffff8780`df062cc0 fffff802`030bae91 : 00000000`00000d12 00000000`0017bf19 00000000`00000020 fffff802`02251be8 : nt!KiProcessExpiredTimerList+0x1fd
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!KiExpireTimerTable+0x1dc (Inline Function @ fffff802`030bae91)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!KiTimerExpiration+0x2ff (Inline Function @ fffff802`030bae91)
+ffff8780`df062db0 fffff802`03204015 : 08418b48`ccccccff ffff8780`df02a180 ffff8780`df881c20 ffffe189`514cc300 : nt!KiRetireDpcList+0x541
+ffff8780`df062fb0 fffff802`03203e20 : 00000000`00000013 fffff802`030f8513 00000000`00000000 00000000`00000000 : nt!KyRetireDpcList+0x5 (TrapFrame @ ffff8780`df062e70)
+ffff8780`df881b60 fffff802`03202805 : 00000000`00000000 fffff802`03200a03 ffff8780`df882240 ffffe189`514cc300 : nt!KiDispatchInterruptContinue
+ffff8780`df881b90 fffff802`03200a03 : ffff8780`df882240 ffffe189`514cc300 ffff8780`df0aa180 fffff802`0312b975 : nt!KiDpcInterruptBypass+0x25
+ffff8780`df881ba0 fffff802`031ed3fd : ffff8780`df882240 00000000`00000020 00000000`00000000 fffff802`0320a602 : nt!KiInterruptDispatchNoLockNoEtw+0xc3 (TrapFrame @ ffff8780`df881ba0)
+ffff8780`df881d30 fffff802`031e8c61 : 00000000`00000000 00000000`00000000 00000000`0000007f 00000000`00000000 : nt!_output_l+0x7dd
+ffff8780`df881ff0 fffff802`031e8be1 : 00000000`0000007f ffff8780`df882170 ffffffff`ffffffd1 fffff802`030a56c2 : nt!_vsnprintf_l+0x75
+ffff8780`df882060 fffff802`0316621f : 00000000`00000010 00000000`00000291 ffff8780`df8820c8 00000000`00000018 : nt!_vsnprintf+0x11
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!RtlStringVPrintfWorkerA+0x11 (Inline Function @ fffff802`0316621f)
+ffff8780`df8820a0 fffff802`03168635 : ffffffff`ffffffff 00000000`00000080 fffff780`00000320 00000000`00000001 : nt!RtlStringCbVPrintfA+0x3f
+ffff8780`df8820d0 fffff802`031a93c0 : ffffe189`539c9cd0 ffffe189`539c9cd0 ffff8780`df882440 ffff8780`df02a180 : nt!vDbgPrintExWithPrefixInternal+0xd5
+ffff8780`df8821d0 fffff803`1455179c : 00000000`00000010 fffff802`0000000a fffff803`14553910 ffff8780`df882240 : nt!DbgPrintEx+0x30
+ffff8780`df882210 fffff803`1455250f : ffffe189`00000000 fffff803`14553bb0 fffff803`14553a80 00000000`00000065 : PMI!DbgOutput+0x12c
+ffff8780`df882460 fffff803`1455222b : ffffe189`536c7310 fffff803`14553d90 fffff803`14553ce0 ffff8780`df882590 : PMI!IpcRequestStartNext+0x20f
+ffff8780`df8824b0 fffff803`131a4c8b : ffffe189`536c7310 ffff8780`df882590 fffff803`131cb0b0 00000000`00000003 : PMI!IpcRequest+0x18b
+ffff8780`df882520 fffff803`131a20bf : ffffe189`5367aff8 fffff803`131ca470 fffff803`131c0015 ffff8780`df882750 : PMIC!PmicIpcWrite+0x2db
+ffff8780`df882640 fffff803`131a1c74 : ffffe189`5367a6f0 fffff803`131ca270 fffff803`131c0015 ffff8780`df882750 : PMIC!PmicPageWriteMultiByte+0x17f
+ffff8780`df8826c0 fffff803`14a9db76 : ffffe189`5367a6f0 fffff803`14ab4e70 fffff803`14ab0015 ffff8780`df882750 : PMIC!PmicPageWrite+0x94
+ffff8780`df882710 fffff803`14a9e704 : 00000000`00000003 fffff803`14ab5c90 fffff803`14ab5a50 00000000`00000065 : IntelBatteryManagement!BXT_INT_WRK+0x106
+ffff8780`df882780 fffff803`14abc7ab : ffffe189`539a9840 ffffffff`ffb3b400 fffff803`14abff50 00000000`00000004 : IntelBatteryManagement!BXT_TypeC_start+0x534
+ffff8780`df882810 fffff803`12096883 : 00001e76`ac656aa8 ffffe189`00000004 0e8c0ec0`0ec00ef4 ffff8780`df882940 : IntelBatteryManagement!BatteryManagementD0Entry+0x23b
+ffff8780`df8828c0 fffff803`1209681f : ffffe189`539c9700 fffff803`12079d9a ffffe189`549f000e ffff8780`df8829b8 : Wdf01000!FxPnpDeviceD0Entry::InvokeClient+0x23
+ffff8780`df882920 fffff803`1206ef36 : ffffe189`539c97c0 ffff8780`df882a90 00000000`00000660 00000000`00000000 : Wdf01000!FxPrePostCallback::InvokeStateful+0x47
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPnpDeviceD0Entry::Invoke+0x19 (Inline Function @ fffff803`1206ef36)
+ffff8780`df882960 fffff803`120834d7 : ffffe189`539c97c0 ffffe189`539c97c0 00000000`00000333 00000000`00000000 : Wdf01000!FxPkgPnp::PowerWaking+0x46
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgPnp::PowerEnterNewState+0x112 (Inline Function @ fffff803`120834d7)
+ffff8780`df882990 fffff803`12071728 : ffffe189`539c99c0 ffffe189`00000000 ffffe189`539c99c0 00000000`00000000 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0x207
+ffff8780`df882b00 fffff803`1207156e : ffffe189`539c9998 ffffe189`539c97c0 ffffe189`539c8fa0 ffff8780`df12a180 : Wdf01000!FxPkgPnp::_PowerProcessEventInner+0x58
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxEventQueue::EventQueueWorker+0x7a (Inline Function @ fffff803`1207156e)
+ffff8780`df882b40 fffff802`0309951b : ffffe189`539c8fa0 ffffe189`539c8040 00000000`00000000 00000000`00000000 : Wdf01000!FxThreadedEventQueue::_WorkItemCallback+0x8e
+ffff8780`df882b90 fffff802`0313c188 : fffff802`0347e650 ffffe189`539da040 fffff802`03099420 fffff802`0000000c : nt!IopProcessWorkItem+0xfb
+ffff8780`df882c00 fffff802`030f7b77 : ffff8780`df02a180 00000000`00000080 ffffe189`51480040 ffffe189`539da040 : nt!ExpWorkerThread+0xd8
+ffff8780`df882c90 fffff802`032043d6 : ffff8780`df02a180 ffffe189`539da040 fffff802`030f7b30 00000000`00000000 : nt!PspSystemThreadStartup+0x47
+ffff8780`df882ce0 00000000`00000000 : ffff8780`df883000 ffff8780`df87d000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16
+
+In fact PMI.SYS is running on all processors in a tight loop:
+1: kd> !running -it
+
+System Processors:  (000000000000000f)
+  Idle Processors:  (0000000000000000)
+
+       Prcbs             Current         (pri) Next            (pri) Idle
+  0    fffff8020224d180  ffffe189537ba040 (12)                       fffff8020347fa40  ................
+
+ # Child-SP          RetAddr           Call Site
+00 ffff8780`df9ef120 fffff802`031f0386 nt!write_string+0x50
+01 ffff8780`df9ef150 fffff802`031f0799 nt!_output_s+0x5c6
+02 ffff8780`df9ef410 fffff802`031ef44d nt!_soutput_s+0x79
+03 ffff8780`df9ef480 fffff803`145516dc nt!vsprintf_s+0x1d
+04 ffff8780`df9ef4c0 fffff803`1455250f PMI!DbgOutput+0x6c
+05 ffff8780`df9ef710 fffff803`1455222b PMI!IpcRequestStartNext+0x20f
+06 ffff8780`df9ef760 fffff803`131a4c8b PMI!IpcRequest+0x18b
+07 ffff8780`df9ef7d0 fffff803`131a20bf PMIC!PmicIpcWrite+0x2db
+08 ffff8780`df9ef8f0 fffff803`131a1c74 PMIC!PmicPageWriteMultiByte+0x17f
+09 ffff8780`df9ef970 fffff803`14aa6a69 PMIC!PmicPageWrite+0x94
+0a ffff8780`df9ef9c0 fffff803`14aa0040 IntelBatteryManagement!ReadChargerRegister+0x69
+0b ffff8780`df9efa40 fffff803`14a9bfb3 IntelBatteryManagement!ChargerResetonFault+0x10
+0c ffff8780`df9efa80 fffff803`14a910e9 IntelBatteryManagement!BXT_FFD_ChgCallback+0x73
+0d ffff8780`df9efad0 fffff803`12061721 IntelBatteryManagement!BMDriverPolling+0xe9
+0e ffff8780`df9efb20 fffff803`12066eff Wdf01000!FxTimer::TimerHandler+0x89
+0f (Inline Function) --------`-------- Wdf01000!FxSystemWorkItem::WorkItemHandler+0x7d
+10 ffff8780`df9efb60 fffff802`0309951b Wdf01000!FxSystemWorkItem::_WorkItemThunk+0x8f
+11 ffff8780`df9efb90 fffff802`0313c188 nt!IopProcessWorkItem+0xfb
+12 ffff8780`df9efc00 fffff802`030f7b77 nt!ExpWorkerThread+0xd8
+13 ffff8780`df9efc90 fffff802`032043d6 nt!PspSystemThreadStartup+0x47
+14 ffff8780`df9efce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+  1    ffff8780df02a180  ffffe189539da040 (12)                       ffff8780df036c80  ................
+
+ # Child-SP          RetAddr           Call Site
+00 ffff8780`df062c08 fffff802`032ab3f7 nt!KeBugCheckEx
+01 ffff8780`df062c10 fffff802`032ab302 nt!PopIrpWatchdogBugcheck+0xeb
+02 ffff8780`df062c70 fffff802`0313660d nt!PopIrpWatchdog+0x22
+03 ffff8780`df062cc0 fffff802`030bae91 nt!KiProcessExpiredTimerList+0x1fd
+04 (Inline Function) --------`-------- nt!KiExpireTimerTable+0x1dc
+05 (Inline Function) --------`-------- nt!KiTimerExpiration+0x2ff
+06 ffff8780`df062db0 fffff802`03204015 nt!KiRetireDpcList+0x541
+07 ffff8780`df062fb0 fffff802`03203e20 nt!KyRetireDpcList+0x5
+08 ffff8780`df881b60 fffff802`03202805 nt!KiDispatchInterruptContinue
+09 ffff8780`df881b90 fffff802`03200a03 nt!KiDpcInterruptBypass+0x25
+0a ffff8780`df881ba0 fffff802`031ed3fd nt!KiInterruptDispatchNoLockNoEtw+0xc3
+0b ffff8780`df881d30 fffff802`031e8c61 nt!_output_l+0x7dd
+0c ffff8780`df881ff0 fffff802`031e8be1 nt!_vsnprintf_l+0x75
+0d ffff8780`df882060 fffff802`0316621f nt!_vsnprintf+0x11
+0e (Inline Function) --------`-------- nt!RtlStringVPrintfWorkerA+0x11
+0f ffff8780`df8820a0 fffff802`03168635 nt!RtlStringCbVPrintfA+0x3f
+10 ffff8780`df8820d0 fffff802`031a93c0 nt!vDbgPrintExWithPrefixInternal+0xd5
+11 ffff8780`df8821d0 fffff803`1455179c nt!DbgPrintEx+0x30
+12 ffff8780`df882210 fffff803`1455250f PMI!DbgOutput+0x12c
+13 ffff8780`df882460 fffff803`1455222b PMI!IpcRequestStartNext+0x20f
+14 ffff8780`df8824b0 fffff803`131a4c8b PMI!IpcRequest+0x18b
+15 ffff8780`df882520 fffff803`131a20bf PMIC!PmicIpcWrite+0x2db
+16 ffff8780`df882640 fffff803`131a1c74 PMIC!PmicPageWriteMultiByte+0x17f
+17 ffff8780`df8826c0 fffff803`14a9db76 PMIC!PmicPageWrite+0x94
+18 ffff8780`df882710 fffff803`14a9e704 IntelBatteryManagement!BXT_INT_WRK+0x106
+19 ffff8780`df882780 fffff803`14abc7ab IntelBatteryManagement!BXT_TypeC_start+0x534
+1a ffff8780`df882810 fffff803`12096883 IntelBatteryManagement!BatteryManagementD0Entry+0x23b
+1b ffff8780`df8828c0 fffff803`1209681f Wdf01000!FxPnpDeviceD0Entry::InvokeClient+0x23
+1c ffff8780`df882920 fffff803`1206ef36 Wdf01000!FxPrePostCallback::InvokeStateful+0x47
+1d (Inline Function) --------`-------- Wdf01000!FxPnpDeviceD0Entry::Invoke+0x19
+1e ffff8780`df882960 fffff803`120834d7 Wdf01000!FxPkgPnp::PowerWaking+0x46
+1f (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PowerEnterNewState+0x112
+20 ffff8780`df882990 fffff803`12071728 Wdf01000!FxPkgPnp::PowerProcessEventInner+0x207
+21 ffff8780`df882b00 fffff803`1207156e Wdf01000!FxPkgPnp::_PowerProcessEventInner+0x58
+22 (Inline Function) --------`-------- Wdf01000!FxEventQueue::EventQueueWorker+0x7a
+23 ffff8780`df882b40 fffff802`0309951b Wdf01000!FxThreadedEventQueue::_WorkItemCallback+0x8e
+24 ffff8780`df882b90 fffff802`0313c188 nt!IopProcessWorkItem+0xfb
+25 ffff8780`df882c00 fffff802`030f7b77 nt!ExpWorkerThread+0xd8
+26 ffff8780`df882c90 fffff802`032043d6 nt!PspSystemThreadStartup+0x47
+27 ffff8780`df882ce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+  2    ffff8780df0aa180  ffffe18954a3f040 (12)                       ffff8780df0b6c80  ................
+
+ # Child-SP          RetAddr           Call Site
+00 ffff8780`e13c3580 fffff803`145524fa hal!KeStallExecutionProcessor+0x5
+01 ffff8780`e13c3590 fffff803`1455222b PMI!IpcRequestStartNext+0x1fa
+02 ffff8780`e13c35e0 fffff803`131a4c8b PMI!IpcRequest+0x18b
+03 ffff8780`e13c3650 fffff803`131a1f1d PMIC!PmicIpcWrite+0x2db
+04 ffff8780`e13c3770 fffff803`131bdb07 PMIC!PmicPageWriteByte+0x9d
+05 ffff8780`e13c37c0 fffff803`131b5f72 PMIC!WCBxtGpioContextRestore+0xb7
+06 ffff8780`e13c3810 fffff803`131b5e2d PMIC!PmicRestoreContext+0x52
+07 ffff8780`e13c3850 fffff803`145234d1 PMIC!PmicGpioStartController+0x3d
+08 (Inline Function) --------`-------- msgpioclx!GpioClnInvokeStartController+0x20
+09 ffff8780`e13c3880 fffff803`12096883 msgpioclx!GpioClxEvtDeviceD0Entry+0x61
+0a ffff8780`e13c38c0 fffff803`1209681f Wdf01000!FxPnpDeviceD0Entry::InvokeClient+0x23
+0b ffff8780`e13c3920 fffff803`1206ef36 Wdf01000!FxPrePostCallback::InvokeStateful+0x47
+0c (Inline Function) --------`-------- Wdf01000!FxPnpDeviceD0Entry::Invoke+0x19
+0d ffff8780`e13c3960 fffff803`120834d7 Wdf01000!FxPkgPnp::PowerWaking+0x46
+0e (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PowerEnterNewState+0x112
+0f ffff8780`e13c3990 fffff803`12071728 Wdf01000!FxPkgPnp::PowerProcessEventInner+0x207
+10 ffff8780`e13c3b00 fffff803`1207156e Wdf01000!FxPkgPnp::_PowerProcessEventInner+0x58
+11 (Inline Function) --------`-------- Wdf01000!FxEventQueue::EventQueueWorker+0x7a
+12 ffff8780`e13c3b40 fffff802`0309951b Wdf01000!FxThreadedEventQueue::_WorkItemCallback+0x8e
+13 ffff8780`e13c3b90 fffff802`0313c188 nt!IopProcessWorkItem+0xfb
+14 ffff8780`e13c3c00 fffff802`030f7b77 nt!ExpWorkerThread+0xd8
+15 ffff8780`e13c3c90 fffff802`032043d6 nt!PspSystemThreadStartup+0x47
+16 ffff8780`e13c3ce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+  3    ffff8780df12a180  ffffe18953728040 (12)                       ffff8780df136c80  ................
+
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!KeGetCurrentPrcb
+01 ffff8780`dfffe6f8 fffff802`0302b5af nt!KeStallWhileFrozen
+02 ffff8780`dfffe700 fffff803`145524fa hal!KeStallExecutionProcessor+0x19d9f
+03 ffff8780`dfffe790 fffff803`1455222b PMI!IpcRequestStartNext+0x1fa
+04 ffff8780`dfffe7e0 fffff803`131a3a23 PMI!IpcRequest+0x18b
+05 ffff8780`dfffe850 fffff803`131a19cf PMIC!PmicIpcRead+0x263
+06 ffff8780`dfffe980 fffff803`131a13e0 PMIC!PmicPageReadMultiByte+0x17f
+07 ffff8780`dfffea00 fffff803`14a9b346 PMIC!PmicPageRead+0x110
+08 ffff8780`dfffea50 fffff803`14a91d1a IntelBatteryManagement!BXT_1S_DRP_POOLING+0x76
+09 ffff8780`dfffeae0 fffff803`12061721 IntelBatteryManagement!PeriodicFGProcess+0xaa
+0a ffff8780`dfffeb20 fffff803`12066eff Wdf01000!FxTimer::TimerHandler+0x89
+0b (Inline Function) --------`-------- Wdf01000!FxSystemWorkItem::WorkItemHandler+0x7d
+0c ffff8780`dfffeb60 fffff802`0309951b Wdf01000!FxSystemWorkItem::_WorkItemThunk+0x8f
+0d ffff8780`dfffeb90 fffff802`0313c188 nt!IopProcessWorkItem+0xfb
+0e ffff8780`dfffec00 fffff802`030f7b77 nt!ExpWorkerThread+0xd8
+0f ffff8780`dfffec90 fffff802`032043d6 nt!PspSystemThreadStartup+0x47
+10 ffff8780`dfffece0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+The driver is pretty old:
+1: kd> lmvi mpmi
+Browse full module list
+start             end                 module name
+fffff803`14550000 fffff803`1455c000   PMI        (private pdb symbols)  PMI.sys
+    Symbol file: d:\symcache\PMI.pdb\555B1CFE4F644E279967012795CEA1BD1\PMI.pdb
+    Image path: \SystemRoot\System32\drivers\PMI.sys
+    Image name: PMI.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Tue Mar  8 16:18:59 2016 (56DF6BF3)
+…
+
+The problem is that if pmi!IpcRequestStartNext observes that there is outstanding request, it stalls for 25usec and returns back to IpcRequest:
+_IPC_REQUEST_EXTENSION * TryToAcquireIPC(_IPC_DEVICE_CONTEXT *pDevExt)
+{
+  ULONG CurrentProcessor;
+  _IPC_REQUEST_EXTENSION *ReqExt;
+
+  ReqExt = NULL;
+  WdfObjectAcquireLock(pDevExt->m_Device);
+  if ( !pDevExt->m_pReqExt )
+  {
+…
+  }
+  WdfObjectReleaseLock(pDevExt->m_Device);
+  return ReqExt;
+}
+
+NTSTATUS IpcRequestStartNext(_IPC_DEVICE_CONTEXT *pDevExt)
+{
+…
+  NTSTATUS status;
+  _IPC_REQUEST_EXTENSION *pCurrentReqExt;
+  _IPC_DEVICE_CONTEXT *pDevExta;
+
+  pDevExta = pDevExt;
+  status = STATUS_SUCCESS;
+  if ( !IsListEmpty(&pDevExt->m_RequestQueue) )
+  {
+…
+    pCurrentReqExt = TryToAcquireIPC(pDevExta);
+    if ( pCurrentReqExt )
+    {
+   … }
+    else
+    {
+      DbgOutput(0, "%s IPC Busy or Queue Empty\n", "IpcRequestStartNext");
+      if ( !IsListEmpty(&pDevExta->m_RequestQueue) )
+      {
+        irql = KeGetCurrentIrql();
+        DbgOutput(MSG_INFO, "%s IRQL=0x%x\n", "IpcRequestStartNext", irql);
+        KeStallExecutionProcessor(25u);
+        DbgOutput(0, "%s IPC is Busy\n", "IpcRequestStartNext");
+        status = STATUS_RETRY;
+      }
+    }
+  }
+  return status;
+}
+
+This causes IpcRequest go into an infinite loop:
+void IpcRequest(_IPC_DEVICE_CONTEXT *pDevExt, _IPC_REQUEST_EXTENSION *pNextReqExt)
+{
+…
+    for ( i = STATUS_RETRY; i == STATUS_RETRY; i = IpcRequestStartNext(pDevExta) )
+        ;
+}
+
+In our case there is an outstanding request:
+1: kd> .frame /r 13
+13 ffff8780`df882460 fffff803`1455222b PMI!IpcRequestStartNext+0x20f
+rax=000000000000000a rbx=ffffe189539c9cd0 rcx=ffff8780df88220a
+rdx=ffff8780df882020 rsi=ffffe189539c9cd0 rdi=0000000000000003
+rip=fffff8031455250f rsp=ffff8780df882460 rbp=ffffe189539a9550
+ r8=ffff8780df881d68  r9=ffff8780df881d68 r10=ffff8780df882020
+r11=0000000000000000 r12=0000000000000000 r13=fffff80312104540
+r14=ffff8780df882990 r15=0000000000000300
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+PMI!IpcRequestStartNext+0x20f:
+fffff803`1455250f c74424302d0200c0 mov     dword ptr [rsp+30h],0C000022Dh ss:0018:ffff8780`df882490=00000000
+1: kd> dt  pDevExt m_pReqExt
+Local var @ 0xffff8780df8824b0 Type _IPC_DEVICE_CONTEXT*
+0xffffe189`536c7310 
+   +0x0a8 m_pReqExt : 0xffff8780`e13a38c0 _IPC_REQUEST_EXTENSION
+
+This means we will be looping until m_HandleTimerWatchDog timer expires which is scheduled for 120 seconds by which time our D0 IRP times out.
+
+So this appears to be a combination of problems: poor design in the driver which leads to a compute-bound empty loop on all processors and not-completing I/O request which might indicate PMIC FW issue.
+The driver is quite old:
+1: kd> lmvi mpmi
+Browse full module list
+start             end                 module name
+fffff803`14550000 fffff803`1455c000   PMI        (private pdb symbols)  PMI.sys
+    Symbol file: d:\symcache\PMI.pdb\555B1CFE4F644E279967012795CEA1BD1\PMI.pdb
+    Image path: \SystemRoot\System32\drivers\PMI.sys
+    Image name: PMI.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Tue Mar  8 16:18:59 2016 (56DF6BF3)
+    CheckSum:         00018719
+    ImageSize:        0000C000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4
+
+The BIOS is not that old:
+1: kd> !sysinfo smbios
+[SMBIOS Data Tables v3.0]
+…
+  BIOS Release Date             12/29/2016
+…
+
+So the first suggestion would be make sure that you have all drivers and FW in sync and up-to-date.
+If the issue still persists, please dispatch it to the PMI.SYS driver owners.
+
+

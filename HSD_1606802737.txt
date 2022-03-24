@@ -1,0 +1,182 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1606802737
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck 9F - DRIVER_POWER_STATE_FAILURE (9f) (see memory dump):
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffff8e0fb0c19060, Physical Device Object of the stack
+Arg3: fffffe019ca37c20, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffff8e0fba6c2870, The blocked IRP
+…
+
+The timed-out power IRP is held by ACPI filter:
+1: kd> !irp ffff8e0fba6c2870
+Irp is active with 6 stacks 4 is current (= 0xffff8e0fba6c2a18)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff8e0fb0c86dc0 00000000 fffff803590d04f0-ffff8e0fb0cce1a0 Success Error Cancel pending
+	       \Driver\ACPI	ndis!ndisSetDevicePowerOnComplete
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff8e0fb0cce050 00000000 fffff80354e215b0-ffff8e0fbaaf97c0 Success Error Cancel pending
+	       \Driver\e1dexpress	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000001 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffff8e0fbaaf97c0    
+
+			Args: 00000000 00000000 00000000 00000000
+
+Irp Extension present at 0xffff8e0fb059c060:
+
+	Activity ID: {00000000-0000-0000-0000-000000000000}
+
+The ACPI.SYS filters the 0/1f/6 PCI device as \_SB.PCI0.GLAN:
+1: kd> !devstack ffff8e0fb0c86dc0
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffff8e0fb0cce050  \Driver\e1dexpress ffff8e0fb0cce1a0  NDMP2
+> ffff8e0fb0c86dc0  \Driver\ACPI       ffff8e0fb07debb0  
+  ffff8e0fb0c19060  \Driver\pci        ffff8e0fb0c191b0  NTPNP_PCI0032
+!DevNode ffff8e0fb0c49970 :
+  DeviceInst is "PCI\VEN_8086&DEV_15E2&SUBSYS_00008086&REV_10\3&11583659&0&FE"
+  ServiceName is "e1dexpress"
+1: kd> dt nt!_DEVICE_NODE ffff8e0fb0c49970 UniqueId
+   +0x118 UniqueId : _UNICODE_STRING "\_SB.PCI0.GLAN"
+1: kd> !amli dns /v \_SB.PCI0.GLAN._ADR
+
+ACPI Name Space: \_SB.PCI0.GLAN._ADR (ffff8e0fb5c86668)
+Integer(_ADR:Value=0x00000000001f0006[2031622])
+
+This is D0 IRP:
+1: kd> dt nt!_POP_IRP_DATA ffff8e0fbaaf97c0 PowerStateType PowerState.DeviceState
+   +0x0bc PowerStateType         : 1 ( DevicePowerState )
+   +0x0c0 PowerState             : 
+      +0x000 DeviceState            : 1 ( PowerDeviceD0 )
+
+Currently running thread is evaluating AML context:
+1: kd> kn
+ # Child-SP          RetAddr           Call Site
+00 fffffe01`9ca37be8 fffff803`54f88546 nt!KeBugCheckEx
+01 fffffe01`9ca37bf0 fffff803`54f88452 nt!PopIrpWatchdogBugcheck+0xea
+02 fffffe01`9ca37c60 fffff803`54d19729 nt!PopIrpWatchdog+0x22
+03 fffffe01`9ca37cb0 fffff803`54d186e7 nt!KiProcessExpiredTimerList+0x159
+04 (Inline Function) --------`-------- nt!KiExpireTimerTable+0x78
+05 (Inline Function) --------`-------- nt!KiTimerExpiration+0x124
+06 fffffe01`9ca37da0 fffff803`54e6dd95 nt!KiRetireDpcList+0x4a7
+07 fffffe01`9ca37fb0 fffff803`54e6db80 nt!KyRetireDpcList+0x5
+08 fffffe01`9cbf2d30 fffff803`54e6d445 nt!KiDispatchInterruptContinue
+09 fffffe01`9cbf2d60 fffff803`54e68ef1 nt!KiDpcInterruptBypass+0x25
+0a fffffe01`9cbf2d70 fffff803`54c239c3 nt!KiInterruptDispatchNoLockNoEtw+0xb1
+0b fffffe01`9cbf2f08 fffff803`54c20551 hal!HalpTscQueryCounterOrdered+0x3
+0c fffffe01`9cbf2f10 fffff808`3e40157b hal!KeStallExecutionProcessor+0x111
+0d fffffe01`9cbf2f90 fffff808`3e3e71b5 ACPI!SleepStall+0x5b
+0e fffffe01`9cbf2fd0 fffff808`3e3e4a90 ACPI!ParseTerm+0x2d5
+0f fffffe01`9cbf3300 fffff808`3e4081a1 ACPI!RunContext+0x1f0
+10 fffffe01`9cbf3430 fffff808`3e4084d7 ACPI!DispatchCtxtQueue+0x91
+11 fffffe01`9cbf3460 fffff803`54dd76c5 ACPI!ACPIWorkerThread+0x107
+12 fffffe01`9cbf34d0 fffff803`54e6e38c nt!PspSystemThreadStartup+0x55
+13 fffffe01`9cbf3520 00000000`00000000 nt!KiStartSystemThread+0x1c
+
+Switching to the context frame:
+1: kd> .frame /r f
+0f fffffe01`9cbf3300 fffff808`3e4081a1 ACPI!RunContext+0x1f0
+rax=000000009d30f915 rbx=ffff8e0fbea487c0 rcx=0000000000000001
+rdx=0000000000000687 rsi=ffff8e0fbea48948 rdi=0000000000000000
+rip=fffff8083e3e4a90 rsp=fffffe019cbf3300 rbp=fffffe019cbf33c9
+ r8=0000000000000080  r9=0000000000000000 r10=0000000000000081
+r11=0000000000000002 r12=00000000000000a0 r13=0000000000000001
+r14=0000000000000000 r15=fffff8083e45f800
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ACPI!RunContext+0x1f0:
+fffff808`3e3e4a90 8bf8            mov     edi,eax
+
+We can see that context parameter was saved in RBX:
+1: kd> u ACPI!RunContext
+ACPI!RunContext:
+fffff808`3e3e48a0 48895c2410      mov     qword ptr [rsp+10h],rbx
+fffff808`3e3e48a5 4889742418      mov     qword ptr [rsp+18h],rsi
+fffff808`3e3e48aa 48897c2420      mov     qword ptr [rsp+20h],rdi
+fffff808`3e3e48af 55              push    rbp
+fffff808`3e3e48b0 4154            push    r12
+fffff808`3e3e48b2 4155            push    r13
+fffff808`3e3e48b4 4156            push    r14
+fffff808`3e3e48b6 4157            push    r15
+1: kd> u
+ACPI!RunContext+0x18:
+fffff808`3e3e48b8 488d6c24c9      lea     rbp,[rsp-37h]
+fffff808`3e3e48bd 4881ec00010000  sub     rsp,100h
+fffff808`3e3e48c4 488b0585aa0700  mov     rax,qword ptr [ACPI!_security_cookie (fffff808`3e45f350)]
+fffff808`3e3e48cb 4833c4          xor     rax,rsp
+fffff808`3e3e48ce 48894527        mov     qword ptr [rbp+27h],rax
+fffff808`3e3e48d2 4532ff          xor     r15b,r15b
+fffff808`3e3e48d5 488db188010000  lea     rsi,[rcx+188h]
+fffff808`3e3e48dc 488bd9          mov     rbx,rcx
+
+Looking at the context, we can see, as expected, \_SB.PCI0.GLAN._PS0 is being executed:
+1: kd> dt acpi!_CTXT ffff8e0fbea487c0 MethodName
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PCI0.GLAN._PS0"
+
+The "\_SB.PCI0.GLAN._PS0 is a simple call to  \_SB_.CSD0:
+1: kd> !amli u \_SB.PCI0.GLAN._PS0
+ffff8e0fb5e5c26a:[\_SB.PCI0.GLAN._PS0]
+ffff8e0fb5e5c26a : If(LNot(GBED))
+ffff8e0fb5e5c271 : {
+ffff8e0fb5e5c271 : | ADBG("GBE CSD0")
+ffff8e0fb5e5c27e : | Zero
+ffff8e0fb5e5c27f : | \_SB_.CSD0(0x15)
+ffff8e0fb5e5c28b : }
+
+The \_SB_.CSD0 ends up in a loop:
+1: kd> !amli u \_SB_.CSD0
+ffff8e0fb5c7cb6a:[\_SB.CSD0]
+…
+ffff8e0fb5c7cba4 : | | If(LEqual(_T_0, 0x15))
+ffff8e0fb5c7cbad : | | {
+ffff8e0fb5c7cbad : | | | Store(Zero, RGBE)
+ffff8e0fb5c7cbb3 : | | | While(LEqual(AGBE, One))
+ffff8e0fb5c7cbbb : | | | {
+ffff8e0fb5c7cbbb : | | | | Stall(0xa)
+ffff8e0fb5c7cbbf : | | | }
+ffff8e0fb5c7cbbf : | | }
+…
+
+Looping over a chipset register:
+1: kd> !amli dns /v \AGBE
+
+ACPI Name Space: \AGBE (ffff8e0fb5c84e78)
+FieldUnit(AGBE:FieldParent=ffff8e0fb5c81970,ByteOffset=0x10d4,StartBit=0xd,NumBits=1,FieldFlags=0x3)
+* FieldParent=>Field(:Base=PWMR,BaseObjData=ffff8e0fb5c81900)
+* Base =>OpRegion(:RegionSpace=SystemMemory,Offset=0xffffcc819d0fd000,Len=7728)
+
+1: kd> !pte 0xffffcc819d0fd000
+                                           VA ffffcc819d0fd000
+PXE at FFFFA0D068341CC8    PPE at FFFFA0D068399030    PDE at FFFFA0D073206740    PTE at FFFFA0E640CE87E8
+contains 0A00000003A3E863  contains 0A00000003A3F863  contains 0A00000003CA1863  contains 8A000000FE000A7B
+pfn 3a3e      ---DA--KWEV  pfn 3a3f      ---DA--KWEV  pfn 3ca1      ---DA--KWEV  pfn fe000     C--DANTKW-V
+
+So the cause of the IRP timeout is that \_SB.PCI0.GLAN._PS0 does not completed.
+This needs to be investigated by the ACPI BIOS owners.

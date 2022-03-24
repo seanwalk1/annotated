@@ -1,0 +1,84 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220530686
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	Code Integrity Issue: The caller specified an executable pool type.
+[BUGCHECK]:	0xC4
+
+
+This is Bugcheck DRIVER_VERIFIER_DETECTED_VIOLATION (c4) - Code Integrity Issue: The caller specified an executable pool type, (see attached memory dump):
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_VERIFIER_DETECTED_VIOLATION (c4)
+A device driver attempting to corrupt the system has been caught.  This is
+because the driver was specified in the registry as being suspect (by the
+administrator) and the kernel has enabled substantial checking of this driver.
+If the driver attempts to corrupt the system, bugchecks 0xC4, 0xC1 and 0xA will
+be among the most commonly seen crashes.
+Arguments:
+Arg1: 0000000000002000, Code Integrity Issue: The caller specified an executable pool type. (Expected: NonPagedPoolNx)
+Arg2: fffff80b6f1186f7, The address in the driver's code where the error was detected.
+Arg3: 0000000000000000, Pool Type.
+Arg4: 0000000074436e45, Pool Tag (if provided).
+
+Looking at the callstack, we can see fastfat!EnterpriseContextLibMemAllocPaged making pool allocation:
+1: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffffc601`f05b0348 fffff801`53dfafff nt!KeBugCheckEx
+01 ffffc601`f05b0350 fffff801`538dca8f nt!VerifierBugCheckIfAppropriate+0x6b
+02 ffffc601`f05b0390 fffff801`53df2870 nt!VfReportIssueWithOptions+0x103
+03 ffffc601`f05b03e0 fffff801`53df06c1 nt!VfCheckPoolType+0x90
+04 ffffc601`f05b0420 fffff80b`6f1186f7 nt!VerifierExAllocatePoolEx+0x21
+05 (Inline Function) --------`-------- fastfat!EnterpriseContextLibMemAllocPaged+0x10
+06 ffffc601`f05b0470 fffff80b`6f1189e0 fastfat!SrpCreateEnterpriseContext+0xaf
+07 ffffc601`f05b04d0 fffff80b`6f1188c0 fastfat!GetEnterpriseContext+0x84
+08 ffffc601`f05b0540 fffff80b`6f15977e fastfat!SrpGetEnterpriseContext+0x30
+09 ffffc601`f05b0590 fffff80b`6f1595e1 fastfat!EfspFileRequiresEncryption+0x192
+0a ffffc601`f05b0750 fffff80b`6f11309a fastfat!EfsFileRequiresEncryption+0x21
+0b ffffc601`f05b07a0 fffff80b`6f1399f4 fastfat!EfsFileRequiresEncryptionCallback+0x42
+0c ffffc601`f05b07e0 fffff80b`6f1367e0 fastfat!FatCreateNewFile+0x728
+0d ffffc601`f05b0a70 fffff80b`6f134d99 fastfat!FatCommonCreate+0x1a2c
+0e ffffc601`f05b0f50 fffff801`537fde87 fastfat!FatCommonCreateCallout+0x19
+0f ffffc601`f05b0f80 fffff801`537fde4d nt!KxSwitchKernelStackCallout+0x27
+10 ffffc601`f0bb69a0 fffff801`5373303c nt!KiSwitchKernelStackContinue
+11 ffffc601`f0bb69c0 fffff801`53732e7e nt!KiExpandKernelStackAndCalloutOnStackSegment+0x12c
+12 ffffc601`f0bb6a40 fffff801`53732d3f nt!KiExpandKernelStackAndCalloutSwitchStack+0x9e
+13 ffffc601`f0bb6ab0 fffff80b`6f134c58 nt!KeExpandKernelStackAndCalloutInternal+0x2f
+14 (Inline Function) --------`-------- fastfat!FatCommonCreateOnNewStack+0x3a
+15 ffffc601`f0bb6b00 fffff801`53def09d fastfat!FatFsdCreate+0xa8
+16 ffffc601`f0bb6b90 fffff801`5381d6ff nt!IovCallDriver+0x245
+17 ffffc601`f0bb6bd0 fffff80b`6ce3563d nt!IofCallDriver+0x14c9cf
+18 ffffc601`f0bb6c10 fffff80b`6ce6612b FLTMGR!FltpLegacyProcessingAfterPreCallbacksCompleted+0x18d
+19 ffffc601`f0bb6c80 fffff801`53def09d FLTMGR!FltpCreate+0x2eb
+1a ffffc601`f0bb6d30 fffff801`5381d6ff nt!IovCallDriver+0x245
+1b ffffc601`f0bb6d70 fffff801`53aed0c5 nt!IofCallDriver+0x14c9cf
+1c ffffc601`f0bb6db0 fffff801`53af847b nt!IopParseDevice+0x815
+1d ffffc601`f0bb6f90 fffff801`53afbdf0 nt!ObpLookupObjectName+0x46b
+1e ffffc601`f0bb7160 fffff801`53affd6a nt!ObOpenObjectByNameEx+0x1e0
+1f ffffc601`f0bb72a0 fffff801`53b00df9 nt!IopCreateFile+0x3aa
+20 ffffc601`f0bb7340 fffff801`53805f13 nt!NtCreateFile+0x79
+21 ffffc601`f0bb73d0 00007ffb`2eec5e54 nt!KiSystemServiceCopyEnd+0x13
+22 00000000`0fe0cb68 00000000`00000000 0x00007ffb`2eec5e54
+
+We can see EnterpriseContextLibMemAllocPaged explicitly passing NonPagedPool:
+1: kd> ub fffff80b`6f1186f7
+fastfat!SrpCreateEnterpriseContext+0x95:
+fffff80b`6f1186dd 85f6            test    esi,esi
+fffff80b`6f1186df 7403            je      fastfat!SrpCreateEnterpriseContext+0x9c (fffff80b`6f1186e4)
+fffff80b`6f1186e1 83c1f0          add     ecx,0FFFFFFF0h
+fffff80b`6f1186e4 448be9          mov     r13d,ecx
+fffff80b`6f1186e7 41b8456e4374    mov     r8d,74436E45h
+fffff80b`6f1186ed 8bd1            mov     edx,ecx
+fffff80b`6f1186ef 33c9            xor     ecx,ecx
+fffff80b`6f1186f1 ff15f9310100    call    qword ptr [fastfat!_imp_ExAllocatePoolWithTag (fffff80b`6f12b8f0)]
+
+Starting from Windows 8, NonPagedPool is equal to NonPagedPoolExecute:
+1: kd> dt nt!_POOL_TYPE NonPagedPool NonPagedPoolExecute
+   NonPagedPool = 0n0
+   NonPagedPoolExecute = 0n0
+
+NonPagedPoolNx should have been used instead: https://msdn.microsoft.com/en-us/library/windows/hardware/ff559707%28v=vs.85%29.aspx?f=255&MSPPError=-2147217396

@@ -1,0 +1,135 @@
+
+[BUG]:		https://hsdes.intel.com/resource/1406203216
+[AUTHOR]:	Mark Alward
+
+[ANALYSYS]:
+
+This is a DRIVER_IRQL_NOT_LESS_OR_EQUAL bugcheck in sdstor.
+
+The callstack shows we bugchecked in SdStorUpdateSenseInfo() due to an invalid memory address:
+
+2: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffa500`5e0b42a8 fffff803`fbd8f3a9 nt!KeBugCheckEx [d:\rs2\minkernel\ntos\ke\amd64\procstat.asm @ 133]
+01 ffffa500`5e0b42b0 fffff803`fbd8d97d nt!KiBugCheckDispatch+0x69 [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 2942]
+02 ffffa500`5e0b43f0 fffff808`52a04d3c nt!KiPageFault+0x23d [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 1215]
+03 ffffa500`5e0b4580 fffff808`52a03cdf sdstor!SdStorUpdateSenseInfo+0x44 [onecore\drivers\storage\port\sd\scsi.c @ 3190]
+04 ffffa500`5e0b45e0 fffff803`fbc65627 sdstor!SdStorPartitionChangeCompletion+0xdf [onecore\drivers\storage\port\sd\scsi.c @ 1255]
+05 ffffa500`5e0b4630 fffff808`539599bf nt!IopfCompleteRequest+0x117 [minkernel\ntos\io\iomgr\iosubs.c @ 4626]
+06 ffffa500`5e0b4760 fffff808`5395ee73 sdbus!SdbusIoRequestCompletion+0xff [onecore\base\busdrv\sd\commonlib\interface.c @ 3154]
+07 ffffa500`5e0b47c0 fffff808`5395db6e sdbus!SdbusWorker+0xe97 [onecore\base\busdrv\sd\commonlib\workeng.c @ 2965]
+08 ffffa500`5e0b4890 fffff803`fbc6adb8 sdbus!SdbusWorkerTimeoutDpc+0xde [onecore\base\busdrv\sd\commonlib\workeng.c @ 1688]
+09 ffffa500`5e0b48f0 fffff803`fbc6bc27 nt!KiProcessExpiredTimerList+0x248 [minkernel\ntos\ke\dpcsup.c @ 2058]
+0a (Inline Function) --------`-------- nt!KiExpireTimerTable+0x82 [minkernel\ntos\ke\dpcsup.c @ 2347]
+0b (Inline Function) --------`-------- nt!KiTimerExpiration+0x11e [minkernel\ntos\ke\dpcsup.c @ 2498]
+0c ffffa500`5e0b49e0 fffff803`fbd8707a nt!KiRetireDpcList+0x367 [minkernel\ntos\ke\dpcsup.c @ 1496]
+0d ffffa500`5e0b4be0 00000000`00000000 nt!KiIdleLoop+0x5a [d:\rs2\minkernel\ntos\ke\amd64\idle.asm @ 166]
+
+
+From the source, SdStorUpdateSenseInfo() was at this line:
+
+Srb->ScsiStatus = SCSISTAT_CHECK_CONDITION;
+
+
+Srb is a PSCSI_REQUEST_BLOCK, the structure used to pass SCSI requests between the disk class 
+driver (classpnp) and a port driver (sdstor in this case). The pointer has a bogus value of 0x38:
+
+2: kd> .frame 0n3;dv /t /v
+03 ffffa500`5e0b4580 fffff808`52a03cdf sdstor!SdStorUpdateSenseInfo+0x44 [onecore\drivers\storage\port\sd\scsi.c @ 3190]
+<unavailable>     struct _PDO_EXTENSION * PdoExtension = <value unavailable>
+@rdi              struct _SCSI_REQUEST_BLOCK * Srb = 0x00000000`00000038
+
+
+Next I looked at the IRP being completed:
+
+2: kd> !irp 0xffffbd8c`c9136e10
+Irp is active with 3 stacks 3 is current (= 0xffffbd8cc9136f70)
+ No Mdl: System buffer=ffffbd8cc9136380: Thread ffffbd8cc8a44700:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  2 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 ffffffffc0000185
+ [IRP_MJ_INTERNAL_DEVICE_CONTROL(f), N/A(0)]
+            0  2 ffffbd8cc8f82060 00000000 fffff80852a03c00-ffffbd8cc8d51f90    
+	       \Driver\sdbus	sdstor!SdStorPartitionChangeCompletion
+			Args: 00000000 00000000 00000000 ffffbd8cc8d51f90
+>[IRP_MJ_DEVICE_CONTROL(e), N/A(0)]
+            0 e1 ffffbd8cc91f4370 00000000 fffff80850fb62a0-ffffa5005ea8ce40 Success Error Cancel pending
+	       \Driver\sdstor	CLASSPNP!ClassSignalCompletion
+			Args: 00000038 00000010 002d1c00 00000000
+
+
+The IRP was issued by classpnp. It started out as a IRP_MJ_DEVICE_CONTROL with minor code
+IOCTL_STORAGE_FIRMWARE_GET_INFO. sdstor determined that the IOCTL was not directed at the
+active eMMC partition (eMMC cards can have multiple hardware partitions) and had to 
+issue a partition change command prior to executing the original request. sdstor "borrowed"
+the current IRP for sending the partition change command.
+
+The source for SdStorPartitionChangeCompletion() shows that the SRB is read from the current
+IRP stack location:
+
+NTSTATUS
+SdStorPartitionChangeCompletion (
+    __in PDEVICE_OBJECT DeviceObject,
+    __in PIRP Irp,
+    _In_reads_opt_(_Inexpressible_("varies")) PVOID CompletionContext
+    )
+{
+    NTSTATUS Status = STATUS_CONTINUE_COMPLETION;
+    ...
+    IrpSp = IoGetCurrentIrpStackLocation( Irp );
+    Srb = IrpSp->Parameters.Scsi.Srb;
+	...
+}
+
+The problem is that the IrpSp->Parameters.Scsi field of the stack location only applies to
+IRP_MJ_SCSI. We've already seen that this stack location is not IRP_MJ_SCSI, it is
+IRP_MJ_DEVICE_CONTROL. Therefore, IrpSp->Parameters.DeviceIoControl should be valid rather than
+the Parameters.Scsi field:
+
+2: kd> dt nt!_IO_STACK_LOCATION ffffbd8c`c9136f70 Parameters.DeviceIoControl.
+   +0x008 Parameters                  : 
+      +0x000 DeviceIoControl             : 
+         +0x000 OutputBufferLength          : 0x38
+         +0x008 InputBufferLength           : 0x10
+         +0x010 IoControlCode               : 0x2d1c00 <-- This is IOCTL_STORAGE_FIRMWARE_GET_INFO
+         +0x018 Type3InputBuffer            : (null) 
+
+
+By looking at the flow of the code in sdstor, we see how the driver could lose track of the fact that
+the Irp is an IRP_MJ_DEVICE_CONTROL and not an IRP_MJ_SCSI:
+
+	1) SdStorProcessIo() is called to start the Irp. The comments indicate that both 
+	   IRP_MJ_DEVICE_CONTROL and IRP_MJ_SCSI are dispatched to this routine.
+		a) The PDO the Irp is directed to does not match the PDO for the active 
+		   eMMC partition. sdstor needs to perform a partition switch so it calls
+		   SdStorProcessIoWithPartitionChange().
+	2) SdStorProcessIoWithPartitionChange() sets up the next stack location for 
+	   sdbus to perform the partition change.
+		a) SdStorPartitionChangeCompletion() is set as the completion routine.
+		b) IoCallDriver() is called to pass Irp to sdbus.
+	3) SdStorPartitionChangeCompletion() is called when sdbus completes the Irp.
+		a) This routine ALWAYS reads Parameters.Scsi from the stack location, 
+		   assuming the original Irp was IRP_MJ_SCSI.
+		   
+So an IRP_MJ_DEVICE_CONTROL that goes through this flow will always result in 
+disaster since SdStorPartitionChangeCompletion() expects the Irp to be IRP_MJ_SCSI.
+The code needs to be changed so that the completion routine can handle both
+major codes.
+
+Here are the other debug theories that I ruled out:
+
+-The 0x38 value for the SRB pointer was caused by some random memory corruption.
+	The stack location contained a valid storage IOCTL, so it was probably not some other
+	random driver/hardware corrupting the IRP.
+-The Irp had somehow been freed already, allowing it to be reused by classpnp.
+	This could probably be ruled out by enabling driver verifier. 
+	I decided this is probably not the case once I realized the state of the IRP 
+	looks valid (it is a valid IOCTL from classpnp). And we can also explain
+	the bugcheck once we assume that the IRP is valid.
+	
+
+	
+	
+

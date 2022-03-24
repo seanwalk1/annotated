@@ -1,0 +1,66 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220544187
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	DRIPS assert.
+[BUGCHECK]:	Assert
+
+
+This is DRIPS assert:
+3: kd> r
+rax=0000000000000000 rbx=ffffa68a29d85010 rcx=ea84846bfd220000
+rdx=0000000000000004 rsi=00000000000000c6 rdi=ffffb685eaedfb90
+rip=fffff8026db6594b rsp=ffffb685eaedfa60 rbp=ffffb685eaedfac9
+ r8=4001000000000000  r9=4001000000000000 r10=0000000000000002
+r11=ffffb685eaedfa50 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000202
+nt!PopDripsWatchdogTakeAction+0x20f:
+fffff802`6db6594b cd2c            int     2Ch
+3: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffb685`eaedfa60 fffff802`6db65dd2 nt!PopDripsWatchdogTakeAction+0x20f
+01 ffffb685`eaedfb30 fffff802`6d4e1a75 nt!PopDripsWatchdogWorkerRoutine+0x302
+02 ffffb685`eaedfc00 fffff802`6d5230e7 nt!ExpWorkerThread+0xf5
+03 ffffb685`eaedfc90 fffff802`6d5ddb86 nt!PspSystemThreadStartup+0x47
+04 ffffb685`eaedfce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+The device that is blocking DRIPS is Intel HD Audio:
+3: kd> dv FxDevice
+       FxDevice = 0xffffa68a`29d85010
+
+The device is in ACTIVE condition and never became Idle:
+3: kd> !fxdevice 0xffffa68a`29d85010
+!fxdevice 0xffffa68a29d85010
+	DevNode: 0xffffa68a28a1ca30
+	UniqueId: "\_SB.PCI0.HDAS"
+	InstancePath: "PCI\VEN_8086&DEV_3198&SUBSYS_72708086&REV_01\3&11583659&0&70"
+	Device Power State: PowerDeviceD0
+	PEP Owner: Platform PEP
+	Platform PEP Entry point: intelpep!PepAcceptDeviceNotification
+	Acpi Plugin: 0
+	Acpi Handle: 0
+	Device Status Flags: SystemTransition DevicePowerRequired 
+	Device Idle Timeout: 0x01c9c380
+	Device Power On: No Activity
+	Device Power Off: No Activity
+	Device Unregister: No Activity
+	Component Count: 1
+		Component 0: F0/F1 - ACTIVE (RefCount = 3)
+		Component Unsatisfied DRIPS Constraint Time: 00:05:17.193
+		Pep Component: 0xffffa68a29d87e18
+			Active: 0	Latency: 1	Residency: 0	Wake: 1	Dx IRP: 1	WW IRP: 1
+			Component Idle State Change: No Activity
+			Component Activation: No Activity
+			Component Active: Running
+	Log has 2 entries starting at 0:
+	  #      IntTime       CPU   Cid   Tid 
+	---  ----------------  ----  ----  ----
+	  0  000000000657b876     3     4    e8  Device registered with 1 component(s)
+	  1  000000000657b876     3     4    e8  Start power management
+
+The IntcAudioBus  driver activates components directly:
+3: kd> dt nt!_device_node 0xffffa68a28a1ca30 ServiceName
+   +0x038 ServiceName : _UNICODE_STRING "IntcAudioBus"
+3: kd> x IntcAudioBus!*PoFxActivateComponent
+fffff800`346200a8 IntcAudioBus!_imp_PoFxActivateComponent = <no type information>

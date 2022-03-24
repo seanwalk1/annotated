@@ -1,0 +1,172 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220136393
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a Debug Break:
+3: kd> r
+rax=0000000000000062 rbx=ffffd7057b829300 rcx=fffff802c47e9af0
+rdx=ffffc081f3750017 rsi=0000000000000000 rdi=ffffd7057b829300
+rip=fffff802c4900a84 rsp=ffffc081f375eee0 rbp=00000000c0000006
+ r8=ffffc081f375ef10  r9=0000000000000002 r10=ffffc081f375ecf0
+r11=0000000000000000 r12=0000000000100000 r13=00000000c0000006
+r14=ffffd7057b8293c0 r15=00000000c0000006
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+nt!PspCatchCriticalBreak+0x8c:
+fffff802`c4900a84 cc              int     3
+
+The break is caused by critical process termination due to stack overflow caused by an infinite loop of pagefaults as paging disk is unable to complete in-page I/O:
+3: kd> !thread
+THREAD ffffd7057980b080  Cid 0320.09c4  Teb: 0000001674186000 Win32Thread: 0000000000000000 RUNNING on processor 3
+Not impersonating
+DeviceMap                 ffffe70565816bb0
+Owning Process            ffffd7057b8293c0       Image:         services.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      1224411        Ticks: 4 (0:00:00:00.062)
+Context Switch Count      657            IdealProcessor: 0             
+UserTime                  00:00:00.015
+KernelTime                00:00:00.031
+Win32 Start Address ntdll!TppWorkerThread (0x00007ffcfee9b320)
+Stack Init ffffc081f375fd10 Current ffffc081f375e6b0
+Base ffffc081f3760000 Limit ffffc081f375a000 Call 0000000000000000
+Priority 10 BasePriority 9 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffc081`f375eee0 fffff802`c4827203 : ffffd705`7b8293c0 00000000`00000001 ffffd705`7b8293c0 00000000`00000000 : nt!PspCatchCriticalBreak+0x8c
+ffffc081`f375ef30 fffff802`c46bb646 : ffffd705`00000000 ffffd705`7b8293c0 ffffd705`7b829698 ffffd705`7b8293c0 : nt!PspTerminateAllThreads+0x16d557
+ffffc081`f375efa0 fffff802`c4748359 : ffffffff`ffffffff ffffc081`f375f0d0 ffffd705`7b8293c0 fffff802`c42b0800 : nt!PspTerminateProcess+0xde
+ffffc081`f375efe0 fffff802`c4389613 : 00000016`00000320 ffffd705`7980b080 ffffd705`7b8293c0 ffffc081`f375fb80 : nt!NtTerminateProcess+0xa9
+ffffc081`f375f050 fffff802`c43816c0 : fffff802`c4225f3a ffffc081`f375fad8 ffffc081`f375fad8 ffffc081`f375fb80 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffc081`f375f050)
+ffffc081`f375f1e8 fffff802`c4225f3a : ffffc081`f375fad8 ffffc081`f375fad8 ffffc081`f375fb80 00000016`7aa81b90 : nt!KiServiceLinkage
+ffffc081`f375f1f0 fffff802`c4389b82 : ffffc081`f375fb80 00000000`00000000 ffffc081`f375fb01 00000000`00000000 : nt!KiDispatchException+0x57a
+ffffc081`f375f9a0 fffff802`c4388057 : 00000000`0003e704 00000000`00000000 ffffd705`7980b080 00000000`00000000 : nt!KiExceptionDispatch+0xc2
+ffffc081`f375fb80 00007ffc`feed243d : 00007ffc`fdf71efc 00000016`00000000 00000016`7aafee80 00007ffc`fef346ed : nt!KiPageFault+0x217 (TrapFrame @ ffffc081`f375fb80)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTableGeneric+0x4c (Inline Function @ 00007ffc`feed243d)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTable+0x4c (Inline Function @ 00007ffc`feed243d)
+00000016`7aa81560 00007ffc`feece704 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlLookupFunctionEntry+0x1ad
+00000016`7aa815b0 00007ffc`fef3361e : 00000000`00000000 00000000`00000000 00000000`00091efc 00000000`00000000 : ntdll!RtlDispatchException+0xe4
+00000016`7aa81cc0 00007ffc`feed243d : 00007ffc`fdf71efc 00000016`00000000 00000016`7aafee80 00007ffc`fef346ed : ntdll!KiUserExceptionDispatch+0x2e (TrapFrame @ 00000016`7aa820e8)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTableGeneric+0x4c (Inline Function @ 00007ffc`feed243d)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTable+0x4c (Inline Function @ 00007ffc`feed243d)
+00000016`7aa82360 00007ffc`feece704 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlLookupFunctionEntry+0x1ad
+00000016`7aa823b0 00007ffc`fef3361e : 00000000`00000000 00000000`00000000 00000000`00091efc 00000000`00000000 : ntdll!RtlDispatchException+0xe4
+00000016`7aa82ac0 00007ffc`feed243d : 00007ffc`fdf71efc 00000016`00000000 00000016`7aafee80 00007ffc`fef346ed : ntdll!KiUserExceptionDispatch+0x2e (TrapFrame @ 00000016`7aa82ee8)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTableGeneric+0x4c (Inline Function @ 00007ffc`feed243d)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTable+0x4c (Inline Function @ 00007ffc`feed243d)
+00000016`7aa83160 00007ffc`feece704 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlLookupFunctionEntry+0x1ad
+00000016`7aa831b0 00007ffc`fef3361e : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlDispatchException+0xe4
+00000016`7aa838c0 00007ffc`feece669 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!KiUserExceptionDispatch+0x2e (TrapFrame @ 00000016`7aa83ce8)
+00000016`7aa83f70 00007ffc`fef3361e : 00000000`00000000 00000000`00000000 00000000`00091efc 00000000`00000000 : ntdll!RtlDispatchException+0x49
+00000016`7aa84680 00007ffc`feed243d : 00007ffc`fdf71efc 00000016`00000000 00000016`7aafee80 00007ffc`fef346ed : ntdll!KiUserExceptionDispatch+0x2e (TrapFrame @ 00000016`7aa84aa8)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTableGeneric+0x4c (Inline Function @ 00007ffc`feed243d)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTable+0x4c (Inline Function @ 00007ffc`feed243d)
+00000016`7aa84d20 00007ffc`feece704 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlLookupFunctionEntry+0x1ad
+00000016`7aa84d70 00007ffc`fef3361e : 00000000`00000000 00000000`00000000 00000000`00091efc 00000000`00000000 : ntdll!RtlDispatchException+0xe4
+00000016`7aa85480 00007ffc`feed243d : 00007ffc`fdf71efc 00000016`00000000 00000016`7aafee80 00007ffc`fef346ed : ntdll!KiUserExceptionDispatch+0x2e (TrapFrame @ 00000016`7aa858a8)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTableGeneric+0x4c (Inline Function @ 00007ffc`feed243d)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTable+0x4c (Inline Function @ 00007ffc`feed243d)
+00000016`7aa85b20 00007ffc`feece704 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlLookupFunctionEntry+0x1ad
+00000016`7aa85b70 00007ffc`fef3361e : 00000000`00000000 00000000`00000000 00000000`00091efc 00000000`00000000 : ntdll!RtlDispatchException+0xe4
+00000016`7aa86280 00007ffc`feed243d : 00007ffc`fdf71efc 00000016`00000000 00000016`7aafee80 00007ffc`fef346ed : ntdll!KiUserExceptionDispatch+0x2e (TrapFrame @ 00000016`7aa866a8)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTableGeneric+0x4c (Inline Function @ 00007ffc`feed243d)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!RtlpSearchFunctionTable+0x4c (Inline Function @ 00007ffc`feed243d)
+00000016`7aa86920 00007ffc`feece704 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlLookupFunctionEntry+0x1ad
+00000016`7aa86970 00007ffc`fef3361e : 00000000`00000000 00000000`00000000 00000000`00091efc 00000000`00000000 : ntdll!RtlDispatchException+0xe4
+
+The process is marked as critical, which caused Process Manager to break into debugger on process termination:
+3: kd> dt nt!_EPROCESS  ffffd7057b8293c0  BreakOnTermination
+   +0x304 BreakOnTermination : 0y1
+
+The paging device has numerous failed requests:
+3: kd> !storagekd.storclass
+Storage Class Devices
+
+Usage Legend: B = Boot, P = Paging, D = Dump, H = Hiber, R = Removable
+
+FDO                      # Device ID                        Usage   UP   DN  FL
+-------------------------------------------------------------------------------
+ffffd7057aa85060 [1,2]   0 INTEL SSDSC2CW060A3              BPD      ?    ?  16
+
+Usage: !storclass <class device> <level [0-2]>
+       !storclass 0 <level [1-2]> to display summary with upper-level and down-level IRP counts
+
+Optical devices, such as DVD drives, can be listed with !wdfkd.wdfdriverinfo cdrom, and further explored 
+using the "!wdfkd.wdfdevice <device_handle>" and "!wdfkd.wdfdevicequeues <device_handle>" commands.
+
+3: kd> !storagekd.storclass ffffd7057aa85060 2
+Storage class device ffffd7057aa85060 with extension at ffffd7057aa851b0
+
+Classpnp Internal Information at ffffd7057aa84010
+
+    Transfer Packet Engine:
+
+     Packet          Status  DL Irp          Opcode  Sector/ListId   UL Irp 
+    --------         ------ --------         ------ --------------- --------
+    ffffd7057f65d2b0  Free  ffffd7057edb6950 
+    ffffd7057bc02290  Free  ffffd7057b6c6b80 
+    ffffd7057bdef8a0  Free  ffffd7057bfdb570 
+    ffffd7057bbaa480  Free  ffffd705793f6010 
+    ffffd7057b3f1e80  Free  ffffd7057c084b80 
+    ffffd7057c2077c0  Free  ffffd7057c1bfb80 
+    ffffd7057bd193d0  Free  ffffd7057c07d4b0 
+    ffffd7057ede21f0  Free  ffffd7057b91bb40 
+    ffffd7057fa466b0  Free  ffffd7057b91b670 
+    ffffd7057f2cbce0  Free  ffffd7057b9d2b40 
+    ffffd7057d47bcf0  Free  ffffd7057b9c8b40 
+    ffffd7057ba2d3e0  Free  ffffd7057fb309b0 
+    ffffd70579834770  Free  ffffd7057d0d2e10 
+    ffffd7057ee9e5f0  Free  ffffd7057fa32dc0 
+    ffffd705798bee80  Free  ffffd7057ca8a6d0 
+    ffffd70579504010  Free  ffffd7057d057dc0 
+
+    Pending Idle Requests: 0x0
+
+
+    Failed Requests:
+
+           Srb    Scsi                                   
+    Opcode Status Status Sense Code  Sector/ListId   Time Stamp 
+    ------ ------ ------ ---------- --------------- ------------
+      28     08     00    00 00 00      00229353    18:16:50.183   
+      28     08     00    00 00 00      00719b4d    18:16:50.183   
+      28     08     00    00 00 00      00719b4d    18:16:50.183   
+      28     08     00    00 00 00      00229353    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00229353    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00229353    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+      28     08     00    00 00 00      00719b4d    18:16:50.199   
+
+Classpnp External Information at ffffd7057aa851b0
+
+    INTEL SSDSC2CW060A3 400i CVCV205006VC060AGN 
+
+    Minidriver information at ffffd7057aa85670
+    Attached device object at ffffd7057a78ee40
+    Physical device object at ffffd7057a790060
+
+    Media Geometry:
+
+        Bytes in a Sector = 512
+        Sectors per Track = 63
+        Tracks / Cylinder = 255
+        Media Length      = 60022480896 bytes = ~55 GB
+
+    -- dt classpnp!_FUNCTIONAL_DEVICE_EXTENSION ffffd7057aa851b0 --
+
+
+To get port level details, please use !storunit ffffd7057a790060 –
+
+
+So here is what we can recommend:
+1.	Reproduce on multiple disks, preferable with different makes and models
+2.	If possible replace the disk
+3.	In this case disk is already running latest firmware (400i) and no updates are available: http://www.intel.com/content/www/us/en/support/memory-and-storage/000017245.html
+4.	Aggressive over provisioning (limiting size of the allocated partitions) often allows Firmware to reduce the need in extensive garbage collection and alleviates these issues

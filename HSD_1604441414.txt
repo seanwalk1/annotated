@@ -1,0 +1,102 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604441414
+[AUTHOR]:	Mark Alward
+
+[ANALYSIS]:
+
+This is a yellow bang on "SD storage class controller" in device manager. The message is
+"An invalid parameter was passed to a service or function".
+
+Some isolation details for the issue:
+-Only seen on RS3 (16251), not on RS2.
+-Only seen on connected standby system.
+
+The device stack for this device looks like this:
+
+	FDO <- sdstor
+	PDO <- sdbus
+	
+I collected traces for these drivers using these commands:
+	tracelog -start sdtrace -cir 100 -f sdtrace.etl
+	tracelog -enable sdtrace -guid #3b9e3da4-70b8-46d3-9ef2-3ddf128bded8 -flag 0xFFFF -level 0xFFFFFFFF
+	tracelog -enable sdtrace -guid #945186BF-3DD6-4f3f-9C8E-9EDD3FC9D559 -flag 0xFFFF -level 0xFFFFFFFF
+
+The main finding from the trace was that sdbus showed no obvious errors enumerating the
+SD card. This means the failed start was more likely caused by sdstor (the FDO driver).
+
+Diffing 15063 and 16251 source for sdstor showed a few changes. The following added code looked 
+suspect since it runs only on CS systems:
+
+	if (IsSystemAoAc != FALSE) {
+        Status = PoRegisterPowerSettingCallback(FdoExtension->DeviceObject,
+                                                &GUID_LOW_POWER_EPOCH,
+                                                (PPOWER_SETTING_CALLBACK)SdStorLowPowerEpochCallback,
+                                                (PVOID)FdoExtension,
+                                                &FdoExtension->LowPowerEpochEntry);
+
+        if (!NT_SUCCESS(Status)) {
+            goto Cleanup;
+        }
+
+        Status = PoRegisterCoalescingCallback((PPO_COALESCING_CALLBACK)SdStorIoCoalescingCallback,
+                                              TRUE,
+                                              &(FdoExtension->IoCoalescingEntry),
+                                              FdoExtension);
+
+        if (!NT_SUCCESS(Status)) {
+            goto Cleanup;
+        }
+    }
+	
+I stepped through this routine using "pc" (go to next call) and "r eax" (to see return codes).
+PoRegisterCoalescingCallback() was returning STATUS_INVALID_PARAMETER, and this return code
+was propagated as the final start-device IO status.
+
+Looking at PoRegisterCoalescingCallback(), this routine stores the callback routines in 
+a fixed size array of size 8 called nt!PopCoalescingCallbackRoutine. If all the slots are
+used, it returns STATUS_INVALID_PARAMETER.
+
+Dumping the array:
+
+0: kd> dt -a8 -r nt!_EX_CALLBACK 0xfffff800ec9625e0
+[0] @ fffff800`ec9625e0 
+---------------------------------------------
+   +0x000 RoutineBlock     : _EX_FAST_REF
+      +0x000 Object           : 0xffffb107`e9e361df Void
+      +0x000 RefCnt           : 0y1111
+      +0x000 Value            : 0xffffb107`e9e361df
+...
+
+The Object field is of type _POP_COALESCING_CALLBACK_BLOCK. I dumped each of these using "dps"
+to see the callbacks registered. The second routine dps shows is the driver-supplied callback,
+for example:
+
+2: kd> dps 0xffffdf08`7c870a20
+ffffdf08`7c870a20  00000000`00000020
+ffffdf08`7c870a28  fffff801`bdb9c200 nt!PopCoalescingCallback [minkernel\ntos\po\iocoales.c @ 218]
+ffffdf08`7c870a30  ffffdf08`7c870a20
+ffffdf08`7c870a38  fffff801`bd691390 nt!CmpCoalescingCallback [minkernel\ntos\config\cmworker.c @ 723]
+ffffdf08`7c870a40  ffffdf08`7c870a01
+
+The 8 callbacks were:
+	storport!RaidCoalescingCallback (registered 3x)
+	NTFS!NtfsCoalescingCallback
+	storport!RaidUnitIoCoalescingCallback
+	nt!PoStartNextPowerIrp
+	fastfat!FatCoalescingCallback
+	nt!CmpCoalescingCallback
+	
+Comparing this to a working system, the difference is that RaidCoalescingCallback is only registered 2x
+on the working system, leaving a slot for sdstor's callback.
+
+storport and sdstor both call PoRegisterCoalescingCallback() during AddDevice, so they can register
+multiple times. Simply adding another storage adapter to the system (ex, plugging in an external harddrive)
+can deplete these 8 slots and cause future calls to PoRegisterCoalescingCallback() to fail.
+
+Possible solutions:
+	-Require drivers to only call PoRegisterCoalescingCallback() during DriverEntry. This 
+	 avoids multiple registration.
+	-Get rid of this 8 slot limit in the implementation of PoRegisterCoalescingCallback(). Since the
+	 # of storage drivers and storage adapters on a given system isn't statically known, it doesn't
+	 really make sense to impose an arbitrary limit of 8 callbacks.
+	
+

@@ -1,0 +1,117 @@
+[BUG]:		https://hsdes.intel.com/appstore/article-preview/#/1405636494
+[AUTHOR]:	Joel Faber
+
+[ANALYSYS]:
+
+
+The thread that crashed is this one:
+
+2: kd> !thread ffff9684c49841c0
+THREAD ffff9684c49841c0  Cid 0c3c.0c7c  Teb: 0000009b9ce69000 Win32Thread: 0000000000000000 RUNNING on processor 2
+Not impersonating
+DeviceMap                 ffffba87f6a020e0
+Owning Process            ffff9684c48fe600       Image:         svchost.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      2934           Ticks: 0
+Context Switch Count      86             IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address ntdll!TppWorkerThread (0x00007ffbbdaffb10)
+Stack Init ffffd4807e50fc10 Current ffffd4807e50ef30
+Base ffffd4807e510000 Limit ffffd4807e509000 Call 0000000000000000
+Priority 9 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+0000009b`9d5fe550 00007ffb`ba413a58 : 0000009b`9d5fe780 00007ffb`bdbb53b2 0000009b`9d5ffa54 00000266`029038b8 : ntdll!RtlUnhandledExceptionFilter2+0x34a [minkernel\ntos\rtl\excptdbg.c @ 487] 
+0000009b`9d5fe5d0 00007ffb`bdba82c6 : 00000000`00000138 00007ffb`bdbd9ed4 0000009b`9d5ffa54 00000000`00000000 : KERNELBASE!UnhandledExceptionFilter+0x28b18 [minkernel\kernelbase\xcpt.c @ 557] 
+0000009b`9d5fe6e0 00007ffb`bdb51c8d : 00007ffb`bdbd9ed4 00000000`00000003 00000000`00000000 00000000`00000000 : ntdll!TppWorkerpInnerExceptionFilter+0x1a [minkernel\threadpool\ntdll\worker.c @ 95] 
+0000009b`9d5fe710 00007ffb`bdb3b486 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!TppWorkerThread$filt$3+0x19 [minkernel\threadpool\ntdll\worker.c @ 1058] 
+0000009b`9d5fe750 00007ffb`bdb49f92 : 00007ffb`bdbd9f84 0000009b`9d5ff7b0 0000009b`9d5ffa10 0000009b`00000000 : ntdll!__C_specific_handler+0x96 [minkernel\crts\crtw32\misc\riscchandler.c @ 329] 
+0000009b`9d5fe7c0 00007ffb`bdb4f04d : 00000000`00000000 0000009b`9d5fe920 00000000`00000000 00000000`00000000 : ntdll!__GSHandlerCheck_SEH+0x6a [minkernel\crts\crtw32\misc\amd64\gshandlerseh.c @ 106] 
+0000009b`9d5fe7f0 00007ffb`bdac5446 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlpExecuteHandlerForException+0xd [d:\rs2\minkernel\ntos\rtl\amd64\xcptmisc.asm @ 135] 
+0000009b`9d5fe820 00007ffb`bdac6278 : 00000266`00400120 00000266`02972770 0000009b`9d5fef80 00000000`00000000 : ntdll!RtlDispatchException+0x586 [minkernel\ntos\rtl\amd64\exdsptch.c @ 564] 
+0000009b`9d5fef30 00007ffb`bdb4e14a : 00000000`00000050 00000266`0297e900 00000000`00000000 00000266`02961d70 : ntdll!RtlRaiseException+0x878 [minkernel\ntos\rtl\amd64\raise.c @ 167] 
+0000009b`9d5ff790 00007ffb`ba3cab4c : 0000009b`9d5ff8b8 00000000`00000022 ffffffff`fffffffe 00000000`0000004d : ntdll!KiRaiseUserExceptionDispatcher+0x3a [d:\rs2\minkernel\ntos\rtl\amd64\trampoln.asm @ 824] 
+0000009b`9d5ff860 00007ffb`ae0e4bd3 : 00000266`0297e900 00000000`00000000 00000000`00000000 00000266`02961d70 : KERNELBASE!SetEvent+0xc [minkernel\kernelbase\synch.c @ 494] 
+0000009b`9d5ff890 00007ffb`ba5c2d10 : 00000266`0296b660 00000000`00000001 00000000`00000000 0000888e`309fa5fb : sensorservice!SwDevice_t<1>::SwDeviceCreateCallback+0x83 [onecoreuap\drivers\mobilepc\sensors\convergence\common\swdevicehelper\swdevicehelper.h @ 229] 
+0000009b`9d5ff900 00007ffb`ba3d2580 : 0000009b`9d5ffd20 0000009b`9d5ffc18 00000266`02961d88 00007ffb`bdaffa3c : cfgmgr32!SwDeviceCallback+0x50 [onecore\base\pnp\swdevice\swdevice.cpp @ 58] 
+0000009b`9d5ff940 00007ffb`bdaff8e7 : 00000266`02980a80 00000000`00000000 00000000`00000000 00000266`02980b48 : KERNELBASE!BasepTpIoCallback+0x50 [minkernel\threadpool\kernel32\threadpool.c @ 213] 
+0000009b`9d5ff990 00007ffb`bdafff20 : 00000266`02980b48 00000000`00000000 00000266`02961d88 00000000`00000000 : ntdll!TppIopExecuteCallback+0x127 [minkernel\threadpool\ntdll\io.c @ 371] 
+0000009b`9d5ffa10 00007ffb`bb162d94 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!TppWorkerThread+0x410 [minkernel\threadpool\ntdll\worker.c @ 1048] 
+0000009b`9d5ffdc0 00007ffb`bdb13d21 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : KERNEL32!BaseThreadInitThunk+0x14 [base\win32\client\thread.c @ 64] 
+0000009b`9d5ffdf0 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlUserThreadStart+0x21 [minkernel\ntdll\rtlstrt.c @ 997] 
+
+From this callstack we see that sensorservice!SwDevice_t<1>::SwDeviceCreateCallback is calling SetEvent.  The object that owns the event is sensorservice!SwDevice_t<1> 0x00000266`0297e900
+2: kd> .frame 0n11;dv /t /v
+0b 0000009b`9d5ff890 00007ffb`ba5c2d10 sensorservice!SwDevice_t<1>::SwDeviceCreateCallback+0x83 [onecoreuap\drivers\mobilepc\sensors\convergence\common\swdevicehelper\swdevicehelper.h @ 229] 
+@rdi              struct HSWDEVICE__ * handle = 0x00000266`02961d70
+<unavailable>     HRESULT hr = <value unavailable>
+@rbx              void * context = 0x00000266`0297e900 // this is a sensorservice!SwDevice_t<1>
+<unavailable>     wchar_t * deviceInstancePath = <value unavailable>
+
+If we look at thread ffff9684c5166700 we can see that there is a sensorservice!SwDevice_t<1> being destroyed:
+
+2: kd> !thread ffff9684c5166700
+THREAD ffff9684c5166700  Cid 0c3c.12b8  Teb: 0000009b9ce71000 Win32Thread: 0000000000000000 WAIT: (WrAlertByThreadId) UserMode Non-Alertable
+    0000026602980ac8  Unknown
+Not impersonating
+DeviceMap                 ffffba87f6a020e0
+Owning Process            ffff9684c48fe600       Image:         svchost.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      2934           Ticks: 0
+Context Switch Count      10             IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address ntdll!TppWorkerThread (0x00007ffbbdaffb10)
+Stack Init ffffd4807eb2bc10 Current ffffd4807eb2b720
+Base ffffd4807eb2c000 Limit ffffd4807eb25000 Call 0000000000000000
+Priority 9 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd480`7eb2b760 fffff802`d887058a : ffff9684`c5166700 00000000`00010962 fffff802`d75c3180 ffff9684`c51e9320 : nt!KiSwapContext+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+ffffd480`7eb2b8a0 fffff802`d886ff61 : 00000000`00000000 00000000`7ffe0008 00000000`00000000 fffff802`d8cde12f : nt!KiSwapThread+0x16a [minkernel\ntos\ke\thredsup.c @ 9885] 
+ffffd480`7eb2b950 fffff802`d886cddc : ffff9684`c5166840 ffff9684`00000000 ffffd480`7eb2bb00 ffff9684`c5166700 : nt!KiCommitThreadWait+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+ffffd480`7eb2b9f0 fffff802`d8cad53e : ffff9684`c5166700 ffffd480`7eb2bb00 ffff9684`c50f3ef0 ffffd480`00000000 : nt!KeWaitForAlertByThreadId+0xb4 [minkernel\ntos\ke\wait.c @ 954] 
+ffffd480`7eb2ba50 fffff802`d897c413 : ffff9684`c5166700 00000000`00000000 00000000`00000000 00000000`c0000225 : nt!NtWaitForAlertByThreadId+0x2a [minkernel\ntos\ps\thidalrt.c @ 53] 
+ffffd480`7eb2ba80 00007ffb`bdb4dba4 : 00007ffb`bdb08945 00000000`00000000 00000000`00000000 0000e9d5`fb71554f : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffd480`7eb2ba80) [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 2706] 
+0000009b`9d97f278 00007ffb`bdb08945 : 00000000`00000000 00000000`00000000 0000e9d5`fb71554f 00000000`00000000 : ntdll!ZwWaitForAlertByThreadId+0x14 [d:\rs2.obj.amd64fre\minkernel\ntdll\daytona\objfre\amd64\usrstubs.asm @ 3779] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!TppIteWait+0xb (Inline Function @ 00007ffb`bdb08945) [minkernel\threadpool\ntdll\tp.c @ 1368] 
+0000009b`9d97f280 00007ffb`bdb29444 : 00000266`02980a80 00000000`00000000 00000000`ffffffff 00000000`00000002 : ntdll!TppBarrierAdjust+0xf9 [minkernel\threadpool\ntdll\barrier.c @ 97] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : ntdll!TppCleanupGroupMemberWait+0x13 (Inline Function @ 00007ffb`bdb29444) [minkernel\threadpool\ntdll\cgrpmem.c @ 587] 
+0000009b`9d97f2e0 00007ffb`ba5d1f42 : 00000266`02961d70 00000000`00000000 00000000`00000001 00000266`02972728 : ntdll!TpWaitForIoCompletion+0x34 [minkernel\threadpool\ntdll\io.c @ 659] 
+0000009b`9d97f320 00007ffb`ae0e4912 : 00000266`0297e900 00000000`ffffffff 00007ffb`ae151060 00000266`0297e900 : cfgmgr32!SwDeviceClose+0x42 [onecore\base\pnp\swdevice\swdevice.cpp @ 329] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!wil::details::resource_policy<HSWDEVICE__ *,void (__cdecl*)(HSWDEVICE__ *),&SwDeviceClose,wistd::integral_constant<unsigned __int64,0>,HSWDEVICE__ *,0,std::nullptr_t>::close+0x6 (Inline Function @ 00007ffb`ae0e4912) [internal\sdk\inc\wil\resource.h @ 127] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!wil::details::unique_storage<wil::details::resource_policy<HSWDEVICE__ *,void (__cdecl*)(HSWDEVICE__ *),&SwDeviceClose,wistd::integral_constant<unsigned __int64,0>,HSWDEVICE__ *,0,std::nullptr_t> >::{dtor}+0xe (Inline Function @ 00007ffb`ae0e4912) [internal\sdk\inc\wil\resource.h @ 171] 
+0000009b`9d97f350 00007ffb`ae0e092d : 00000000`00000000 00000000`00000000 00000000`00000000 00000266`029725b0 : sensorservice!SwDevice_t<1>::`scalar deleting destructor'+0xe2
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::default_delete<SwDevice_t<1> >::operator()+0x5 (Inline Function @ 00007ffb`ae0e092d) [internal\sdk\inc\ucrt\stl120\memory @ 1199] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::unique_ptr<SwDevice_t<1>,std::default_delete<SwDevice_t<1> > >::{dtor}+0xe (Inline Function @ 00007ffb`ae0e092d) [internal\sdk\inc\ucrt\stl120\memory @ 1410] 
+0000009b`9d97f380 00007ffb`ae0e5116 : 00000266`029725c0 00000000`00000079 00000266`029725b0 ffffffff`ffffffff : sensorservice!SdoSoftwareAlgorithm::~SdoSoftwareAlgorithm+0x375 [onecoreuap\drivers\mobilepc\sensors\convergence\services\orientation\server\softwarealgorithm\sdosoftwarealgorithm.cpp @ 188] 
+0000009b`9d97f3e0 00007ffb`ae0e3d2d : 00000000`00000001 ffffffff`ffffffff 00000000`00000001 ffffffff`ffffffff : sensorservice!std::_Ref_count_obj<SdoSoftwareAlgorithm>::_Destroy+0x16 [internal\sdk\inc\ucrt\stl120\memory @ 917] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Ref_count_base::_Decref+0x1a (Inline Function @ 00007ffb`ae0e3d2d) [internal\sdk\inc\ucrt\stl120\memory @ 108] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Ptr_base<SdoSoftwareAlgorithm>::_Decref+0x23 (Inline Function @ 00007ffb`ae0e3d2d) [internal\sdk\inc\ucrt\stl120\memory @ 332] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::shared_ptr<SdoSoftwareAlgorithm>::{dtor}+0x23 (Inline Function @ 00007ffb`ae0e3d2d) [internal\sdk\inc\ucrt\stl120\memory @ 571] 
+0000009b`9d97f420 00007ffb`ae0e3bc4 : 00000266`02961950 00000000`00000000 00000000`00000001 0000009b`9d97f630 : sensorservice!SdoSoftwareAlgorithmFactory::~SdoSoftwareAlgorithmFactory+0x149 [onecoreuap\drivers\mobilepc\sensors\convergence\services\orientation\server\softwarealgorithm\sdosoftwarealgorithm.cpp @ 1245] 
+0000009b`9d97f4a0 00007ffb`ae0db1fb : 00000266`0296add0 00000266`0296add0 00000000`00000000 00000000`00000000 : sensorservice!SdoSoftwareAlgorithmFactory::`scalar deleting destructor'+0x14
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::default_delete<SdoSoftwareAlgorithmFactory>::operator()+0x10 (Inline Function @ 00007ffb`ae0db1fb) [internal\sdk\inc\ucrt\stl120\memory @ 1199] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::unique_ptr<SdoSoftwareAlgorithmFactory,std::default_delete<SdoSoftwareAlgorithmFactory> >::reset+0x1f (Inline Function @ 00007ffb`ae0db1fb) [internal\sdk\inc\ucrt\stl120\memory @ 1445] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::unique_ptr<SdoSoftwareAlgorithmFactory,std::default_delete<SdoSoftwareAlgorithmFactory> >::operator=+0x1f (Inline Function @ 00007ffb`ae0db1fb) [internal\sdk\inc\ucrt\stl120\memory @ 1318] 
+0000009b`9d97f4d0 00007ffb`ae0d9b11 : 00000000`0000007f 0000009b`9d97f660 0000009b`9d97f670 00007ffb`ba1cd08b : sensorservice!ServiceManager::DeviceArrival<SdoSoftwareAlgorithmFactory>+0x12b [onecoreuap\drivers\mobilepc\sensors\convergence\services\sensorservice\servicemanager.cpp @ 111] 
+0000009b`9d97f5f0 00007ffb`ae0df264 : 0000009b`9d97f6f0 00000266`0293ac90 0000009b`9d97f670 00007ffb`ae0d9ad0 : sensorservice!ServiceManager::OnDeviceArrival+0x41 [onecoreuap\drivers\mobilepc\sensors\convergence\services\sensorservice\servicemanager.cpp @ 207] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_pmf_pointer::_Call+0x2b (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::invoke+0x35 (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_ret<std::_Unforced,0>::_Call+0x35 (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\type_traits @ 1575] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Call_binder+0x35 (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\stl120\functional @ 816] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Binder<std::_Unforced,void (__cdecl ServiceManager::*)(_GUID,std::basic_string<unsigned short,std::char_traits<unsigned short>,std::allocator<unsigned short> >),ServiceManager * const,std::_Ph<1> const &,std::_Ph<2> const &>::operator()+0x35 (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\stl120\functional @ 871] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_functor::_Call+0x35 (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::invoke+0x35 (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_ret<void,1>::_Call+0x35 (Inline Function @ 00007ffb`ae0df264) [internal\sdk\inc\ucrt\type_traits @ 1554] 
+0000009b`9d97f640 00007ffb`ae1175c5 : 0000009b`9d97f7a8 0000009b`9d97f7a8 0000009b`9d97f830 00000266`029645e0 : sensorservice!std::_Func_impl<std::_Binder<std::_Unforced,void (__cdecl ServiceManager::*)(_GUID,std::basic_string<unsigned short,std::char_traits<unsigned short>,std::allocator<unsigned short> >) __ptr64,ServiceManager * __ptr64 const,std::_Ph<1> const & __ptr64,std::_Ph<2> const & __ptr64>,std::allocator<int>,void,_GUID,std::basic_string<unsigned short,std::char_traits<unsigned short>,std::allocator<unsigned short> > >::_Do_call+0x44 [internal\sdk\inc\ucrt\stl120\functional @ 212] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Func_class<void,_GUID,std::basic_string<unsigned short,std::char_traits<unsigned short>,std::allocator<unsigned short> > >::operator()+0x28 (Inline Function @ 00007ffb`ae1175c5) [internal\sdk\inc\ucrt\stl120\functional @ 277] 
+0000009b`9d97f6a0 00007ffb`ae117332 : 00000266`0293abf0 00000000`00000000 00000000`00000000 0000009b`9d97f8d0 : sensorservice!PnpDeviceInterface::OnDeviceArrival+0x99 [onecoreuap\drivers\mobilepc\sensors\convergence\common\pnpmanager\pnpmanager.cpp @ 432] 
+
+We can see that the sensorservice!SwDevice_t<1> being destoyed is the same one that owns the event being set above that causes the exception:
+2: kd> .thread ffff9684c5166700
+2: kd> .frame 0n14;dv /t /v
+0e 0000009b`9d97f350 00007ffb`ae0e092d sensorservice!SwDevice_t<1>::`scalar deleting destructor'+0xe2
+@rbx              class SwDevice_t<1> * this = 0x00000266`0297e900
+
+
+One thread is destroying an object while another is using the object. 

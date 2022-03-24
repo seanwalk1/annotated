@@ -1,0 +1,69 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220705987
+[AUTHOR]:	Mark Alward
+
+[ANALYSIS]:	This is an issue with crashdump not working on KBL.
+[BUGCHECK]:	Debug
+
+This is an issue with crashdump not working on KBL. The system reboots immediately without writing
+a dump.
+
+-The issue is only seen when driver verifier is enabled: verifier /standard /all
+-The issue is seen using .crash, NotMyFault, or Ctrl+Scroll Lock methods. Not seen using .dump.
+
+During crash, windbg shows this message:
+	
+	Driver Verifier: Extension abort with Error Code 0x20011
+	Error String KeAcquireSpinLockRaiseToDpc should only be called at IRQL <= DISPATCH_LEVEL.
+
+Looking at the source in minkernel\verifier\xdv, this messages comes from the SLIC_abort()
+routine in verifier. It indicates a violation detected on KeAcquireSpinLockRaiseToDpc().
+SLIC_abort() bugchecks the system with a verifier bugcheck after printing this message.
+
+I set a breakpoint on nt!KeBugCheckEx and crashed the system using NotMyFault. 
+Then I continued, hoping to see another call to KeBugCheckEx() because of this verifier
+violation:
+
+0: kd> k
+ # Child-SP          RetAddr           Call Site
+00 fffff10e`6ad5e908 fffff804`becc4787 nt!KeBugCheckEx
+01 fffff10e`6ad5e910 fffff804`becb7be3 VerifierExt!XdvUnifiedBugCheck+0x30f
+02 fffff10e`6ad5e980 fffff804`becb7c34 VerifierExt!KeCancelTimer_wrapper+0xa3
+03 fffff10e`6ad5e9c0 fffff800`f49c6218 VerifierExt!KeAcquireSpinLockRaiseToDpc_wrapper+0x34
+04 fffff10e`6ad5ea10 fffff800`f49c4dd2 nt!ViKeAcquireSpinLockRaiseToDpcCommon+0x3c
+05 fffff10e`6ad5ea40 fffff804`c60e9178 nt!VerifierKeAcquireSpinLockRaiseToDpc+0x12
+06 fffff10e`6ad5ea80 fffff804`c5fcce68 Netwtw06!DebugDataCollector::retrieveDebugData+0x28
+07 fffff10e`6ad5eac0 fffff804`c60c6d2d Netwtw06!debugInfraRetrieveDiagnosticsDataAPI+0x48
+08 fffff10e`6ad5eaf0 fffff804`c60c743a Netwtw06!mdcDump1KBuffer+0x5d
+09 fffff10e`6ad5eb40 fffff804`c60c75c3 Netwtw06!fillCrashData+0xba
+0a fffff10e`6ad5eb90 fffff804`c07e7de6 Netwtw06!mdcBugCheckSecondaryDumpDataCallbackRoutine+0x83
+0b fffff10e`6ad5ebc0 fffff804`c07e50ff crashdmp!GetSecondaryDumpCallbackSize+0x11e
+0c fffff10e`6ad5ec60 fffff804`c07e40a6 crashdmp!DumpWrite+0x8f
+0d fffff10e`6ad5ecc0 fffff800`f441e7b6 crashdmp!CrashdmpWrite+0x1f6
+0e fffff10e`6ad5ecf0 fffff800`f442cab3 nt!IoWriteCrashDump+0x4da
+0f fffff10e`6ad5ee50 fffff800`f4396987 nt!KeBugCheck2+0xc03
+10 fffff10e`6ad5f570 fffff800`f43a20e9 nt!KeBugCheckEx+0x107
+11 fffff10e`6ad5f5b0 fffff800`f43a047d nt!KiBugCheckDispatch+0x69
+12 fffff10e`6ad5f6f0 fffff801`0b591530 nt!KiPageFault+0x23d
+*** ERROR: Module load completed but symbols could not be loaded for myfault.sys
+13 fffff10e`6ad5f880 fffff801`0b591e2d myfault+0x1530
+
+
+This stack shows that while we were writing the crashdump (due to NotMyFault), a bugcheck
+callback in Netwtw06.sys was called. These callbacks can be registered by drivers to 
+add extra data to a crashdump.
+
+In this case, the callback called KeAcquireSpinLockRaiseToDpc(). This routine has to be called
+at IRQL <= DISPATCH_LEVEL, but the system runs at HIGH_IRQL during crashdump. Verifier caught
+this violation and tried to bugcheck the system again. I didn't study how this
+"recursive bugcheck" is handled, but its likely that windows just gives up at this point and
+restarts the system.
+
+MSDN gives rules for writing a bugcheck callback - the set of API's allowed is very restricted
+since crashdump code runs on a single core at IRQL HIGH_LEVEL. Among other things, no
+synchronization routines can be called.
+
+So this is a bug in Netwtw06.
+
+
+
+

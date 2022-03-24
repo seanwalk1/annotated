@@ -1,0 +1,315 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220185071
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	SYSTEM_SERVICE_EXCEPTION (3b)
+[BUGCHECK]:	0x3B
+
+This is SYSTEM_SERVICE_EXCEPTION (3b) – see attached memory dump.
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_SERVICE_EXCEPTION (3b)
+An exception happened while executing a system service routine.
+Arguments:
+Arg1: 0000000080000003, Exception code that caused the bugcheck
+Arg2: fffff803c2804a20, Address of the instruction which caused the bugcheck
+Arg3: ffffc381786c6aa0, Address of the context record for the exception that caused the bugcheck
+Arg4: 0000000000000000, zero.
+…
+
+The exception is caused by breakpoint:
+1: kd> u fffff803c2804a20 L1
+nt!DbgBreakPoint:
+fffff803`c2804a20 cc              int     3
+
+USBSER.SYS is purging the I/O queue because device is being closed:
+1: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffffc381`786c61c8 fffff803`c280a3a9 nt!KeBugCheckEx
+01 ffffc381`786c61d0 fffff803`c2809b3c nt!KiBugCheckDispatch+0x69
+02 ffffc381`786c6310 fffff803`c28054ad nt!KiSystemServiceHandler+0x7c
+03 ffffc381`786c6350 fffff803`c26a0284 nt!RtlpExecuteHandlerForException+0xd
+04 ffffc381`786c6380 fffff803`c269f063 nt!RtlDispatchException+0x404
+05 ffffc381`786c6a70 fffff803`c280a482 nt!KiDispatchException+0x143
+06 ffffc381`786c7130 fffff803`c2807aaa nt!KiExceptionDispatch+0xc2
+07 ffffc381`786c7310 fffff803`c2804a21 nt!KiBreakpointTrap+0xea
+08 ffffc381`786c74a8 fffff801`78d29ebc nt!DbgBreakPoint+0x1
+09 ffffc381`786c74b0 fffff801`78d74eec Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2e0
+0a ffffc381`786c74f0 fffff801`78d73579 Wdf01000!FxIoQueue::QueuePurgeSynchronously+0xe8
+0b ffffc381`786c7560 fffff801`79742505 Wdf01000!imp_WdfIoQueuePurgeSynchronously+0x39
+0c (Inline Function) --------`-------- usbser!WdfIoQueuePurgeSynchronously+0x22
+0d ffffc381`786c7590 fffff801`78d2e6d3 usbser!UsbSerEvtDeviceFileCleanup+0xd5
+0e ffffc381`786c75d0 fffff801`78c5c857 Wdf01000!FxDevice::DispatchWithLock+0x47c93
+0f ffffc381`786c76c0 fffff803`c2df309d VerifierExt!xdv_IRP_MJ_CLEANUP_wrapper+0xc7
+10 ffffc381`786c7710 fffff803`c28216ff nt!IovCallDriver+0x245
+11 ffffc381`786c7750 fffff803`c2e10b5b nt!IofCallDriver+0x14c9cf
+12 ffffc381`786c7790 fffff803`c2df309d nt!ViFilterDispatchGeneric+0xbb
+13 ffffc381`786c77d0 fffff803`c28216ff nt!IovCallDriver+0x245
+14 ffffc381`786c7810 fffff803`c2aee87f nt!IofCallDriver+0x14c9cf
+15 ffffc381`786c7850 fffff803`c2afdca8 nt!IopCloseFile+0x14f
+16 ffffc381`786c78e0 fffff803`c2affb0b nt!ObCloseHandleTableEntry+0x228
+17 ffffc381`786c7a20 fffff803`c2809f13 nt!NtClose+0xcb
+18 ffffc381`786c7a80 00007ffc`f0975594 nt!KiSystemServiceCopyEnd+0x13
+19 000000ca`bc4fefa8 00000000`00000000 0x00007ffc`f0975594
+
+The wait timed out and KMDF broke into debugger:
+1: kd> uf Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal:
+…
+fffff801`78cfac2f ff15a3f50a00    call    qword ptr [Wdf01000!_imp_KeWaitForSingleObject (fffff801`78daa1d8)]
+fffff801`78cfac35 3d02010000      cmp     eax,102h
+fffff801`78cfac3a 0f842af20200    je      Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f28e (fffff801`78d29e6a)  Branch
+
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x64:
+fffff801`78cfac40 488b6c2440      mov     rbp,qword ptr [rsp+40h]
+fffff801`78cfac45 488b742450      mov     rsi,qword ptr [rsp+50h]
+fffff801`78cfac4a 488b7c2458      mov     rdi,qword ptr [rsp+58h]
+fffff801`78cfac4f 4883c430        add     rsp,30h
+fffff801`78cfac53 415e            pop     r14
+fffff801`78cfac55 c3              ret
+
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f28e:
+fffff801`78d29e6a 65488b142588010000 mov   rdx,qword ptr gs:[188h]
+fffff801`78d29e73 488d0d96350600  lea     rcx,[Wdf01000!`string' (fffff801`78d8d410)]
+fffff801`78d29e7a 4c8bce          mov     r9,rsi
+fffff801`78d29e7d 4c8bc5          mov     r8,rbp
+fffff801`78d29e80 ff15f2040800    call    qword ptr [Wdf01000!_imp_DbgPrint (fffff801`78daa378)]
+fffff801`78d29e86 f644246804      test    byte ptr [rsp+68h],4
+fffff801`78d29e8b 7529            jne     Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2da (fffff801`78d29eb6)  Branch
+
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2b1:
+fffff801`78d29e8d f644246801      test    byte ptr [rsp+68h],1
+fffff801`78d29e92 7409            je      Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2c1 (fffff801`78d29e9d)  Branch
+
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2b8:
+fffff801`78d29e94 80bf3e01000000  cmp     byte ptr [rdi+13Eh],0
+fffff801`78d29e9b 7519            jne     Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2da (fffff801`78d29eb6)  Branch
+
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2c1:
+fffff801`78d29e9d f644246802      test    byte ptr [rsp+68h],2
+fffff801`78d29ea2 0f84640dfdff    je      Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x30 (fffff801`78cfac0c)  Branch
+
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2cc:
+fffff801`78d29ea8 ff153a050800    call    qword ptr [Wdf01000!_imp_KdRefreshDebuggerNotPresent (fffff801`78daa3e8)]
+fffff801`78d29eae 84c0            test    al,al
+fffff801`78d29eb0 0f85560dfdff    jne     Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x30 (fffff801`78cfac0c)  Branch
+
+Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2da:
+fffff801`78d29eb6 ff15f4010800    call    qword ptr [Wdf01000!_imp_DbgBreakPoint (fffff801`78daa0b0)]
+fffff801`78d29ebc 90              nop
+fffff801`78d29ebd e94a0dfdff      jmp     Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x30 (fffff801`78cfac0c)  Branch
+1: kd> !error 102
+Error code: (Win32) 0x102 (258) - The wait operation timed out.
+
+Looking for the WDF queue to purge:
+1: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffffc381`786c61c8 fffff803`c280a3a9 nt!KeBugCheckEx
+01 ffffc381`786c61d0 fffff803`c2809b3c nt!KiBugCheckDispatch+0x69
+02 ffffc381`786c6310 fffff803`c28054ad nt!KiSystemServiceHandler+0x7c
+03 ffffc381`786c6350 fffff803`c26a0284 nt!RtlpExecuteHandlerForException+0xd
+04 ffffc381`786c6380 fffff803`c269f063 nt!RtlDispatchException+0x404
+05 ffffc381`786c6a70 fffff803`c280a482 nt!KiDispatchException+0x143
+06 ffffc381`786c7130 fffff803`c2807aaa nt!KiExceptionDispatch+0xc2
+07 ffffc381`786c7310 fffff803`c2804a21 nt!KiBreakpointTrap+0xea
+08 ffffc381`786c74a8 fffff801`78d29ebc nt!DbgBreakPoint+0x1
+09 ffffc381`786c74b0 fffff801`78d74eec Wdf01000!_FX_DRIVER_GLOBALS::WaitForSignal+0x2f2e0
+0a ffffc381`786c74f0 fffff801`78d73579 Wdf01000!FxIoQueue::QueuePurgeSynchronously+0xe8
+0b ffffc381`786c7560 fffff801`79742505 Wdf01000!imp_WdfIoQueuePurgeSynchronously+0x39
+0c (Inline Function) --------`-------- usbser!WdfIoQueuePurgeSynchronously+0x22
+0d ffffc381`786c7590 fffff801`78d2e6d3 usbser!UsbSerEvtDeviceFileCleanup+0xd5
+0e ffffc381`786c75d0 fffff801`78c5c857 Wdf01000!FxDevice::DispatchWithLock+0x47c93
+0f ffffc381`786c76c0 fffff803`c2df309d VerifierExt!xdv_IRP_MJ_CLEANUP_wrapper+0xc7
+10 ffffc381`786c7710 fffff803`c28216ff nt!IovCallDriver+0x245
+11 ffffc381`786c7750 fffff803`c2e10b5b nt!IofCallDriver+0x14c9cf
+12 ffffc381`786c7790 fffff803`c2df309d nt!ViFilterDispatchGeneric+0xbb
+13 ffffc381`786c77d0 fffff803`c28216ff nt!IovCallDriver+0x245
+14 ffffc381`786c7810 fffff803`c2aee87f nt!IofCallDriver+0x14c9cf
+15 ffffc381`786c7850 fffff803`c2afdca8 nt!IopCloseFile+0x14f
+16 ffffc381`786c78e0 fffff803`c2affb0b nt!ObCloseHandleTableEntry+0x228
+17 ffffc381`786c7a20 fffff803`c2809f13 nt!NtClose+0xcb
+18 ffffc381`786c7a80 00007ffc`f0975594 nt!KiSystemServiceCopyEnd+0x13
+19 000000ca`bc4fefa8 00000000`00000000 0x00007ffc`f0975594
+1: kd> ub  fffff801`78d73579
+Wdf01000!imp_WdfIoQueuePurgeSynchronously+0x1b:
+fffff801`78d7355b 488b442430      mov     rax,qword ptr [rsp+30h]
+fffff801`78d73560 33d2            xor     edx,edx
+fffff801`78d73562 488b4810        mov     rcx,qword ptr [rax+10h]
+fffff801`78d73566 e85dfbf6ff      call    Wdf01000!FxVerifierCheckIrqlLevel (fffff801`78ce30c8)
+fffff801`78d7356b 85c0            test    eax,eax
+fffff801`78d7356d 781b            js      Wdf01000!imp_WdfIoQueuePurgeSynchronously+0x4a (fffff801`78d7358a)
+fffff801`78d7356f 488b4c2430      mov     rcx,qword ptr [rsp+30h]
+fffff801`78d73574 e88b180000      call    Wdf01000!FxIoQueue::QueuePurgeSynchronously (fffff801`78d74e04)
+1: kd> .frame /r b
+0b ffffc381`786c7560 fffff801`79742505 Wdf01000!imp_WdfIoQueuePurgeSynchronously+0x39
+rax=0000000000000000 rbx=ffff8f82be058e10 rcx=cf09d0f7714e0000
+rdx=0000000000000001 rsi=ffff8f82bdebcf30 rdi=fffff8017973b450
+rip=fffff80178d73579 rsp=ffffc381786c7560 rbp=ffffc381786c7659
+r8=0000000000000008  r9=0000000000000065 r10=0000000000000020
+r11=ffffc381786c74a8 r12=0000000000000000 r13=ffff8f82bdebcfb0
+r14=0000000000000000 r15=0000707d40e0b0c8
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000282
+Wdf01000!imp_WdfIoQueuePurgeSynchronously+0x39:
+fffff801`78d73579 85c0            test    eax,eax
+1: kd> dq ffffc381786c7560+30 L1
+ffffc381`786c7590  ffff8f82`be170c20
+1: kd> !wdfkd.wdfobject ffff8f82`be170c20
+
+The type for object 0xffff8f82be170c20 is FxIoQueue
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x0000707d41e8f3d8
+
+dt FxIoQueue 0xffff8f82be170c20
+
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+Object debug extension 0xffff8f82be170bf0
+   Verifier lock 0xffff8f82be16cf50
+
+
+Parent: !wdfobject  0xffff8f82be09ce70
+Owning device: !wdfdevice 0x0000707d41fa74d8
+
+We can see that queue is not Power Managed and has an outstanding read request owned by the USBSER.SYS:
+1: kd> !wdfdevicequeues 0x0000707d41fa74d8
+…
+Queue: 3 !wdfqueue  0x0000707d41e8f3d8
+    Sequential, Not power-managed, PowerOn, Cannot accept, Can dispatch, ExecutionLevelDispatch, SynchronizationScopeNone
+    Number of driver owned requests: 1
+    !wdfrequest 0x0000707d412871e8  !irp 0xffff8f82bf2b4a60
+    Number of waiting requests: 0
+…
+1: kd> !irp 0xffff8f82bf2b4a60
+Irp is active with 16 stacks 14 is current (= 0xffff8f82bf2b4ed8)
+…
+>[IRP_MJ_READ(3), N/A(0)]
+            0 e1 ffffb182dc58d880 ffffb182e0dabef0 fffff80179733eb0-00000000 Success Error Cancel pending
+            \Driver\usbser usbser!UsbserReadIoCompletion
+                Args: 00008000 00000000 00000000 00000000
+[IRP_MJ_READ(3), N/A(0)]
+            0 e0 ffffb182dc58d880 ffffb182e0dabef0 fffff803c2e10e60-ffffc38178af97d0 Success Error Cancel 
+            \Driver\usbser nt!ViFilterGenericCompletionRoutine
+                Args: 00008000 00000000 00000000 00000000
+[IRP_MJ_READ(3), N/A(0)]
+            0  0 ffffb182dc592040 ffffb182e0dabef0 00000000-00000000    
+            \DRIVER\VERIFIER_FILTER
+                Args: 00008000 00000000 00000000 00000000
+
+Irp Extension present at 0xffff8f82bf2b4fb0:
+
+
+The device however is not in D0:
+1: kd> !wdfdevice 0x0000707d41fa74d8 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x0000707d41fa74d8
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffffb182dc58d880, attached ffffb182dc58c040, pdo ffffb182dc58a8a0
+
+Pnp state:  119 ( WdfDevStatePnpStarted )
+Power state:  31f ( WdfDevStatePowerDx )
+Power Pol state:  53e ( WdfDevStatePwrPolWaitingArmed )
+
+Default WDFIOTARGET: 0000707d41f35188
+
+Device is the power policy owner for the stack
+No pended pnp, power, wait-wake irps
+Requested wait-wake !irp 0xffff8f82bfb06a20 (S0)
+
+Pnp state history:
+[0] WdfDevStatePnpObjectCreated (0x100)
+[1] WdfDevStatePnpInit (0x105)
+[2] WdfDevStatePnpInitStarting (0x106)
+[3] WdfDevStatePnpHardwareAvailable (0x108)
+[4] WdfDevStatePnpEnableInterfaces (0x109)
+[5] WdfDevStatePnpStarted (0x119)
+
+Power state history:
+[0] WdfDevStatePowerWakingConnectInterrupt (0x335)
+[1] WdfDevStatePowerWakingDmaEnable (0x339)
+[2] WdfDevStatePowerStartSelfManagedIo (0x32b)
+[3] WdfDevStatePowerD0 (0x307)
+[4] WdfDevStatePowerGotoDx (0x31a)
+[5] WdfDevStatePowerNotifyingD0ExitToWakeInterrupts (0x359)
+[6] WdfDevStatePowerGotoDxIoStopped (0x31c)
+[7] WdfDevStatePowerDx (0x31f)
+…
+
+1: kd> !devstack ffffb182dc58a8a0
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffb182dc592040  \DRIVER\VERIFIER_FILTERffffb182dc592190  
+  ffffb182dc58d880  \Driver\usbser     ffff8f82be058e10  USBSER001
+  ffffb182dc58c040  \DRIVER\VERIFIER_FILTERffffb182dc58c190  
+> ffffb182dc58a8a0  \Driver\usbccgp    ffffb182dc58a9f0  00000069
+!DevNode ffffb182dc58a2f0 :
+  DeviceInst is "USB\VID_8087&PID_0ACA&MI_00\7&1e2cd3d3&43&0000"
+  ServiceName is "usbser"
+1: kd> dt nt!_device_node ffffb182dc58a2f0 CurrentPowerState.DeviceState
+   +0x08c CurrentPowerState             : 
+      +0x000 DeviceState                   : 3 ( PowerDeviceD2 )
+1: kd> ?? ((nt!_device_object *) 0xffffb182dc58a8a0)->DeviceObjectExtension->PowerFlags
+unsigned long 0x30
+
+There are no outstanding set power IRPs:
+1: kd> !poaction
+PopAction: fffff803c29db1c0
+  State..........: 0 - Idle
+  Updates........: 0 
+  Action.........: None
+  Lightest State.: Unspecified
+  Flags..........: 10000003 QueryApps|UIAllowed
+  Irp minor......: ??
+  System State...: Unspecified
+  Hiber Context..: 0000000000000000
+
+Allocated power irps (PopIrpList - fffff803c29db820)
+  IRP: ffff8f82bedbc820 (wait-wake/S4), PDO: ffffb182dc3d02c0
+  IRP: ffff8f82beb7e790 (wait-wake/S4), PDO: ffffb182dc5f7650
+  IRP: ffff8f82bfb06a20 (wait-wake/S0), PDO: ffffb182dc58a8a0
+  IRP: ffff8f82bdf78b80 (wait-wake/S4), PDO: ffffb182dc1d8060
+  IRP: ffff8f82be2c2ca0 (wait-wake/S0), PDO: ffffb182db7bb740
+  IRP: ffff8f82beccadc0 (wait-wake/S0), PDO: ffffb182da1f3060
+  IRP: ffff8f82bf778cf0 (wait-wake/S0), PDO: ffffb182d9fed060
+  IRP: ffff8f82bf0f2ca0 (wait-wake/S3), PDO: ffffb182dc794960
+  IRP: ffff8f82befd4ca0 (wait-wake/S3), PDO: ffffb182dc796c30
+  IRP: ffff8f82beb68dc0 (wait-wake/S0), PDO: ffffb182d9ff3060
+
+Irp worker threads (PopIrpThreadList - fffff803c29da320)
+  THREAD: ffffb182c54d1040 (static)
+  THREAD: ffffb182c54c1700 (static)
+
+Broadcast in progress: FALSE
+
+No Device State present
+
+The driver is processing the request:
+1: kd> !wdfhandle 0x0000707d41fa74d8 
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x0000707d41fa74d8
+=============================
+Handle type is WDFDEVICE
+Refcount: 1
+Contexts:
+    context:  dt 0xffff8f82be058e10 usbser!DEVICE_EXTENSION (size is 0x1e8 bytes)
+    EvtCleanupCallback fffff80179742620 usbser!UsbSerDeviceContextCleanup
+
+Parent: !wdfhandle 0x0000707d420752a8, type is WDFDRIVER
+Owning device: !wdfdevice 0x0000707d41fa74d8
+
+!wdfobject 0xffff8f82be058b20
+1: kd> dt 0xffff8f82be058e10 usbser!DEVICE_EXTENSION CurrentReadRequest
+   +0x140 CurrentReadRequest : 0x0000707d`412871e8 WDFREQUEST__
+
+But since device is in D2, the pipe is stopped:
+1: kd> dt 0xffff8f82be058e10 usbser!DEVICE_EXTENSION DataInPipeIoTargetState
+   +0x058 DataInPipeIoTargetState : 3 ( IOTARGET_STOPPED )
+
+So it looks like since the I/O queue in not power-managed, the driver deadlocks itself.

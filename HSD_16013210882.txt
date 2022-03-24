@@ -1,0 +1,142 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/16013210882
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck D1 - DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1) (see attached memory dump):
+2: kd> !analyze -show
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If kernel debugger is available get stack backtrace.
+Arguments:
+Arg1: ffff83834ee14fb8, memory referenced
+Arg2: 0000000000000002, IRQL
+Arg3: 0000000000000000, value 0 = read operation, 1 = write operation
+Arg4: fffff80d5c24ce50, address which referenced memory
+
+afd!AfdBCommonChainedReceiveEventHandler Attempted to access a paged out data:
+2: kd> r cr2
+cr2=ffff83834ee14fb8
+2: kd> u fffff80d5c24ce50 L1
+afd!AfdBCommonChainedReceiveEventHandler+0x4c0:
+fffff80d`5c24ce50 488b4608        mov     rax,qword ptr [rsi+8]
+
+2: kd> !pte ffff83834ee14fb8
+                                           VA ffff83834ee14fb8
+PXE at FFFFEFF7FBFDF838    PPE at FFFFEFF7FBF07068    PDE at FFFFEFF7E0E0D3B8    PTE at FFFFEFC1C1A770A0
+contains 0A000004D9069863  contains 0A000001062FE863  contains 1A0000039E514863  contains 000000039F4A8880
+pfn 4d9069    ---DA--KWEV  pfn 1062fe    ---DA--KWEV  pfn 39e514    ---DA--KWEV  not valid
+                                                                                  Transition: 39f4a8
+                                                                                  Protect: 4 – ReadWrite
+
+2: kd> k
+ # Child-SP          RetAddr               Call Site
+00 ffffdc8c`f572be48 fffff804`33e1cd69     nt!KeBugCheckEx
+01 ffffdc8c`f572be50 fffff804`33e19069     nt!KiBugCheckDispatch+0x69
+02 ffffdc8c`f572bf90 fffff80d`5c24ce50     nt!KiPageFault+0x469
+03 ffffdc8c`f572c120 fffff80d`5c24c983     afd!AfdBCommonChainedReceiveEventHandler+0x4c0
+04 ffffdc8c`f572c270 fffff80d`5c1e9b52     afd!AfdTLConnectedReceiveEventHandler+0x13
+05 ffffdc8c`f572c2a0 fffff80d`5c1e9f25     afunix!AfUnixDeliverDataToClient+0x18e
+06 ffffdc8c`f572c370 fffff80d`5c1e11bc     afunix!AfUnixDeliverEndpointSend+0x1ed
+07 ffffdc8c`f572c3c0 fffff80d`5c24c0d0     afunix!AfUnixTlConnectEndpointSend+0x10c
+08 ffffdc8c`f572c400 fffff80d`5c24befa     afd!AfdTLStartBufferedVcSend+0xa0
+09 ffffdc8c`f572c4b0 fffff80d`5c231720     afd!AfdFastConnectionSend+0x2a2
+0a ffffdc8c`f572c580 fffff804`34011f92     afd!AfdFastIoDeviceControl+0xf90
+0b ffffdc8c`f572c920 fffff804`34011bf6     nt!IopXxxControlFile+0x382
+0c ffffdc8c`f572ca60 fffff804`33e1c7b5     nt!NtDeviceIoControlFile+0x56
+0d ffffdc8c`f572cad0 00007fff`cb56ccf4     nt!KiSystemServiceCopyEnd+0x25
+0e 0000009e`1567edf8 00000000`00000000     0x00007fff`cb56ccf4
+2: kd> .frame /r 3
+03 ffffdc8c`f572c120 fffff80d`5c24c983     afd!AfdBCommonChainedReceiveEventHandler+0x4c0
+rax=0000000000000000 rbx=ffff9c8ae2774f00 rcx=0000000000000004
+rdx=ffff9c8ae2774f48 rsi=ffff83834ee14fb0 rdi=ffff9c8ae26c8e40
+rip=fffff80d5c24ce50 rsp=ffffdc8cf572c120 rbp=ffffdc8cf572c220
+ r8=0000000000000000  r9=000000000000fffd r10=ffffdc8cf572c3c0
+r11=ffffdc8cf572bff0 r12=0000000000000078 r13=0000000000000000
+r14=ffff9c8ae29fafb0 r15=0000000000000078
+iopl=0         nv up ei ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040286
+afd!AfdBCommonChainedReceiveEventHandler+0x4c0:
+fffff80d`5c24ce50 488b4608        mov     rax,qword ptr [rsi+8] ds:002b:ffff8383`4ee14fb8=ffff9c8acc492eb8
+2: kd> ? ffff83834ee14fb0+8 
+Evaluate expression: -136874989367368 = ffff8383`4ee14fb8
+
+The memory was allocated from paged pool:
+2: kd> !verifier 80  ffff8383`4ee14fb8 1
+OptinFlags: 0x0
+
+Log of recent kernel pool Allocate and Free operations:
+
+There are up to 0x10000 entries in the log.
+
+Parsing 0x0000000000010000 log entries, searching for address 0xffff83834ee14fb8.
+
+
+======================================================================
+Pool block ffff83834ee14fb0, Size 0000000000000048, Thread ffff9c8abf4ae080
+fffff804343f1f95 nt!VfAllocPoolNotification+0x31
+fffff804343e689f nt!VeAllocatePoolWithTagPriority+0x2cf
+fffff80435019fd6 VerifierExt!ExAllocatePoolWithTag_internal_wrapper+0x1c6
+fffff804343e7045 nt!VerifierExAllocatePoolWithTag+0xb5
+fffff80d5c1ea058 afunix!AfUnixDeliverEndpointQueueSendRequest+0x30
+fffff80d5c1e9e82 afunix!AfUnixDeliverEndpointSend+0x14a
+fffff80d5c1e11bc afunix!AfUnixTlConnectEndpointSend+0x10c
+fffff80d5c24c0d0 afd!AfdTLStartBufferedVcSend+0xa0
+fffff80d5c24befa afd!AfdFastConnectionSend+0x2a2
+fffff80d5c231720 afd!AfdFastIoDeviceControl+0xf90
+fffff80434011f92 nt!IopXxxControlFile+0x382
+fffff80434011bf6 nt!NtDeviceIoControlFile+0x56
+fffff80433e1c7b5 nt!KiSystemServiceCopyEnd+0x25
+
+Parsed 0000000000000012 entries out of 0000000000010000.
+
+2: kd> u  afunix!AfUnixDeliverEndpointQueueSendRequest  afunix!AfUnixDeliverEndpointQueueSendRequest+0x30
+afunix!AfUnixDeliverEndpointQueueSendRequest:
+fffff80d`5c1ea028 48895c2408      mov     qword ptr [rsp+8],rbx
+fffff80d`5c1ea02d 4889742410      mov     qword ptr [rsp+10h],rsi
+fffff80d`5c1ea032 48897c2418      mov     qword ptr [rsp+18h],rdi
+fffff80d`5c1ea037 4156            push    r14
+fffff80d`5c1ea039 4883ec20        sub     rsp,20h
+fffff80d`5c1ea03d 4c8bf2          mov     r14,rdx
+fffff80d`5c1ea040 488bf9          mov     rdi,rcx
+fffff80d`5c1ea043 ba48000000      mov     edx,48h
+fffff80d`5c1ea048 41b8576e7069    mov     r8d,69706E57h
+fffff80d`5c1ea04e 8d4ab9          lea     ecx,[rdx-47h]
+fffff80d`5c1ea051 48ff1518d0ffff  call    qword ptr [afunix!_imp_ExAllocatePoolWithTag (fffff80d`5c1e7070)]
+fffff80d`5c1ea058 0f1f440000      nop     dword ptr [rax+rax]
+2: kd> dt nt!_POOL_TYPE PagedPool
+   PagedPool = 0n1
+
+But the IRQL is elevated:
+2: kd> !irql
+Debugger saved IRQL for processor 0x2 -- 2 (DISPATCH_LEVEL)
+2: kd> r cr8
+cr8=0000000000000002
+
+Because endpoint spinlock is acquired:
+2: kd> dt endpoint SpinLock.
+Local var @ rdi Type _AFD_ENDPOINT*
+   +0x030 SpinLock  : 
+      +0x000 ActualSpinLock : 0xffffdc8c`f572c198
+2: kd> dt lockHandle
+Local var @ 0xffffdc8cf572c198 Type _KLOCK_QUEUE_HANDLE
+   +0x000 LockQueue        : _KSPIN_LOCK_QUEUE
+   +0x010 OldIrql          : 0 ''
+
+2: kd> !verifier 8 100
+…
+Thread:             ffff9c8abf4ae080
+Old irql:           0000000000000000
+New irql:           0000000000000002
+Processor:          0000000000000002
+Time stamp:         00000000000012b2
+
+    fffff804343ec692 nt!VerifierKeAcquireInStackQueuedSpinLockCommon+0x62
+    fffff804343ec4c6 nt!VerifierKeAcquireInStackQueuedSpinLock+0x16
+    fffff80d5c24ca99 afd!AfdBCommonChainedReceiveEventHandler+0x109
+    fffff80d5c24c983 afd!AfdTLConnectedReceiveEventHandler+0x13
+    fffff80d5c1e9b52 afunix!AfUnixDeliverDataToClient+0x18e
+…
+
+This is a programmatic error in AFD.SYS: https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/bug-check-0xd1--driver-irql-not-less-or-equal#:~:text=DRIVER_IRQL_NOT_LESS_OR_EQUAL%20%28d1%29%20An%20attempt%20was%20made%20to%20access,If%20kernel%20debugger%20is%20available%20get%20stack%20backtrace.

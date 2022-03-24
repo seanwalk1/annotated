@@ -1,0 +1,749 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22028049
+[AUTHOR]:	Gregor Harrison (gsharris)
+
+[ANALYSIS]:
+TL;DR: System hung shutting down and went idle, tried to go into CS.
+
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+PDC_WATCHDOG_TIMEOUT (14f)
+A system component failed to respond within the allocated time period,
+preventing the system from exiting connected standby.
+Arguments:
+Arg1: 0000000000000004, Client ID of the hung component.
+Arg2: 0000000000000002, A resiliency client failed to respond.
+Arg3: fffff80c59f6adb8, Pointer to the resiliency client (pdc!_PDC_RESILIENCY_CLIENT).
+Arg4: ffff8901ad816ae0, Pointer to a pdc!PDC_14F_TRIAGE structure.
+...
+
+The thread that timed out was:
+3: kd> dt pdc!PDC_14F_TRIAGE ffff8901ad816ae0
+   +0x000 ClientProcess    : (null) 
+   +0x008 CallbackThread   : 0xffffbb8d`b8826040 _ETHREAD
+3: kd> !thread 0xffffbb8d`b8826040
+THREAD ffffbb8db8826040  Cid 0004.14b0  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrResource) KernelMode Non-Alertable
+    ffff8901ad6ff038  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffa18caee1be20
+Owning Process            ffffbb8d9ee83500       Image:         System
+Attached Process          ffffbb8db8c80640       Image:         IntelCpHDCPSvc.exe
+Wait Start TickCount      17776          Ticks: 180 (0:00:00:02.812)
+Context Switch Count      809            IdealProcessor: 1  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:00.046
+Win32 Start Address nt!ExpWorkerThread (0xfffff803f7f202d0)
+Stack Init ffff8901ad700c10 Current ffff8901ad6fec60
+Base ffff8901ad701000 Limit ffff8901ad6fa000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+*** WARNING: Unable to verify timestamp for win32kbase.sys
+*** WARNING: Unable to verify timestamp for win32k.sys
+
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffff8901`ad6feca0 fffff803`f7f0f3fa : ffffbb8d`00000000 00000000`00000001 ffff8901`a5f64180 00000000`0000000f : nt!KiSwapContext+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+ffff8901`ad6fede0 fffff803`f7f0edc1 : ffffbb8d`b8826040 ffffbb8d`b8826180 ffffbb8d`b6169a00 ffffbb8d`00000000 : nt!KiSwapThread+0x16a [minkernel\ntos\ke\thredsup.c @ 9871] 
+ffff8901`ad6fee90 fffff803`f7f0c077 : fffff250`000000fc 00000000`00000000 00000000`00000000 ffff8901`ad6ff038 : nt!KiCommitThreadWait+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!KeWaitForSingleObject+0x1a1 (Inline Function @ fffff803`f7f0c077) [minkernel\ntos\ke\wait.c @ 674] 
+ffff8901`ad6fef30 fffff803`f7edd00b : ffffbb8d`b6169af0 ffff8901`ad6ff028 ffffa18c`00010244 fffff803`f7eb9100 : nt!ExpWaitForResource+0x207 [minkernel\ntos\ex\resource_common.c @ 901] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ExpCommitWaitForResourceShared+0x19 (Inline Function @ fffff803`f7edd00b) [minkernel\ntos\ex\resource_common.c @ 1043] 
+ffff8901`ad6fefe0 fffff803`f7edcad9 : ffffbb8d`b8826002 ffffbb8d`b6169af0 00000000`00000000 00000000`00000001 : nt!ExpAcquireResourceSharedLite+0x48b [minkernel\ntos\ex\resource.c @ 1799] 
+ffff8901`ad6ff080 fffff80c`5bb66473 : ffffbb8d`b70300c0 ffffbb8d`b70300c0 ffff8901`00000004 00000000`00000000 : nt!ExAcquireResourceSharedLite+0x39 [minkernel\ntos\ex\resource.c @ 1504] 
+ffff8901`ad6ff0c0 fffff80c`5bac2eb3 : ffff8901`ad6ff1b8 00000000`00000000 ffffbb8d`b70300c0 fffff80c`00000000 : dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x73 [onecoreuap\windows\core\dxkernel\dxgkrnl\core\adapter.cxx @ 3741] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!COREACCESS::AcquireShared+0x40 (Inline Function @ fffff80c`5bac2eb3) [onecoreuap\windows\core\dxkernel\dxgkrnl\inc\adapter.hxx @ 5813] 
+ffff8901`ad6ff100 fffff80c`5bb51889 : ffffa18c`b6efe750 ffffa18c`b6e47201 ffffa18c`b6e47201 fffff803`f7f054cc : dxgkrnl!COREDEVICEACCESS::AcquireShared+0x53 [onecoreuap\windows\core\dxkernel\dxgkrnl\inc\device.hxx @ 1210] 
+ffff8901`ad6ff140 fffff80c`5bb7d824 : ffffa18c`b6efe768 ffffa18c`b6e47270 ffffa18c`b6e47350 ffffa18c`b6e472f8 : dxgkrnl!DXGDEVICE::NotifyProcessFreeze+0x91 [onecoreuap\windows\core\dxkernel\dxgkrnl\core\device.cxx @ 6935] 
+ffff8901`ad6ff220 fffff80c`5bbb33da : ffffa18c`b6e47270 fffff803`f814cfa8 ffffbb8d`b8c80640 00000000`00000000 : dxgkrnl!DXGPROCESS::NotifyProcessFreeze+0x100 [onecoreuap\windows\core\dxkernel\dxgkrnl\core\process.cxx @ 303] 
+ffff8901`ad6ff280 fffff4e3`8b03a494 : 00000000`00000001 ffffbb8d`b8c80640 00000000`00000000 ffffbb8d`b8e551b0 : dxgkrnl!DxgkNotifyProcessFreezeCallout+0x4a [onecoreuap\windows\core\dxkernel\dxgkrnl\core\process.cxx @ 363] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : win32kbase!DxNotifyProcessFreezeCallout+0x10 (Inline Function @ fffff4e3`8b03a494) [onecoreuap\windows\core\ntgdi\gre\base\ddsup.cxx @ 1722] 
+ffff8901`ad6ff2f0 fffff4e3`8aec101a : ffffbb8d`b8c80640 00000000`00000000 00000000`00000016 fffff803`f814cfa8 : win32kbase!W32CalloutDispatch+0x504 [onecoreuap\windows\core\ntuser\kernel\base\misc.cxx @ 1126] 
+ffff8901`ad6ff350 fffff803`f83197e1 : ffffbb8d`b8c80670 ffffbb8d`b8c80640 ffffbb8d`b88263c0 fffff803`f7f14bb9 : win32k!W32CalloutDispatchThunk+0xa [windows\core\kmode\daytona\objfre\amd64\sysentry.c @ 102] 
+ffff8901`ad6ff380 fffff803`f83198d8 : 00000000`00000000 00000000`00000016 ffffbb8d`b8c80640 ffffbb8d`b8826040 : nt!ExCallCallBack+0x3d [minkernel\ntos\ex\callback.c @ 1653] 
+ffff8901`ad6ff3b0 fffff803`f82a3fbf : ffffffff`00000000 00000000`00000000 ffffbb8d`b8c80918 ffffbb8d`b8826040 : nt!PsInvokeWin32Callout+0xb8 [minkernel\ntos\ps\callback.c @ 1658] 
+ffff8901`ad6ff3e0 fffff803`f82eda12 : 00000000`00000000 00000000`00000001 ffffbb8d`b1c01640 ffffbb8d`b8c80640 : nt!PsFreezeProcess+0xbf [minkernel\ntos\ps\psspnd.c @ 347] 
+ffff8901`ad6ff410 fffff803`f7e7b9ba : ffffbb8d`b6b92640 ffffbb8d`b8c80640 ffffbb8d`b8826040 ffffbb8d`b1e9a040 : nt!PspChangeProcessExecutionState+0x11a [minkernel\ntos\ps\psspnd.c @ 657] 
+ffff8901`ad6ff4d0 fffff803`f82ec459 : ffffbb8d`b8826040 00000000`00000000 00000000`00000000 00000000`b1e9a078 : nt!PspExecuteJobFreezeThawCallback+0x5a [minkernel\ntos\ps\psjob.c @ 13179] 
+ffff8901`ad6ff520 fffff803`f82ec33e : 00000000`00000000 00000000`00000000 fffff803`f7e7b960 ffff8901`ad6ff679 : nt!PspCallJobHierarchyCallbacks+0xd9 [minkernel\ntos\ps\psenum.c @ 594] 
+ffff8901`ad6ff570 fffff803`f82e6f66 : ffffbb8d`b1e9a040 00000000`00000000 fffff803`f7e7b960 00000000`00000000 : nt!PspEnumJobsAndProcessesInJobHierarchy+0x1fe [minkernel\ntos\ps\psenum.c @ 700] 
+ffff8901`ad6ff600 fffff803`f82e88c2 : ffffbb8d`9ee83500 00000000`00000002 00000000`00000000 00000000`00000000 : nt!PspFreezeJobTree+0x132 [minkernel\ntos\ps\psjob.c @ 13472] 
+ffff8901`ad6ff6e0 fffff803`f7f97913 : ffffa922`8a4806be ffff8901`ad7003c0 ffff9c80`07845390 00000000`00000000 : nt!NtSetInformationJobObject+0x1196 [minkernel\ntos\ps\psjob.c @ 5495] 
+ffff8901`ad7002a0 fffff803`f7f8fbc0 : fffff80c`5b90d7fd ffffa18c`af643400 fffff80c`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffff8901`ad7002a0) [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 2724] 
+ffff8901`ad700438 fffff80c`5b90d7fd : ffffa18c`af643400 fffff80c`00000000 00000000`00000000 fffff80c`59f76070 : nt!KiServiceLinkage [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 3150] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dam!DampFreezeJobObject+0x23 (Inline Function @ fffff80c`5b90d7fd) [base\background\dam\sys\damcb.c @ 758] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dam!DampStartS0Throttling+0x63 (Inline Function @ fffff80c`5b90d7fd) [base\background\dam\sys\damcb.c @ 2911] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dam!DampSetResiliencyState+0xa9 (Inline Function @ fffff80c`5b90d7fd) [base\background\dam\sys\damcb.c @ 3302] 
+ffff8901`ad700440 fffff80c`5b918ea5 : ffffa18c`af643400 00000000`00000000 00000000`00000001 00000000`00000000 : dam!DampPdcResiliencyCallback+0x11d [base\background\dam\sys\damcb.c @ 3971] 
+ffff8901`ad7004a0 fffff80c`59f76159 : ffffa18c`af653010 fffff80c`59f76070 fffff80c`59f6bd70 00000000`00000000 : dam!PdcpResiliencyClientCallback+0xd5 [minkernel\po\pdc\lib\resiliencycli.c @ 326] 
+ffff8901`ad7007d0 fffff803`f7f203a8 : ffffbb8d`b8826040 fffff80c`59f6bd80 ffffbb8d`b22a1210 fffff803`f81ff380 : pdc!PdcPortMessageWorkerThread+0xe9 [minkernel\po\pdc\sys\portpdc.c @ 306] 
+ffff8901`ad700b00 fffff803`f7e23807 : fffff803`f6e1b180 00000000`00000080 ffffbb8d`9ee83500 ffffbb8d`b8826040 : nt!ExpWorkerThread+0xd8 [minkernel\ntos\ex\worker.c @ 2349] 
+ffff8901`ad700b90 fffff803`f7f91e86 : fffff803`f6e1b180 ffffbb8d`b8826040 fffff803`f7e237c0 ff011b3c`ff011b3c : nt!PspSystemThreadStartup+0x47 [minkernel\ntos\ps\psexec.c @ 7710] 
+ffff8901`ad700be0 00000000`00000000 : ffff8901`ad701000 ffff8901`ad6fa000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16 [d:\rs2\minkernel\ntos\ke\amd64\threadbg.asm @ 81] 
+
+The thread is trying to go into CS.(DampStartS0Throttling).
+
+We are in the midst of a shutdown:
+3: kd> !poaction
+PopAction: fffff803f814f280
+  State..........: 3 - Set System State
+  Updates........: 0  SHUTDOWN-set <===========!!!
+  Action.........: ShutdownReset
+  Lightest State.: Shutdown
+  Flags..........: c0000004 OverrideApps|DisableWakes|Critical
+  Irp minor......: SetPower
+  System State...: Shutdown
+  Hiber Context..: 0000000000000000
+
+Allocated power irps (PopIrpList - fffff803f814f900)
+  IRP: ffff8183edd36d30 (wait-wake/S3), PDO: ffffbb8db16d2060
+  IRP: ffff8183f0636d30 (set/S5), PDO: ffffbb8db16dd9c0, CURRENT: ffffbb8db6282700, NOTIFY: ffffbb8db16b5dc0
+  IRP: ffff8183f072ad30 (set/D3,), PDO: ffffbb8db16dd9c0, CURRENT: ffffbb8db62b4810
+
+Irp worker threads (PopIrpThreadList - fffff803f814e3a0)
+  THREAD: ffffbb8d9ee8f040 (static)
+  THREAD: ffffbb8d9eea1700 (static)
+  THREAD: ffffbb8db8d91080 (dynamic)
+  THREAD: ffffbb8db65c1080 (dynamic)
+  THREAD: ffffbb8db9538080 (dynamic)
+  THREAD: ffffbb8db955a700 (dynamic)
+  THREAD: ffffbb8db8d964c0 (dynamic)
+  THREAD: ffffbb8db68f3080 (dynamic)
+  THREAD: ffffbb8db6f89080 (dynamic)
+  THREAD: ffffbb8db888f080 (dynamic)
+  THREAD: ffffbb8db942b700 (dynamic)
+  THREAD: ffffbb8db8864700 (dynamic)
+  THREAD: ffffbb8db8a96080 (dynamic)
+  THREAD: ffffbb8db62f9080 (dynamic)
+  THREAD: ffffbb8db8aa0700 (dynamic)
+
+Broadcast in progress: TRUE
+
+Device State ffffbb8db9670180
+  Irp minor......: SetPower
+  System State...: Shutdown
+  Worker thread..: ffffbb8db6f17700
+  Status.........: 0
+  Waking.........: FALSE
+  Cancelled......: FALSE
+  Ignore errors..: TRUE
+  Ignore not imp.: FALSE
+
+Order:
+...
+
+Looking closer at the stalled thread:
+3: kd> kP
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffff8901`ad6feca0 fffff803`f7f0f3fa nt!KiSwapContext(void)+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+01 ffff8901`ad6fede0 fffff803`f7f0edc1 nt!KiSwapThread(
+			struct _KTHREAD * OldThread = 0xffffbb8d`b8826040, 
+			struct _KPRCB * CurrentPrcb = 0xffff8901`a5f64180)+0x16a [minkernel\ntos\ke\thredsup.c @ 9871] 
+02 ffff8901`ad6fee90 fffff803`f7f0c077 nt!KiCommitThreadWait(
+			struct _KTHREAD * Thread = 0xffffbb8d`b8826040, 
+			struct _KWAIT_BLOCK * WaitBlockList = <Value unavailable error>, 
+			_KDUE_TIME_TYPE TimeoutType = DueTimeRelative (0n2), 
+			unsigned int64 DueTime = 0xffff8901`ad6ff038)+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+03 (Inline Function) --------`-------- nt!KeWaitForSingleObject+0x1a1 [minkernel\ntos\ke\wait.c @ 674] 
+04 ffff8901`ad6fef30 fffff803`f7edd00b nt!ExpWaitForResource(
+			struct _ERESOURCE_COMMON * Resource = 0xffffbb8d`b6169af0, 
+			struct _KWAIT_CHAIN_ENTRY * WaitChainEntry = 0xffff8901`ad6ff028, 
+			unsigned long WaitType = 0x10244, 
+			<function> * RewaitCallback = 0xfffff803`f7eb9100)+0x207 [minkernel\ntos\ex\resource_common.c @ 901] 
+05 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceShared+0x19 [minkernel\ntos\ex\resource_common.c @ 1043] 
+06 ffff8901`ad6fefe0 fffff803`f7edcad9 nt!ExpAcquireResourceSharedLite(
+			struct _ERESOURCE * Resource = 0xffffbb8d`b6169af0, 
+			unsigned char Wait = 0x01 '')+0x48b [minkernel\ntos\ex\resource.c @ 1799] 
+07 ffff8901`ad6ff080 fffff80c`5bb66473 nt!ExAcquireResourceSharedLite(
+			struct _ERESOURCE * Resource = 0xffffbb8d`b6169af0, 
+			unsigned char Wait = 0x01 '')+0x39 [minkernel\ntos\ex\resource.c @ 1504] 
+08 ffff8901`ad6ff0c0 fffff80c`5bac2eb3 dxgkrnl!DXGADAPTER::AcquireCoreResourceShared(void)+0x73 [onecoreuap\windows\core\dxkernel\dxgkrnl\core\adapter.cxx @ 3741] 
+09 (Inline Function) --------`-------- dxgkrnl!COREACCESS::AcquireShared+0x40 [onecoreuap\windows\core\dxkernel\dxgkrnl\inc\adapter.hxx @ 5813] 
+0a ffff8901`ad6ff100 fffff80c`5bb51889 dxgkrnl!COREDEVICEACCESS::AcquireShared(void)+0x53 [onecoreuap\windows\core\dxkernel\dxgkrnl\inc\device.hxx @ 1210] 
+0b ffff8901`ad6ff140 fffff80c`5bb7d824 dxgkrnl!DXGDEVICE::NotifyProcessFreeze(void)+0x91 [onecoreuap\windows\core\dxkernel\dxgkrnl\core\device.cxx @ 6935] 
+0c ffff8901`ad6ff220 fffff80c`5bbb33da dxgkrnl!DXGPROCESS::NotifyProcessFreeze(void)+0x100 [onecoreuap\windows\core\dxkernel\dxgkrnl\core\process.cxx @ 303] 
+0d ffff8901`ad6ff280 fffff4e3`8b03a494 dxgkrnl!DxgkNotifyProcessFreezeCallout(
+			struct _EPROCESS * pProcess = 0xffffbb8d`b8c80640)+0x4a [onecoreuap\windows\core\dxkernel\dxgkrnl\core\process.cxx @ 363] 
+0e (Inline Function) --------`-------- win32kbase!DxNotifyProcessFreezeCallout+0x10 [onecoreuap\windows\core\ntgdi\gre\base\ddsup.cxx
+
+It's waiting on a resource.
+3: kd> dt _ERESOURCE 0xffffbb8d`b6169af0
+win32k!_ERESOURCE
+   +0x000 SystemResourcesList : _LIST_ENTRY [ 0xffffbb8d`b6169a70 - 0xffffbb8d`b61df850 ]
+   +0x010 OwnerTable       : 0xffffbb8d`b3b71ea0 _OWNER_ENTRY
+   +0x018 ActiveCount      : 0n1
+   +0x01a Flag             : 0xf86
+   +0x01a ReservedLowFlags : 0x86 ''
+   +0x01b WaiterPriority   : 0xf ''
+   +0x020 SharedWaiters    : 0xffff8901`ad6ff028 Void
+   +0x028 ExclusiveWaiters : (null) 
+   +0x030 OwnerEntry       : _OWNER_ENTRY
+   +0x040 ActiveEntries    : 1
+   +0x044 ContentionCount  : 0x42
+   +0x048 NumberOfSharedWaiters : 2
+   +0x04c NumberOfExclusiveWaiters : 0
+   +0x050 Reserved2        : (null) 
+   +0x058 Address          : (null) 
+   +0x058 CreatorBackTraceIndex : 0
+   +0x060 SpinLock         : 0
+3: kd> dx -id 0,0,ffffbb8d9ee83500 -r1 ((win32k!_OWNER_ENTRY *)0xffffbb8db6169b20)
+((win32k!_OWNER_ENTRY *)0xffffbb8db6169b20)                 : 0xffffbb8db6169b20 [Type: _OWNER_ENTRY *]
+    [+0x000] OwnerThread      : 0xffffbb8db2080300 [Type: unsigned __int64]
+    [+0x008 ( 0: 0)] IoPriorityBoosted : 0x0 [Type: unsigned long]
+    [+0x008 ( 1: 1)] OwnerReferenced  : 0x0 [Type: unsigned long]
+    [+0x008 ( 2: 2)] IoQoSPriorityBoosted : 0x1 [Type: unsigned long]
+    [+0x008 (31: 3)] OwnerCount       : 0x1 [Type: unsigned long]
+    [+0x008] TableSize        : 0xc [Type: unsigned long]
+
+Owner of the resource is:
+
+3: kd> .thread 0xffffbb8db2080300
+Implicit thread is now ffffbb8d`b2080300
+3: kd> kP
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffff8901`a766a7d0 fffff803`f7f0f3fa nt!KiSwapContext(void)+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+01 ffff8901`a766a910 fffff803`f7f0edc1 nt!KiSwapThread(
+			struct _KTHREAD * OldThread = 0xffffbb8d`b2080300, 
+			struct _KPRCB * CurrentPrcb = 0xffff8901`a5fe8180)+0x16a [minkernel\ntos\ke\thredsup.c @ 9871] 
+02 ffff8901`a766a9c0 fffff803`f7f0e6d8 nt!KiCommitThreadWait(
+			struct _KTHREAD * Thread = 0xffffbb8d`b2080300, 
+			struct _KWAIT_BLOCK * WaitBlockList = <Value unavailable error>, 
+			_KDUE_TIME_TYPE TimeoutType = DueTimeNone (0n0), 
+			unsigned int64 DueTime = 0xffffbb8d`b2021028)+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+03 ffff8901`a766aa60 fffff80c`5bbd9f90 nt!KeWaitForSingleObject(
+			void * Object = 0xffffbb8d`b2021028, 
+			_KWAIT_REASON WaitReason = Executive (0n0), 
+			char WaitMode = 0n0 '', 
+			unsigned char Alertable = 0x00 '', 
+			union _LARGE_INTEGER * Timeout = <Value unavailable error>)+0x2b8 [minkernel\ntos\ke\wait.c @ 679] 
+04 ffff8901`a766ab30 fffff803`f7e23807 dxgkrnl!DpiPowerArbiterThread(
+			void * StartContext = <Value unavailable error>)+0x60 [onecoreuap\windows\core\dxkernel\dxgkrnl\port\dppower.cxx @ 1698] 
+05 ffff8901`a766ab90 fffff803`f7f91e86 nt!PspSystemThreadStartup(
+			<function> * StartRoutine = 0xfffff80c`5bbd9f30, 
+			void * StartContext = 0xffffbb8d`b2020030)+0x47 [minkernel\ntos\ps\psexec.c @ 7710] 
+06 ffff8901`a766abe0 00000000`00000000 nt!KxStartSystemThread(void)+0x16 [d:\rs2\minkernel\ntos\ke\amd64\threadbg.asm @ 81]
+
+Let's look at the parameters in dxgkrnl.
+3: kd> .frame 0n4;dv /t /v
+04 ffff8901`a766ab30 fffff803`f7e23807 dxgkrnl!DpiPowerArbiterThread+0x60 [onecoreuap\windows\core\dxkernel\dxgkrnl\port\dppower.cxx @ 1698] 
+<unavailable>     void * StartContext = <value unavailable>
+@rdi              struct _FDO_CONTEXT * FdoContext = 0xffffbb8d`b2020180
+@r14              struct _LIST_ENTRY * Entry = 0x00000000`00000000
+<unavailable>     struct _DPI_POWER_ACTION * PowerAction = <value unavailable>
+@eax              long Status = 0n0
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+@r13b             unsigned char MemoryAccessSuspended = 0x00 ''
+@bl               unsigned char bSignalPowerCompletionEvent = 0x01 ''
+@r12b             unsigned char CoreSyncAcquired = 0x01 ''
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     unsigned long PowerActionFlags = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     long CallStatus = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+@ebp              long CleanupStatus = 0n1
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+<unavailable>     struct _WD_LOGENTRY * pEntry = <value unavailable>
+3: kd> dx -id 0,0,ffffbb8d9ee83500 -r1 ((dxgkrnl!_FDO_CONTEXT *)0xffffbb8db2020180)
+((dxgkrnl!_FDO_CONTEXT *)0xffffbb8db2020180)                 : 0xffffbb8db2020180 [Type: _FDO_CONTEXT *]
+    [+0x000] ListEntry        [Type: _LIST_ENTRY]
+    [+0x010] Signature        : 0x74727044 [Type: unsigned long]
+    [+0x014] ContextType      : TypeFunctionalDeviceObjectContext (2) [Type: _CONTEXT_TYPE]
+    [+0x018] MyDeviceObject   : 0xffffbb8db2020030 : Device for "\Driver\igfx" [Type: _DEVICE_OBJECT *]
+    [+0x020] AdapterFunctionalDeviceObject : 0xffffbb8db2020030 : Device for "\Driver\igfx" [Type: _DEVICE_OBJECT *]
+    [+0x028] DriverContext    : 0xffffbb8db1ffdb60 [Type: _DRIVER_CONTEXT *]
+    [+0x030] MiniportDeviceContext : 0xffffbb8db211c000 [Type: void *]
+    [+0x038] IsPnpObject      : 0x1 [Type: unsigned char]
+[Lots of stuff omitted.]
+
+Looking at the source, this Power Arbiter thread holds the resource when the device is asleep, and lets go of it on wake.  Note the device object is in the struct...
+
+3: kd> !devobj 0xffffbb8db2020030 
+Device object (ffffbb8db2020030) is for:
+  \Driver\igfx DriverObject ffffbb8db1ff6080
+Current Irp 00000000 RefCount 0 Type 00000023 Flags 00002004
+SecurityDescriptor ffffa18caf7deec0 DevExt ffffbb8db2020180 DevObjExt ffffbb8db20215f0 
+ExtensionFlags (0xe0000000)  DOE_RAW_FDO, DOE_BOTTOM_OF_FDO_STACK, 
+                             DOE_DESIGNATED_FDO
+Characteristics (0x00000100)  FILE_DEVICE_SECURE_OPEN
+AttachedDevice (Upper) ffffbb8db2023040 \DRIVER\VERIFIER_FILTER
+AttachedTo (Lower) ffffbb8db2000620 \DRIVER\VERIFIER_FILTER
+Device queue is not busy.
+3: kd> dt nt!_device_object 0xffffbb8db2020030 
+   +0x000 Type             : 0n3
+   +0x002 Size             : 0x15c0
+   +0x004 ReferenceCount   : 0n0
+   +0x008 DriverObject     : 0xffffbb8d`b1ff6080 _DRIVER_OBJECT
+   +0x010 NextDevice       : (null) 
+   +0x018 AttachedDevice   : 0xffffbb8d`b2023040 _DEVICE_OBJECT
+   +0x020 CurrentIrp       : (null) 
+   +0x028 Timer            : (null) 
+   +0x030 Flags            : 0x2004
+   +0x034 Characteristics  : 0x100
+   +0x038 Vpb              : (null) 
+   +0x040 DeviceExtension  : 0xffffbb8d`b2020180 Void
+   +0x048 DeviceType       : 0x23
+   +0x04c StackSize        : 4 ''
+   +0x050 Queue            : <unnamed-tag>
+   +0x098 AlignmentRequirement : 0
+   +0x0a0 DeviceQueue      : _KDEVICE_QUEUE
+   +0x0c8 Dpc              : _KDPC
+   +0x108 ActiveThreadCount : 0
+   +0x110 SecurityDescriptor : 0xffffa18c`af7deec0 Void
+   +0x118 DeviceLock       : _KEVENT
+   +0x130 SectorSize       : 0
+   +0x132 Spare1           : 1
+   +0x138 DeviceObjectExtension : 0xffffbb8d`b20215f0 _DEVOBJ_EXTENSION
+   +0x140 Reserved         : (null) 
+3: kd> dx -id 0,0,ffffbb8d9ee83500 -r1 ((ntkrnlmp!_DEVOBJ_EXTENSION *)0xffffbb8db20215f0)
+((ntkrnlmp!_DEVOBJ_EXTENSION *)0xffffbb8db20215f0)                 : 0xffffbb8db20215f0 [Type: _DEVOBJ_EXTENSION *]
+    [+0x000] Type             : 13 [Type: short]
+    [+0x002] Size             : 0x0 [Type: unsigned short]
+    [+0x008] DeviceObject     : 0xffffbb8db2020030 : Device for "\Driver\igfx" [Type: _DEVICE_OBJECT *]
+    [+0x010] PowerFlags       : 0x40 [Type: unsigned long]
+    [+0x018] Dope             : 0x0 [Type: _DEVICE_OBJECT_POWER_EXTENSION *]
+    [+0x020] ExtensionFlags   : 0xe0000000 [Type: unsigned long]
+    [+0x028] DeviceNode       : 0x0 [Type: void *]
+    [+0x030] AttachedTo       : 0xffffbb8db2000620 : Device for "\DRIVER\VERIFIER_FILTER" [Type: _DEVICE_OBJECT *]
+    [+0x038] StartIoCount     : 0 [Type: long]
+    [+0x03c] StartIoKey       : 0 [Type: long]
+    [+0x040] StartIoFlags     : 0x0 [Type: unsigned long]
+    [+0x048] Vpb              : 0x0 [Type: _VPB *]
+    [+0x050] DependencyNode   : 0x0 [Type: void *]
+    [+0x058] InterruptContext : 0x0 [Type: void *]
+    [+0x060] VerifierContext  : 0x0 [Type: void *]
+
+PowerFlags of 0x4X is D3.  So the device is in D3.  The resource being held is expected.  D3 during shutdown is expected.
+
+Why didn't we actually shut down before the system wanted to go into CS?
+
+Going back to the power IRP in !poaction:
+3: kd> !irp ffff8183f072ad30 
+Irp is active with 6 stacks 5 is current (= 0xffff8183f072af20)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            1  0 ffffbb8db6331ac0 00000000 00000000-00000000    
+	      ffffbb8db6331ac0: is not a device object
+
+			Args: ffffbb8db62b4a00 00000000 00000000 00000047
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffbb8db62b4810 00000000 fffff803f7f50300-ffffbb8db915af00 Success Error Cancel pending
+	       \Driver\WUDFRd	nt!PopRequestCompletion
+			Args: 00016600 00000001 00000004 00000005
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffbb8db915af00    
+
+			Args: 00000000 00000000 00000000 00000000
+
+We're working on WUDFRd.  If we look at the threads in the WUDFHost.exe processes, we find in the first one this thread:
+THREAD ffffbb8db62ef080  Cid 0644.0664  Teb: 0000005ccf26a000 Win32Thread: ffffbb8db62ed1c0 WAIT: (WrAlertByThreadId) UserMode Non-Alertable
+            0000023c2e532138  ProcessObject
+        Not impersonating
+        DeviceMap                 ffffa18cb5112950
+        Owning Process            ffffbb8db62dc300       Image:         WUDFHost.exe
+        Attached Process          N/A            Image:         N/A
+        Wait Start TickCount      16935          Ticks: 1021 (0:00:00:15.953)
+        Context Switch Count      194            IdealProcessor: 0             
+        UserTime                  00:00:00.000
+        KernelTime                00:00:00.031
+        Win32 Start Address ntdll!TpReleaseWork (0x00007ffa56f91130)
+        Stack Init ffff8901a5ef1c10 Current ffff8901a5ef1720
+        Base ffff8901a5ef2000 Limit ffff8901a5eeb000 Call 0000000000000000
+        Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+
+        Child-SP          RetAddr           Call Site
+        ffff8901`a5ef1760 fffff803`f7f0f3fa nt!KiSwapContext+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+        ffff8901`a5ef18a0 fffff803`f7f0edc1 nt!KiSwapThread+0x16a [minkernel\ntos\ke\thredsup.c @ 9871] 
+        ffff8901`a5ef1950 fffff803`f7f32154 nt!KiCommitThreadWait+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+        ffff8901`a5ef19f0 fffff803`f834e5a2 nt!KeWaitForAlertByThreadId+0xb4 [minkernel\ntos\ke\wait.c @ 954] 
+        ffff8901`a5ef1a50 fffff803`f7f97913 nt!NtWaitForAlertByThreadId+0x2a [minkernel\ntos\ps\thidalrt.c @ 53] 
+        ffff8901`a5ef1a80 00007ffa`56ff8d04 nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffff8901`a5ef1a80) [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 2724] 
+        0000005c`cf5fe6d8 00007ffa`56f79d1a ntdll!ZwWaitForAlertByThreadId+0x14
+        0000005c`cf5fe6e0 00007ffa`4ec9b2be ntdll!RtlAcquireSRWLockExclusive+0x12a
+        (Inline Function) --------`-------- esif_umdf2!esif_ccb_write_lock+0x6 (Inline Function @ 00007ffa`4ec9b2be) [c:\tcag1\work\36c8bc219b192a58\common\esif_ccb_lock_win_user.h @ 78] 
+        (Inline Function) --------`-------- esif_umdf2!CSensorManager::AcquireSensorReleaseLock+0x11 (Inline Function @ 00007ffa`4ec9b2be) [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 63] 
+        0000005c`cf5fe740 00007ffa`4ec9a5fe esif_umdf2!CSensorManager::ReleaseAccelerometer+0x1a [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 351] 
+        0000005c`cf5fe770 00007ffa`4ec9b845 esif_umdf2!CSensorManager::DisableSensorsAndMarkForDelayedLoad+0x9a [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 491] 
+        0000005c`cf5fe7d0 00007ffa`4eca23be esif_umdf2!DisableSensorsForS3+0x15 [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 242] 
+        0000005c`cf5fe800 00007ffa`4ea11630 esif_umdf2!EvtDeviceSelfManagedIoSuspend+0x1b6 [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\esif_umdf2_device.cpp @ 342] 
+        0000005c`cf5fe880 00007ffa`4ea0b75b WUDFx02000!FxPnpDeviceSelfManagedIoSuspend::InvokeClient+0x20 [minkernel\wdf\framework\shared\irphandlers\pnp\pnpcallbacks.cpp @ 812] 
+        0000005c`cf5fe8d0 00007ffa`4ea15b8a WUDFx02000!FxPrePostCallback::InvokeStateless+0x3f [minkernel\wdf\framework\shared\irphandlers\pnp\cxpnppowercallbacks.cpp @ 581] 
+        (Inline Function) --------`-------- WUDFx02000!FxPnpDeviceSelfManagedIoSuspend::Invoke+0x9 (Inline Function @ 00007ffa`4ea15b8a) [minkernel\wdf\framework\shared\irphandlers\pnp\pnpcallbacks.cpp @ 788] 
+        0000005c`cf5fe900 00007ffa`4ea15a7b WUDFx02000!FxSelfManagedIoMachine::Suspending+0x3a [minkernel\wdf\framework\shared\irphandlers\pnp\selfmanagediostatemachine.cpp @ 430] 
+        0000005c`cf5fe930 00007ffa`4ea12d05 WUDFx02000!FxSelfManagedIoMachine::ProcessEvent+0x173 [minkernel\wdf\framework\shared\irphandlers\pnp\selfmanagediostatemachine.cpp @ 339] 
+        (Inline Function) --------`-------- WUDFx02000!FxSelfManagedIoMachine::Suspend+0xc (Inline Function @ 00007ffa`4ea12d05) [minkernel\wdf\framework\shared\inc\private\common\fxselfmanagediostatemachine.hpp @ 147] 
+        0000005c`cf5fe9b0 00007ffa`4ea12c79 WUDFx02000!FxPkgPnp::PowerGotoDx+0x21 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 2785] 
+        0000005c`cf5fe9f0 00007ffa`4ea123b9 WUDFx02000!FxPkgPnp::PowerGotoDNotZero+0x9 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 2689] 
+        0000005c`cf5fea20 00007ffa`4ea12131 WUDFx02000!FxPkgPnp::PowerEnterNewState+0x1f5 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 1643] 
+        0000005c`cf5feb10 00007ffa`4ea11e59 WUDFx02000!FxPkgPnp::PowerProcessEventInner+0x229 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 1559] 
+        0000005c`cf5feb80 00007ffa`4ea1641a WUDFx02000!FxPkgPnp::PowerProcessEvent+0x1c5 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 1338] 
+        (Inline Function) --------`-------- WUDFx02000!FxPkgFdo::LowerDevicePower+0x1a (Inline Function @ 00007ffa`4ea1641a) [minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 410] 
+        0000005c`cf5fec10 00007ffa`4ea16031 WUDFx02000!FxPkgFdo::DispatchDeviceSetPower+0x186 [minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 350] 
+        0000005c`cf5fec80 00007ffa`4ea067e0 WUDFx02000!FxPkgFdo::_DispatchSetPower+0x41 [minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 122] 
+        0000005c`cf5fecb0 00007ffa`4e9ef21a WUDFx02000!FxPkgPnp::Dispatch+0x3c0 [minkernel\wdf\framework\shared\irphandlers\pnp\fxpkgpnp.cpp @ 675] 
+        0000005c`cf5fed40 00007ffa`4e9eef4a WUDFx02000!DispatchWorker+0x116 [minkernel\wdf\framework\shared\core\fxdevice.cpp @ 1575] 
+        (Inline Function) --------`-------- WUDFx02000!FxDevice::Dispatch+0x22 (Inline Function @ 00007ffa`4e9eef4a) [minkernel\wdf\framework\shared\core\fxdevice.cpp @ 1586] 
+        0000005c`cf5fed90 00007ffa`4e9f2d44 WUDFx02000!FxDevice::DispatchWithLock+0x126 [minkernel\wdf\framework\shared\core\fxdevice.cpp @ 1431] 
+        0000005c`cf5fedd0 00007ff6`1d0e9c6a WUDFx02000!FxMessageDispatch::DispatchPnP+0xd4 [minkernel\wdf\framework\shared\core\um\fxmessagedispatchum.cpp @ 174] 
+        0000005c`cf5fee40 00007ff6`1d0d416a WUDFHost!CWudfDeviceStack::OnDispatchPnp+0x276 [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudfdevstack.cpp @ 1649] 
+        0000005c`cf5ff000 00007ff6`1d0e31f4 WUDFHost!CWudfDeviceStack::Forward+0x5ba [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudfdevstack.cpp @ 2786] 
+        0000005c`cf5ff090 00007ff6`1d0e34fe WUDFHost!CLpcNotification::UnloadSafeDispatchIrp+0x34 [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 4165] 
+        0000005c`cf5ff0c0 00007ff6`1d0e2aa6 WUDFHost!CLpcNotification::WudfPnpHandler+0x26e [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 3750] 
+        0000005c`cf5ff1b0 00007ff6`1d0d5e73 WUDFHost!CLpcNotification::ProcessPnpPowerIrp+0x10a [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 3470] 
+        0000005c`cf5ff220 00007ffa`50061ccc WUDFHost!CLpcNotification::Message+0x18a3 [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 1579] 
+        0000005c`cf5ff510 00007ffa`50062e8c WUDFPlatform!WdfLpcPort::ProcessMessage+0x18c [minkernel\wdf\framework\umdf\common\lpc\lpcport.cpp
+
+Note it's running ProcessPnpPowerIrp near the bottom.
+
+From kP, we can see it's handling the same IRP.
+3: kd> kP
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffff8901`a5ef1760 fffff803`f7f0f3fa nt!KiSwapContext(void)+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+01 ffff8901`a5ef18a0 fffff803`f7f0edc1 nt!KiSwapThread(
+			struct _KTHREAD * OldThread = 0xffffbb8d`b62ef080, 
+			struct _KPRCB * CurrentPrcb = 0xffff8901`a5fe8180)+0x16a [minkernel\ntos\ke\thredsup.c @ 9871] 
+02 ffff8901`a5ef1950 fffff803`f7f32154 nt!KiCommitThreadWait(
+			struct _KTHREAD * Thread = 0xffffbb8d`b62ef080, 
+			struct _KWAIT_BLOCK * WaitBlockList = <Value unavailable error>, 
+			_KDUE_TIME_TYPE TimeoutType = DueTimeNone (0n0), 
+			unsigned int64 DueTime = 0xffffbb8d`b62ef080)+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+03 ffff8901`a5ef19f0 fffff803`f834e5a2 nt!KeWaitForAlertByThreadId(
+			char WaitMode = 0n1 '', 
+			union _LARGE_INTEGER * Interval = <Value unavailable error>, 
+			void * Hint = 0x0000023c`2e532138)+0xb4 [minkernel\ntos\ke\wait.c @ 954] 
+04 ffff8901`a5ef1a50 fffff803`f7f97913 nt!NtWaitForAlertByThreadId(
+			void * Hint = 0x0000005c`cf97fb23, 
+			union _LARGE_INTEGER * Timeout = 0x00000000`00000000)+0x2a [minkernel\ntos\ps\thidalrt.c @ 53] 
+05 ffff8901`a5ef1a80 00007ffa`56ff8d04 nt!KiSystemServiceCopyEnd(<Win32 error 0n87>)+0x13 [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 2724] 
+06 0000005c`cf5fe6d8 00007ffa`56f79d1a ntdll!ZwWaitForAlertByThreadId+0x14
+07 0000005c`cf5fe6e0 00007ffa`4ec9b2be ntdll!RtlAcquireSRWLockExclusive+0x12a
+08 (Inline Function) --------`-------- esif_umdf2!esif_ccb_write_lock+0x6 [c:\tcag1\work\36c8bc219b192a58\common\esif_ccb_lock_win_user.h @ 78] 
+09 (Inline Function) --------`-------- esif_umdf2!CSensorManager::AcquireSensorReleaseLock+0x11 [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 63] 
+0a 0000005c`cf5fe740 00007ffa`4ec9a5fe esif_umdf2!CSensorManager::ReleaseAccelerometer(void)+0x1a [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 351] 
+0b 0000005c`cf5fe770 00007ffa`4ec9b845 esif_umdf2!CSensorManager::DisableSensorsAndMarkForDelayedLoad(void)+0x9a [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 491] 
+0c 0000005c`cf5fe7d0 00007ffa`4eca23be esif_umdf2!DisableSensorsForS3(void)+0x15 [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 242] 
+0d 0000005c`cf5fe800 00007ffa`4ea11630 esif_umdf2!EvtDeviceSelfManagedIoSuspend(
+			struct WDFDEVICE__ * p_wdfDevice = 0x0000023c`2e52b8b8)+0x1b6 [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\esif_umdf2_device.cpp @ 342] 
+0e 0000005c`cf5fe880 00007ffa`4ea0b75b WUDFx02000!FxPnpDeviceSelfManagedIoSuspend::InvokeClient(void)+0x20 [minkernel\wdf\framework\shared\irphandlers\pnp\pnpcallbacks.cpp @ 812] 
+0f 0000005c`cf5fe8d0 00007ffa`4ea15b8a WUDFx02000!FxPrePostCallback::InvokeStateless(void)+0x3f [minkernel\wdf\framework\shared\irphandlers\pnp\cxpnppowercallbacks.cpp @ 581] 
+10 (Inline Function) --------`-------- WUDFx02000!FxPnpDeviceSelfManagedIoSuspend::Invoke+0x9 [minkernel\wdf\framework\shared\irphandlers\pnp\pnpcallbacks.cpp @ 788] 
+11 0000005c`cf5fe900 00007ffa`4ea15a7b WUDFx02000!FxSelfManagedIoMachine::Suspending(
+			class FxSelfManagedIoMachine * This = <Value unavailable error>, 
+			long * Status = 0x0000005c`cf5fe9b8, 
+			FxCxCallbackProgress * Progress = 0x0000023c`2e52b908)+0x3a [minkernel\wdf\framework\shared\irphandlers\pnp\selfmanagediostatemachine.cpp @ 430] 
+12 0000005c`cf5fe930 00007ffa`4ea12d05 WUDFx02000!FxSelfManagedIoMachine::ProcessEvent(
+			FxSelfManagedIoEvents Event = <Value unavailable error>, 
+			FxCxCallbackProgress * Progress = 0x00000000`00000000)+0x173 [minkernel\wdf\framework\shared\irphandlers\pnp\selfmanagediostatemachine.cpp @ 339] 
+13 (Inline Function) --------`-------- WUDFx02000!FxSelfManagedIoMachine::Suspend+0xc [minkernel\wdf\framework\shared\inc\private\common\fxselfmanagediostatemachine.hpp @ 147] 
+14 0000005c`cf5fe9b0 00007ffa`4ea12c79 WUDFx02000!FxPkgPnp::PowerGotoDx(void)+0x21 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 2785] 
+15 0000005c`cf5fe9f0 00007ffa`4ea123b9 WUDFx02000!FxPkgPnp::PowerGotoDNotZero(
+			class FxPkgPnp * This = <Value unavailable error>)+0x9 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 2689] 
+16 0000005c`cf5fea20 00007ffa`4ea12131 WUDFx02000!FxPkgPnp::PowerEnterNewState(
+			_WDF_DEVICE_POWER_STATE State = <Value unavailable error>)+0x1f5 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 1643] 
+17 0000005c`cf5feb10 00007ffa`4ea11e59 WUDFx02000!FxPkgPnp::PowerProcessEventInner(
+			struct FxPostProcessInfo * Info = 0x0000005c`cf5febd0)+0x229 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 1559] 
+18 0000005c`cf5feb80 00007ffa`4ea1641a WUDFx02000!FxPkgPnp::PowerProcessEvent(
+			FxPowerEvent Event = <Value unavailable error>, 
+			unsigned char ProcessOnDifferentThread = <Value unavailable error>)+0x1c5 [minkernel\wdf\framework\shared\irphandlers\pnp\powerstatemachine.cpp @ 1338] 
+19 (Inline Function) --------`-------- WUDFx02000!FxPkgFdo::LowerDevicePower+0x1a [minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 410] 
+1a 0000005c`cf5fec10 00007ffa`4ea16031 WUDFx02000!FxPkgFdo::DispatchDeviceSetPower(
+			class FxIrp * Irp = 0x0000005c`cf5fed48)+0x186 [minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 350] 
+1b 0000005c`cf5fec80 00007ffa`4ea067e0 WUDFx02000!FxPkgFdo::_DispatchSetPower(
+			class FxPkgPnp * This = 0x0000023c`2e577b20, 
+			class FxIrp * Irp = 0x0000005c`cf5fed48)+0x41 [minkernel\wdf\framework\shared\irphandlers\pnp\fdopower.cpp @ 122] 
+1c 0000005c`cf5fecb0 00007ffa`4e9ef21a WUDFx02000!FxPkgPnp::Dispatch(
+			struct IWudfIrp * Irp = <Value unavailable error>)+0x3c0 [minkernel\wdf\framework\shared\irphandlers\pnp\fxpkgpnp.cpp @ 675] 
+1d 0000005c`cf5fed40 00007ffa`4e9eef4a WUDFx02000!DispatchWorker(
+			class FxDevice * Device = 0x0000023c`2e52afe0, 
+			struct IWudfIrp * Irp = 0x0000023c`2f0a87b0, 
+			void * DispatchContext = <Value unavailable error>)+0x116 [minkernel\wdf\framework\shared\core\fxdevice.cpp @ 1575] 
+1e (Inline Function) --------`-------- WUDFx02000!FxDevice::Dispatch+0x22 [minkernel\wdf\framework\shared\core\fxdevice.cpp @ 1586] 
+1f 0000005c`cf5fed90 00007ffa`4e9f2d44 WUDFx02000!FxDevice::DispatchWithLock(
+			struct IWudfDevice * DeviceObject = 0x0000023c`2e52df80, 
+			struct IWudfIrp * Irp = 0x0000023c`2f0a87b0)+0x126 [minkernel\wdf\framework\shared\core\fxdevice.cpp @ 1431] 
+20 0000005c`cf5fedd0 00007ff6`1d0e9c6a WUDFx02000!FxMessageDispatch::DispatchPnP(
+			struct IWudfIrp * pIrp = 0x0000023c`2f0a87b0)+0xd4 [minkernel\wdf\framework\shared\core\um\fxmessagedispatchum.cpp @ 174] 
+21 0000005c`cf5fee40 00007ff6`1d0d416a WUDFHost!CWudfDeviceStack::OnDispatchPnp(
+			struct IWudfDevice * pIWudfDevice = <Value unavailable error>, 
+			class CWudfPnpIrp * pPnpIrp = 0xffff8183`f072ad30)+0x276 [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudfdevstack.cpp @ 1649] 
+22 0000005c`cf5ff000 00007ff6`1d0e31f4 WUDFHost!CWudfDeviceStack::Forward(
+			struct IWudfDevice * pIWudfDevice = 0x0000023c`2e52df80, 
+			class CWudfIrp * pIrp = 0x0000023c`2f0a8610)+0x5ba [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudfdevstack.cpp @ 2786] 
+23 0000005c`cf5ff090 00007ff6`1d0e34fe WUDFHost!CLpcNotification::UnloadSafeDispatchIrp(
+			class CWudfDeviceStack * pDevStack = 0x0000023c`2e515f30, 
+			class CWudfIrp * pIrp = 0x0000023c`2f0a8610)+0x34 [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 4165] 
+24 0000005c`cf5ff0c0 00007ff6`1d0e2aa6 WUDFHost!CLpcNotification::WudfPnpHandler(
+			struct IUMDFLPCPortInterface * LpcPort = 0x0000023c`2e514db8, 
+			unsigned long ReplyMessageId = 0x320, 
+			struct _WUDFMESSAGE_IRP * pMsg = <Value unavailable error>)+0x26e [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 3750] 
+25 0000005c`cf5ff1b0 00007ff6`1d0d5e73 WUDFHost!CLpcNotification::ProcessPnpPowerIrp(
+			struct IUMDFLPCPortInterface * LpcPort = 0x0000023c`2e514db8, 
+			unsigned long ReplyMsgId = 0x320, 
+			struct _WUDFMESSAGE_IRP * pMsg = 0x0000005c`cf5ff730)+0x10a [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 3470] 
+26 0000005c`cf5ff220 00007ffa`50061ccc WUDFHost!CLpcNotification::Message(
+			struct IUMDFLPCPortInterface * LpcPort = 0x0000023c`2e514db8, 
+			struct _PORT_MESSAGE * ImpersonationData = 0x0000005c`cf5ff708, 
+			_MODE __formal = 0n-815794384 (No matching enumerant), 
+			unsigned long ReplyMessageId = 0x320, 
+			void * Message = 0x0000005c`cf5ff730, 
+			unsigned short MessageSize = 0x70, 
+			void * DataBuffer = 0x00000000`00000000, 
+			unsigned int64 DataBufferSize = 0)+0x18a3 [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudflpc.cpp @ 1579] 
+27 0000005c`cf5ff510 00007ffa`50062e8c WUDFPlatform!WdfLpcPort::ProcessMessage(
+			struct _PORT_MESSAGE * ReceiveMessage = 0x0000005c`cf5ff708, 
+			struct _ALPC_MESSAGE_ATTRIBUTES * MsgAttr = <Value unavailable error>)+0x18c [minkernel\wdf\framework\umdf\common\lpc\lpcport.cpp @ 208] 
+28 0000005c`cf5ff5d0 00007ffa`5006356b WUDFPlatform!WdfLpcCommPort::ProcessMessage(
+			struct _PORT_MESSAGE * ReceiveMessage = 0x0000005c`cf5ff708, 
+			struct _ALPC_MESSAGE_ATTRIBUTES * MsgAttr = 0x0000005c`cf5ff7a0)+0xac [minkernel\wdf\framework\umdf\common\lpc\lpccomm.cpp @ 767] 
+29 0000005c`cf5ff620 00007ffa`500636fd WUDFPlatform!WdfLpcConnPort::ProcessMessage(
+			struct _PORT_MESSAGE * ReceiveMessage = 0x0000005c`cf5ff708, 
+			struct _ALPC_MESSAGE_ATTRIBUTES * MsgAttr = 0x0000005c`cf5ff7a0)+0xeb [minkernel\wdf\framework\umdf\common\lpc\lpcconn.cpp @ 179] 
+2a 0000005c`cf5ff6c0 00007ff6`1d0d9812 WUDFPlatform!WdfLpc::RetrieveMessage(void)+0xfd [minkernel\wdf\framework\umdf\common\lpc\lpc_xp.cpp @ 189] 
+2b (Inline Function) --------`-------- WUDFHost!CThreadpool::WorkerThread+0x7c [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudfthreadpool.cpp @ 178] 
+2c 0000005c`cf5ff820 00007ffa`56f9106b WUDFHost!ThreadPoolWorkerThunk(
+			struct _TP_CALLBACK_INSTANCE * Instance = 0x0000023c`2e50f6c0, 
+			void * Parameter = 0x0000023c`2e50e640, 
+			struct _TP_WAIT * Wait = 0x0000023c`2e50f6c0, 
+			unsigned long WaitResult = 0xcf5ffa18)+0x82 [minkernel\wdf\framework\umdf\driverhost\wudfhost\wudfthreadpool.cpp @ 22] 
+2d 0000005c`cf5ff850 00007ffa`56f9155c ntdll!TpReleaseWork+0x1fb
+2e 0000005c`cf5ff890 00007ffa`549627f4 ntdll!TpReleaseWork+0x6ec
+2f 0000005c`cf5ffba0 00007ffa`56fc0941 KERNEL32!BaseThreadInitThunk(
+			unsigned long RunProcessInit = <Value unavailable error>, 
+			<function> * StartAddress = <Value unavailable error>, 
+			void * Argument = <Value unavailable error>)+0x14 [base\win32\client\thread.c @ 64] 
+30 0000005c`cf5ffbd0 00000000`00000000 ntdll!RtlUserThreadStart+0x21
+
+This thread is waiting for a SRWLOCK, and I don't know how to find the current owner of that type of lock (!locks does not work.)
+
+However, there is only one active-ish thread in the process, and it's this one:
+
+        THREAD ffffbb8db63be040  Cid 0644.0784  Teb: 0000005ccf274000 Win32Thread: 0000000000000000 WAIT: (WrLpcReply) UserMode Non-Alertable
+            ffffbb8db63be688  Semaphore Limit 0x1
+        Waiting for reply to ALPC Message ffffa18cb6a5f040 : queued at port ffffbb8db81b8a60 : owned by process ffffbb8db81b2640
+        Not impersonating
+        DeviceMap                 ffffa18cb5112950
+        Owning Process            ffffbb8db62dc300       Image:         WUDFHost.exe
+        Attached Process          N/A            Image:         N/A
+        Wait Start TickCount      15521          Ticks: 2435 (0:00:00:38.046)
+        Context Switch Count      807            IdealProcessor: 2             
+        UserTime                  00:00:00.015
+        KernelTime                00:00:00.109
+        Win32 Start Address ntdll!TpReleaseWork (0x00007ffa56f91130)
+        Stack Init ffff8901ab3ffc10 Current ffff8901ab3ff3c0
+        Base ffff8901ab400000 Limit ffff8901ab3f9000 Call 0000000000000000
+        Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+
+        Child-SP          RetAddr           Call Site
+        ffff8901`ab3ff400 fffff803`f7f0f3fa nt!KiSwapContext+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+        ffff8901`ab3ff540 fffff803`f7f0edc1 nt!KiSwapThread+0x16a [minkernel\ntos\ke\thredsup.c @ 9871] 
+        ffff8901`ab3ff5f0 fffff803`f7f0e6d8 nt!KiCommitThreadWait+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+        ffff8901`ab3ff690 fffff803`f7f0bd4f nt!KeWaitForSingleObject+0x2b8 [minkernel\ntos\ke\wait.c @ 679] 
+        (Inline Function) --------`-------- nt!AlpcpWaitForSingleObject+0x2e (Inline Function @ fffff803`f7f0bd4f) [minkernel\ntos\lpc\alpc\alpcp.h @ 8241] 
+        ffff8901`ab3ff760 fffff803`f8338a56 nt!AlpcpSignalAndWait+0x17f [minkernel\ntos\lpc\alpc\alpcmsg.c @ 5169] 
+        ffff8901`ab3ff800 fffff803`f833854d nt!AlpcpReceiveSynchronousReply+0x56 [minkernel\ntos\lpc\alpc\alpcmsg.c @ 5490] 
+        ffff8901`ab3ff860 fffff803`f833400d nt!AlpcpProcessSynchronousRequest+0x32d [minkernel\ntos\lpc\alpc\alpcmsg.c @ 8299] 
+        ffff8901`ab3ff950 fffff803`f7f97913 nt!NtAlpcSendWaitReceivePort+0x1ed [minkernel\ntos\lpc\alpc\alpcmsg.c @ 8669] 
+        ffff8901`ab3ffa10 00007ffa`56ff65c4 nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffff8901`ab3ffa80) [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 2724] 
+        0000005c`cf87e578 00007ffa`556f44ad ntdll!NtAlpcSendWaitReceivePort+0x14
+        (Inline Function) --------`-------- RPCRT4!RpcpAlpcSendWaitReceivePort+0x31 (Inline Function @ 00007ffa`556f44ad) [minio\rpc\runtime\shared\rpcpalpc.hxx @ 481] 
+        (Inline Function) --------`-------- RPCRT4!LRPC_CASSOCIATION::AlpcSendWaitReceivePort+0x6d (Inline Function @ 00007ffa`556f44ad) [minio\rpc\runtime\mtrt\lpcclnt.hxx @ 2692] 
+        (Inline Function) --------`-------- RPCRT4!LRPC_BASE_CCALL::DoSendReceive+0xfe (Inline Function @ 00007ffa`556f44ad) [minio\rpc\runtime\mtrt\lpccall.cxx @ 3638] 
+        0000005c`cf87e580 00007ffa`55789394 RPCRT4!LRPC_BASE_CCALL::SendReceive+0x12d [minio\rpc\runtime\mtrt\lpccall.cxx @ 647] 
+        (Inline Function) --------`-------- RPCRT4!I_RpcSendReceive+0x249 (Inline Function @ 00007ffa`55789394) [minio\rpc\runtime\mtrt\msgapi.cxx @ 94] 
+        (Inline Function) --------`-------- RPCRT4!NdrSendReceive+0x270 (Inline Function @ 00007ffa`55789394) [minio\rpc\ndr20\auxilary.cxx @ 842] 
+        (Inline Function) --------`-------- RPCRT4!Ndr64pSendReceive+0x7d0 (Inline Function @ 00007ffa`55789394) [minio\rpc\ndr64\cltcall.cxx @ 190] 
+        0000005c`cf87e660 00007ffa`55787c8d RPCRT4!NdrpClientCall3+0xbc4 [minio\rpc\ndr64\cltcall.cxx @ 316] 
+        0000005c`cf87eaa0 00007ffa`556def41 RPCRT4!NdrClientCall3+0xed [minio\rpc\ndr64\cltcall.cxx @ 235] 
+        (Inline Function) --------`-------- RPCRT4!ept_map+0x40 (Inline Function @ 00007ffa`556def41) [minio\rpc\runtime\rtifs\daytona\objfre\amd64\epmp_c.c @ 161] 
+        0000005c`cf87ee30 00007ffa`556df222 RPCRT4!EP_LOOKUP_DATA::LookupNextChunk+0x115 [minio\rpc\runtime\mtrt\epclnt.cxx @ 1340] 
+        0000005c`cf87ef00 00007ffa`556de801 RPCRT4!EP_LOOKUP_DATA::ResolveEndpoint+0x186 [minio\rpc\runtime\mtrt\epclnt.cxx @ 1149] 
+        (Inline Function) --------`-------- RPCRT4!EpResolveEndpoint+0x4f (Inline Function @ 00007ffa`556de801) [minio\rpc\runtime\mtrt\epclnt.cxx @ 247] 
+        0000005c`cf87efa0 00007ffa`556dfe88 RPCRT4!ResolveEndpointWithEpMapper+0x95 [minio\rpc\runtime\mtrt\epclnt.cxx @ 2541] 
+        0000005c`cf87f010 00007ffa`556ea2a7 RPCRT4!ResolveEndpointIfNecessary+0xa8 [minio\rpc\runtime\mtrt\epclnt.cxx @ 2681] 
+        0000005c`cf87f090 00007ffa`556ea422 RPCRT4!LRPC_BASE_BINDING_HANDLE::SubmitResolveEndpointRequest+0xe3 [minio\rpc\runtime\mtrt\lpcbh.cxx @ 2915] 
+        0000005c`cf87f120 00007ffa`556e9c4e RPCRT4!LRPC_BASE_BINDING_HANDLE::ResolveEndpoint+0x106 [minio\rpc\runtime\mtrt\lpcbh.cxx @ 2669] 
+        0000005c`cf87f1b0 00007ffa`556e45ac RPCRT4!LRPC_BASE_BINDING_HANDLE::DriveStateForward+0x57e [minio\rpc\runtime\mtrt\lpcbh.cxx @ 3722] 
+        0000005c`cf87f260 00007ffa`556e37cc RPCRT4!LRPC_FAST_BINDING_HANDLE::Bind+0x11c [minio\rpc\runtime\mtrt\lpcbh.cxx @ 6521] 
+        0000005c`cf87f360 00007ffa`4da81f33 RPCRT4!RpcBindingBind+0x5c [minio\rpc\runtime\mtrt\dcebind.cxx @ 2331] 
+        0000005c`cf87f390 00007ffa`4da84389 SensorsApi!SimpleDeviceOrientationSensor::CreateRpcBindingHandle+0x10f [drivers\mobilepc\sensors\sensorsapi\v2\simpledeviceorientationsensor.cpp @ 280] 
+        0000005c`cf87f480 00007ffa`4da6550f SensorsApi!SimpleDeviceOrientationSensor::RuntimeClassInitialize+0x1d [drivers\mobilepc\sensors\sensorsapi\v2\simpledeviceorientationsensor.cpp @ 30] 
+        0000005c`cf87f4c0 00007ffa`4da66c29 SensorsApi!Microsoft::WRL::Details::MakeAndInitialize<SimpleDeviceOrientationSensor,SimpleDeviceOrientationSensor>+0x5f [sdk\inc\wrl\implements.h @ 2522] 
+        (Inline Function) --------`-------- SensorsApi!Microsoft::WRL::Details::MakeAndInitialize+0x12 (Inline Function @ 00007ffa`4da66c29) [sdk\inc\wrl\implements.h @ 2616] 
+        0000005c`cf87f500 00007ffa`4da68c46 SensorsApi!CSensorManager::CreateV2Sensor+0x175 [drivers\mobilepc\sensors\sensorsapi\lib\sensormanager.cpp @ 1446] 
+        0000005c`cf87f5a0 00007ffa`4da68468 SensorsApi!CSensorManager::GetSensorsFromFilterExpression+0x2be [drivers\mobilepc\sensors\sensorsapi\lib\sensormanager.cpp @ 815] 
+        0000005c`cf87f660 00007ffa`4da68206 SensorsApi!CSensorManager::GetSensorsByInterface+0xdc [drivers\mobilepc\sensors\sensorsapi\lib\sensormanager.cpp @ 1006] 
+        0000005c`cf87f730 00007ffa`4ec9a9f5 SensorsApi!CSensorManager::GetSensorsByCategory+0x86 [drivers\mobilepc\sensors\sensorsapi\lib\sensormanager.cpp @ 167] 
+        0000005c`cf87f790 00007ffa`4ec9a69e esif_umdf2!CSensorManager::FindCompatibleAccelerometer+0x141 [c:\tcag1\work\36c8bc219b192a58\esif\products\esif_uf\sources\win\cem_csensormanager.cpp @ 617] 
+
+It's trying to create an RPC binding handle, and it needs to make an RPC call to the RPC endpoint mapper.
+3: kd> !alpc /m ffffa18cb6a5f040
+
+Message ffffa18cb6a5f040
+  MessageID             : 0x11A0 (4512)
+  CallbackID            : 0x1C6A5 (116389)
+  SequenceNumber        : 0x0000000A (10)
+  Type                  : LPC_REQUEST
+  DataLength            : 0x00C8 (200)
+  TotalLength           : 0x00F0 (240)
+  Canceled              : No
+  Release               : No
+  ReplyWaitReply        : No
+  Continuation          : Yes
+  OwnerPort             : ffffbb8db651fe20 [ALPC_CLIENT_COMMUNICATION_PORT]
+  WaitingThread         : ffffbb8db63be040
+  QueueType             : ALPC_MSGQUEUE_PENDING
+  QueuePort             : ffffbb8db81b8a60 [ALPC_CONNECTION_PORT]
+  QueuePortOwnerProcess : ffffbb8db81b2640 (svchost.exe)
+  ServerThread          : ffffbb8db8950700
+  QuotaCharged          : No
+  CancelQueuePort       : 0000000000000000
+  CancelSequencePort    : 0000000000000000
+  CancelSequenceNumber  : 0x00000000 (0)
+  ClientContext         : 0000023c2f0bd600
+  ServerContext         : 0000000000000000
+  PortContext           : 00000258449d9640
+  CancelPortContext     : 0000000000000000
+  SecurityData          : ffffa18cb67397a0
+  View                  : 0000000000000000
+  HandleData            : 0000000000000000
+3: kd> !thread ffffbb8db8950700
+THREAD ffffbb8db8950700  Cid 0408.169c  Teb: 0000009187e58000 Win32Thread: 0000000000000000 WAIT: (WrQueue) UserMode Alertable
+    ffffbb8db81b2280  QueueObject
+Not impersonating
+DeviceMap                 ffffa18cb4dec220
+Owning Process            ffffbb8db81b2640       Image:         svchost.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      16269          Ticks: 1687 (0:00:00:26.359)
+Context Switch Count      6700           IdealProcessor: 0             
+UserTime                  00:00:00.250
+KernelTime                00:00:00.328
+Win32 Start Address ntdll!TpReleaseWork (0x00007ffa56f91130)
+Stack Init ffff8901ae068c10 Current ffff8901ae068330
+Base ffff8901ae069000 Limit ffff8901ae062000 Call 0000000000000000
+Priority 8 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffff8901`ae068370 fffff803`f7f0f3fa : ffffbb8d`b8950700 00000000`00002de1 ffff8901`a5f64180 00000000`00000001 : nt!KiSwapContext+0x76 [d:\rs2\minkernel\ntos\ke\amd64\ctxswap.asm @ 102] 
+ffff8901`ae0684b0 fffff803`f7f0edc1 : ffff8901`ae0686f0 00000000`00000000 ffffbb8d`b81b2b40 fffff803`f7eebb44 : nt!KiSwapThread+0x16a [minkernel\ntos\ke\thredsup.c @ 9871] 
+ffff8901`ae068560 fffff803`f7f0dc48 : ffff9c80`03612f90 00000000`00000000 00000000`00000000 ffffbb8d`b81b2280 : nt!KiCommitThreadWait+0x101 [minkernel\ntos\ke\waitsup.c @ 773] 
+ffff8901`ae068600 fffff803`f7f0d75d : ffffbb8d`b81b2280 00000000`00000001 ffff8901`ae068701 fffff803`f86a8e00 : nt!KeRemoveQueueEx+0x238 [minkernel\ntos\ke\queueobj.c @ 1125] 
+ffff8901`ae0686b0 fffff803`f7f0c54b : ffffbb8d`b8950700 ffffbb8d`b62f9080 00000000`00000000 ffff8901`ae068b00 : nt!IoRemoveIoCompletion+0x8d [minkernel\ntos\io\iomgr\complete.c @ 1429] 
+ffff8901`ae0687d0 fffff803`f7f97913 : 00000000`00000000 ffffbb8d`b75851c0 00000091`88dfea00 ffff8901`ae068a28 : nt!NtWaitForWorkViaWorkerFactory+0x30b [minkernel\ntos\ex\workfac.c @ 2725] 
+ffff8901`ae068a10 00007ffa`56ff8d64 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffff8901`ae068a80) [d:\rs2\minkernel\ntos\ke\amd64\trap.asm @ 2724] 
+00000091`88dff838 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!ZwWaitForWorkViaWorkerFactory+0x14
+
+The server thread is in a svchost, which is correct, but it's an idle thread pool thread.  Let's make sure this is the right process.
+
+3: kd> !process 0 0 services.exe
+PROCESS ffffbb8db3d66640
+    SessionId: 0  Cid: 03d8    Peb: 96542b6000  ParentCid: 02e0
+    DirBase: 10446a000  ObjectTable: ffffa18cb4cf5240  HandleCount: 407.
+    Image: services.exe
+
+3: kd> .process /p /r ffffbb8db3d66640
+Implicit process is now ffffbb8d`b3d66640
+Loading User Symbols
+..........................
+3: kd> !services
+
+The current process is the SCM.
+	ScmDatabase       : 00007ff6688e5218
+	ImageDatabase     : 00007ff6688e4ec0
+	NotificationQueue : 00007ff6688e4080
+3: kd> !services 00007ff6688e5218
+
+Service database at 00007ff6688e5218 contains 609 entries.
+	000001f4dd50d260: '1394ohci', SERVICE_KERNEL_DRIVER      , SERVICE_STOPPED         
+...snip
+	000001f4dd557500: 'rhproxy', SERVICE_KERNEL_DRIVER      , SERVICE_STOPPED         
+	000001f4dd55ce70: 'RmSvc', SERVICE_WIN32_SHARE_PROCESS, SERVICE_STOPPED         
+	000001f4dd55c2f0: 'RpcEptMapper', SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING         
+	000001f4dd55b320: 'RpcLocator', SERVICE_WIN32_OWN_PROCESS  , SERVICE_STOPPED         
+	000001f4dd55c8b0: 'RpcSs', SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING         
+	000001f4dd5587c0: 'rspndr', SERVICE_KERNEL_DRIVER      , SERVICE_RUNNING         
+	000001f4dd55b1b0: 'RtkAudioService', SERVICE_WIN32_OWN_PROCESS  , SERVICE_STOPPED         
+	000001f4dd558c70: 'rtux64w10', SERVICE_KERNEL_DRIVER      , SERVICE_STOPPED         
+...snip
+	000001f4dd57b130: 'XboxNetApiSvc', SERVICE_WIN32_SHARE_PROCESS, SERVICE_STOPPED         
+	000001f4dd57d220: 'xinputhid', SERVICE_KERNEL_DRIVER      , SERVICE_STOPPED         
+
+-----
+End of service database list.
+-----
+3: kd> !services 000001f4dd55c2f0
+
+Service Record 000001f4dd55c2f0:
+	ServiceName          : 'RpcEptMapper'
+	DisplayName          : 'RPC Endpoint Mapper'
+	StartType            : SERVICE_AUTO_START  
+	ErrorControl         : SERVICE_ERROR_NORMAL  
+	ServiceStatus        : 000001f4dd55c338 (SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING         )
+	SecurityDescriptor   : 000001f4dd55e1b0
+	ImageRecord          : 000001f4dd5774c0: 0x0408, 'c:\windows\system32\svchost.exe -k rpcss'
+
+Stop Dependencies:
+	000001f4dd569460: 'SystemEventsBroker', SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING         
+	000001f4dd55c8b0: 'RpcSs', SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING         
+	000001f4dd530ea0: 'LSM', SERVICE_WIN32_SHARE_PROCESS (svchost-split mode), SERVICE_RUNNING         
+	000001f4dd521d30: 'BrokerInfrastructure', SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING         
+3: kd> !services 000001f4dd5774c0
+
+Image Record 000001f4dd5774c0:
+	ImageName            : 'c:\windows\system32\svchost.exe -k rpcss'
+	ProcessID            : 0x0408
+	AccountName          : 'NT AUTHORITY\NetworkService'
+3: kd> dt services!_IMAGE_RECORD 000001f4dd5774c0
+   +0x000 Signature        : 0x36316353
+   +0x008 Prev             : 0x000001f4`dd57ce60 _IMAGE_RECORD
+   +0x010 Next             : 0x000001f4`dd57cd70 _IMAGE_RECORD
+   +0x018 ImageName        : 0x000001f4`dd577550  "c:\windows\system32\svchost.exe -k rpcss"
+   +0x020 Pid              : 0x408
+   +0x024 ServiceCount     : 0n2
+   +0x028 ProcessHandle    : 0x00000000`000001e4 Void
+   +0x030 ObjectWaitHandle : 0x000001f4`dd514470 Void
+   +0x038 TokenHandle      : 0x00000000`000001d4 Void
+   +0x040 AccountLuid      : _LUID
+   +0x048 ProfileHandle    : 0x00000000`000001dc Void
+   +0x050 AccountName      : 0x000001f4`dd5775a2  "NT AUTHORITY\NetworkService"
+   +0x058 pServiceChannelContext : 0x000001f4`dd560430 _SC_SERVICE_CHANNEL_CONTEXT
+   +0x060 ImageFlags       : 5
+   +0x064 dwLaunchProtection : 0
+   +0x068 CreationEventHandle : (null) 
+   +0x070 userContext      : 0
+   +0x078 CriticalFlagCounter : 0n1
+   +0x080 HostInfo         : (null) 
+   +0x088 RmHostCallbackHandle : 0xffffffff`ffffffff
+
+OK, SERVICE_RUNNING, and the process is PID 408.
+
+3: kd> !process ffffbb8db81b2640 0
+PROCESS ffffbb8db81b2640
+    SessionId: 0  Cid: 0408    Peb: 9187e37000  ParentCid: 03d8
+    DirBase: 3313d000  ObjectTable: ffffa18cb4fb75c0  HandleCount: 490.
+    Image: svchost.exe
+
+Yup, same process.  So, for some reason, the endpoint mapper didn't pick up the call from WUDFHost, causing shutdown to stall, and we idled out to CS, which also hung, causing the watchdog timeout.
+

@@ -1,0 +1,489 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220170366
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]: Power IRP timeout - DRIVER_POWER_STATE_FAILURE (9f)
+[BUGCHECK]: 0x9F
+
+This is Power IRP timeout - DRIVER_POWER_STATE_FAILURE (9f) – see attached memory dump:
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffb0052fc53d70, Physical Device Object of the stack
+Arg3: ffffe5030544f7e0, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffb0052f833650, The blocked IRP
+…
+
+The timed-out Power IRP is owned by the UcmUcsi:
+3: kd> !irp ffffb0052f833650
+Irp is active with 4 stacks 3 is current (= 0xffffb0052f8337b0)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffb0052f993be0 00000000 fffff800edf37db0-ffffb0052eda34d0 Success Error Cancel pending
+            \Driver\UcmUcsi     nt!PopRequestCompletion
+                Args: 00015500 00000001 00000004 00000003
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffb0052eda34d0    
+
+                Args: 00000000 00000000 00000000 00000000
+
+This a driver for the Type-C device:
+3: kd> !devstack ffffb0052f993be0
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffb0052f993be0  \Driver\UcmUcsi    ffffb0052f900af0  
+  ffffb0052fc53d70  \Driver\ACPI       ffffb0052f526010  000000b7
+!DevNode ffffb0052fcf9950 :
+  DeviceInst is "ACPI\USBC000\0"
+  ServiceName is "UcmUcsi"
+
+3: kd> dt nt!_device_node ffffb0052fcf9950 UniqueId
+   +0x118 UniqueId : _UNICODE_STRING "\_SB.UBTC"
+3: kd> !amli dns \_SB.UBTC._DDN
+
+ACPI Name Space: \_SB.UBTC._DDN (ffffb00527e72f68)
+String(_DDN:Str="USB Type C")
+
+The system is going to Hibernate, the timed out D3 Power IRP is not being processed:
+3: kd> !poaction
+PopAction: fffff800ee15d200
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Hibernate
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Hibernate
+  Hiber Context..: ffffb0052b7b6470
+
+Allocated power irps (PopIrpList - fffff800ee15d860)
+  IRP: ffffb0052c21f7e0 (wait-wake/S4), PDO: ffffb0052c208060
+  IRP: ffffb0052b2a2870 (wait-wake/S4), PDO: ffffb0052b29a630
+  IRP: ffffb0052d889b40 (wait-wake/S3), PDO: ffffb0052ce5e060
+  IRP: ffffb0052c0ea9a0 (set/S4), PDO: ffffb0052fc53d70, CURRENT: ffffb0052f993be0, NOTIFY: ffffb0052fcf99e0
+  IRP: ffffb0052f833650 (set/D3,), PDO: ffffb0052fc53d70, CURRENT: ffffb0052f993be0
+  IRP: ffffb0052fca08b0 (wait-wake/S4), PDO: ffffb0052c207060
+  IRP: ffffb0052ed122c0 (wait-wake/S4), PDO: ffffb0052e1aee20
+  IRP: ffffb0052e5f91d0 (wait-wake/S4), PDO: ffffb0052b28f500
+  IRP: ffffb0052e5f72a0 (wait-wake/S4), PDO: ffffb0052d8c7630
+  IRP: ffffb0052f8fa7f0 (wait-wake/S4), PDO: ffffb0052bdda570
+  IRP: ffffb0052fd73730 (wait-wake/S4), PDO: ffffb005275a2060
+
+Irp worker threads (PopIrpThreadList - fffff800ee15c640)
+  THREAD: ffffb005262b3040 (static)
+  THREAD: ffffb005262b2040 (static)
+  THREAD: ffffb0052ce5b040 (dynamic)
+  THREAD: ffffb0052ccf0040 (dynamic)
+  THREAD: ffffb0052b65d040 (dynamic)
+  THREAD: ffffb0052ccde280 (dynamic)
+  THREAD: ffffb0052cce1040 (dynamic)
+  THREAD: ffffb0052cce0040 (dynamic)
+  THREAD: ffffb0052ccd2040 (dynamic)
+  THREAD: ffffb0052cb39040 (dynamic)
+  THREAD: ffffb0052c3ed040 (dynamic)
+  THREAD: ffffb0052f99c040 (dynamic)
+  THREAD: ffffb0052f990040 (dynamic), IRP: ffffb0052f833650, DEVICE: ffffb0052f993be0
+  THREAD: ffffb0052f862140 (dynamic)
+  THREAD: ffffb0052f52b040 (dynamic)
+
+Broadcast in progress: TRUE
+…
+
+The D0 Exit processing is blocked as UcmUcsi driver is trying to flush a workitem:
+3: kd> !thread ffffb0052f990040
+THREAD ffffb0052f990040  Cid 0004.1d00  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffb0052cc8c368  NotificationEvent
+Not impersonating
+DeviceMap                 ffff8b09f7416960
+Owning Process            ffffb00526265480       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      19451          Ticks: 3837 (0:00:00:59.953)
+Context Switch Count      32             IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address nt!PopIrpWorker (0xfffff800edf5a190)
+Stack Init ffffe50308dbfb90 Current ffffe50308dbf000
+Base ffffe50308dc0000 Limit ffffe50308db9000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffe503`08dbf040 fffff800`ede3fae3 : fffff800`00000000 00000000`00000000 ffffb005`00000000 00000000`00000000 : nt!KiSwapContext+0x76
+ffffe503`08dbf180 fffff800`ede3f13d : ffffb005`2f990040 fffff800`ede131ef fffff800`ece47180 ffffb005`00000000 : nt!KiSwapThread+0x583
+ffffe503`08dbf240 fffff800`ede3e847 : 00000000`0000003a ffffb005`00000000 00000000`00000000 ffffb005`2cc8c368 : nt!KiCommitThreadWait+0x16d
+ffffe503`08dbf2e0 fffff805`78a3959a : ffffb005`2cc8c368 ffffb005`00000000 00004ffa`d3373d00 fffff800`ede05000 : nt!KeWaitForSingleObject+0x2c7
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!MxEvent::WaitFor+0x1f (Inline Function @ fffff805`78a3959a)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxCREvent::EnterCRAndWait+0x25 (Inline Function @ fffff805`78a3959a)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x25 (Inline Function @ fffff805`78a3959a)
+ffffe503`08dbf3c0 fffff805`78a39548 : ffffffff`dc3cba00 ffffb005`2eed3650 00000000`00000000 00000000`00000004 : Wdf01000!FxWorkItem::WaitForSignal+0x46
+ffffe503`08dbf400 fffff805`78a34fa9 : ffffb005`2f900af0 00000000`00000004 fffff801`05656188 00000000`00000001 : Wdf01000!FxWorkItem::FlushAndWait+0x68
+ffffe503`08dbf450 fffff801`0565b97c : ffffb005`2cc8c2c0 00000000`00000000 00000000`00000004 00000bf7`e5ac33d8 : Wdf01000!imp_WdfWorkItemFlush+0x39
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : UcmUcsi!WdfWorkItemFlush+0x22 (Inline Function @ fffff801`0565b97c)
+ffffe503`08dbf480 fffff805`789eb803 : ffffb005`2fc53588 ffffb005`2f900800 ffffb005`2fc532f8 00000000`00000000 : UcmUcsi!Fdo_EvtDeviceD0Exit+0xbc
+ffffe503`08dbf4e0 fffff805`789eb63e : 00000000`00000000 00000000`00000001 fffff805`78a66340 00000000`00000000 : Wdf01000!FxPnpDeviceD0Exit::InvokeClient+0x23
+ffffe503`08dbf540 fffff805`789e0dda : 00000000`00000000 00000000`00000000 00000000`00000004 fffff805`789e0e93 : Wdf01000!FxPrePostCallback::InvokeStateless+0x42
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPnpDeviceD0Exit::Invoke+0x10 (Inline Function @ fffff805`789e0dda)
+ffffe503`08dbf570 fffff805`789f7979 : 00000000`00000000 ffffe503`08dbf700 00000000`00000380 ffffb005`2fc53020 : Wdf01000!FxPkgPnp::PowerGotoDxIoStopped+0xe2
+ffffe503`08dbf5d0 fffff805`789e0ff0 : 00000000`0000031c 00000000`00000b20 ffffb005`2fc53020 00000000`00000000 : Wdf01000!FxPkgPnp::PowerGotoDNotZeroIoStopped+0x9
+ffffe503`08dbf600 fffff805`789e1177 : 00000000`00000000 00000000`00000000 ffffb005`2fc53020 00000000`00000000 : Wdf01000!FxPkgPnp::PowerEnterNewState+0x150
+ffffe503`08dbf760 fffff805`789e0053 : ffffb005`2fc53020 00000000`00000000 00000000`00000000 fffff800`ede32400 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0xe7
+ffffe503`08dbf7e0 fffff805`789deb24 : 00000000`00000000 ffffe503`08dbfb10 00000000`00000012 ffffe503`08dbf928 : Wdf01000!FxPkgPnp::PowerProcessEvent+0x143
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgFdo::LowerDevicePower+0x11 (Inline Function @ fffff805`789deb24)
+ffffe503`08dbf880 fffff805`789f781a : ffffb005`2fc53020 ffffe503`08dbf948 00000000`00000004 00000000`00000000 : Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x60
+ffffe503`08dbf8d0 fffff805`789c6922 : ffffb005`2fc53020 ffffb005`2fc53020 00000000`0000000f 00000000`2c08b799 : Wdf01000!FxPkgFdo::_DispatchSetPower+0x1a
+ffffe503`08dbf900 fffff805`789c4a52 : ffffb005`2f833650 ffffb005`2f833650 ffffb005`2f833650 ffffb005`00000000 : Wdf01000!FxPkgPnp::Dispatch+0xc2
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!DispatchWorker+0xcc (Inline Function @ fffff805`789c4a52)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxDevice::Dispatch+0xd8 (Inline Function @ fffff805`789c4a52)
+ffffe503`08dbf970 fffff800`edf5a3b6 : ffffb005`2f833650 ffffb005`00000000 ffffb005`00000000 fffff800`ee15e090 : Wdf01000!FxDevice::DispatchWithLock+0x142
+ffffe503`08dbfa60 fffff800`edeca8c7 : ffffffff`fa0a1f00 ffffb005`2f990040 fffff800`edf5a190 000000ed`bd9bbfff : nt!PopIrpWorker+0x226
+ffffe503`08dbfb10 fffff800`edf8eec6 : ffff9b00`20be1180 ffffb005`2f990040 fffff800`edeca880 00000000`00000246 : nt!PspSystemThreadStartup+0x47
+ffffe503`08dbfb60 00000000`00000000 : ffffe503`08dc0000 ffffe503`08db9000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16
+
+Switching to the worker thread context:
+3: kd> .thread /p /r ffffb0052f990040
+Implicit thread is now ffffb005`2f990040
+Implicit process is now ffffb005`26265480
+Loading User Symbols
+
+3: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 ffffe503`08dbf040 fffff800`ede3fae3 nt!KiSwapContext+0x76
+01 ffffe503`08dbf180 fffff800`ede3f13d nt!KiSwapThread+0x583
+02 ffffe503`08dbf240 fffff800`ede3e847 nt!KiCommitThreadWait+0x16d
+03 ffffe503`08dbf2e0 fffff805`78a3959a nt!KeWaitForSingleObject+0x2c7
+04 (Inline Function) --------`-------- Wdf01000!MxEvent::WaitFor+0x1f
+05 (Inline Function) --------`-------- Wdf01000!FxCREvent::EnterCRAndWait+0x25
+06 (Inline Function) --------`-------- Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x25
+07 ffffe503`08dbf3c0 fffff805`78a39548 Wdf01000!FxWorkItem::WaitForSignal+0x46
+08 ffffe503`08dbf400 fffff805`78a34fa9 Wdf01000!FxWorkItem::FlushAndWait+0x68
+09 ffffe503`08dbf450 fffff801`0565b97c Wdf01000!imp_WdfWorkItemFlush+0x39
+0a (Inline Function) --------`-------- UcmUcsi!WdfWorkItemFlush+0x22
+0b ffffe503`08dbf480 fffff805`789eb803 UcmUcsi!Fdo_EvtDeviceD0Exit+0xbc
+0c ffffe503`08dbf4e0 fffff805`789eb63e Wdf01000!FxPnpDeviceD0Exit::InvokeClient+0x23
+0d ffffe503`08dbf540 fffff805`789e0dda Wdf01000!FxPrePostCallback::InvokeStateless+0x42
+0e (Inline Function) --------`-------- Wdf01000!FxPnpDeviceD0Exit::Invoke+0x10
+0f ffffe503`08dbf570 fffff805`789f7979 Wdf01000!FxPkgPnp::PowerGotoDxIoStopped+0xe2
+10 ffffe503`08dbf5d0 fffff805`789e0ff0 Wdf01000!FxPkgPnp::PowerGotoDNotZeroIoStopped+0x9
+11 ffffe503`08dbf600 fffff805`789e1177 Wdf01000!FxPkgPnp::PowerEnterNewState+0x150
+12 ffffe503`08dbf760 fffff805`789e0053 Wdf01000!FxPkgPnp::PowerProcessEventInner+0xe7
+13 ffffe503`08dbf7e0 fffff805`789deb24 Wdf01000!FxPkgPnp::PowerProcessEvent+0x143
+14 (Inline Function) --------`-------- Wdf01000!FxPkgFdo::LowerDevicePower+0x11
+15 ffffe503`08dbf880 fffff805`789f781a Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x60
+16 ffffe503`08dbf8d0 fffff805`789c6922 Wdf01000!FxPkgFdo::_DispatchSetPower+0x1a
+17 ffffe503`08dbf900 fffff805`789c4a52 Wdf01000!FxPkgPnp::Dispatch+0xc2
+18 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0xcc
+19 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0xd8
+1a ffffe503`08dbf970 fffff800`edf5a3b6 Wdf01000!FxDevice::DispatchWithLock+0x142
+1b ffffe503`08dbfa60 fffff800`edeca8c7 nt!PopIrpWorker+0x226
+1c ffffe503`08dbfb10 fffff800`edf8eec6 nt!PspSystemThreadStartup+0x47
+1d ffffe503`08dbfb60 00000000`00000000 nt!KxStartSystemThread+0x16
+
+We can determined the Workitem handle:
+3: kd> .frame /r b
+0b ffffe503`08dbf480 fffff805`789eb803 UcmUcsi!Fdo_EvtDeviceD0Exit+0xbc
+rax=0000000000000000 rbx=ffffb0052f900af0 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000004 rdi=00004ffad06ff7f8
+rip=fffff8010565b97c rsp=ffffe50308dbf480 rbp=0000000000000000
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=fffff80578a66340
+r14=0000000000000001 r15=fffff80105656188
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+UcmUcsi!Fdo_EvtDeviceD0Exit+0xbc:
+fffff801`0565b97c 488b0dd5b6ffff  mov     rcx,qword ptr [UcmUcsi!WPP_GLOBAL_Control (fffff801`05657058)] ds:fffff801`05657058={UcmUcsi!WPP_MAIN_CB (fffff801`056573d0)}
+3: kd> ub fffff8010565b97c
+UcmUcsi!Fdo_EvtDeviceD0Exit+0x8d:
+fffff801`0565b94d 488b4940        mov     rcx,qword ptr [rcx+40h]
+fffff801`0565b951 458d41e4        lea     r8d,[r9-1Ch]
+fffff801`0565b955 e87258ffff      call    UcmUcsi!WPP_RECORDER_SF_qd (fffff801`056511cc)
+fffff801`0565b95a 488b0d17b8ffff  mov     rcx,qword ptr [UcmUcsi!WdfFunctions_01015 (fffff801`05657178)]
+fffff801`0565b961 488b9308010000  mov     rdx,qword ptr [rbx+108h]
+fffff801`0565b968 488b81f00b0000  mov     rax,qword ptr [rcx+0BF0h]
+fffff801`0565b96f 488b0dfab7ffff  mov     rcx,qword ptr [UcmUcsi!WdfDriverGlobals (fffff801`05657170)]
+fffff801`0565b976 ff1544d7ffff    call    qword ptr [UcmUcsi!__guard_dispatch_icall_fptr (fffff801`056590c0)]
+fffff801`0565b97c 488b0dd5b6ffff  mov     rcx,qword ptr [UcmUcsi!WPP_GLOBAL_Control (fffff801`05657058)] ds:fffff801`05657058={UcmUcsi!WPP_MAIN_CB (fffff801`056573d0)}
+3: kd> dv /V
+@rdi              @rdi                          Device = 0x00004ffa`d06ff7f8
+@esi              @esi                     TargetState = WdfPowerDeviceD3 (0n4)
+@rbx              @rbx                          fdoCtx = 0xffffb005`2f900af0
+<unavailable>     <unavailable>     WPP_GLOBAL_Control = <value unavailable>
+3: kd> dt  fdoCtx
+Local var @ rbx Type _FDO_CONTEXT*
+   +0x000 WdfDevice        : 0x00004ffa`d06ff7f8 WDFDEVICE__
+   +0x008 TestIfCtx        : _TEST_IF_CONTEXT
+   +0x010 AcpiCtx          : _ACPI_CONTEXT
+   +0x078 PpmCtx           : _PPM_CONTEXT
+   +0x108 ConnectorAndNotificationWorkItem : 0x00004ffa`d3373d38 WDFWORKITEM__
+
+From WDF handle we can get to the object:
+3: kd> !wdfhandle  0x00004ffa`d3373d38
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00004ffad3373d38
+=============================
+Handle type is WDFWORKITEM
+Refcount: 3
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+Parent: !wdfhandle 0x00004ffad06ff7f8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00004ffad06ff7f8
+
+!wdfobject 0xffffb0052cc8c2c0
+3: kd> !wdfobject 0xffffb0052cc8c2c0
+
+The type for object 0xffffb0052cc8c2c0 is FxWorkItem
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x00004ffad3373d38
+
+dt FxWorkItem 0xffffb0052cc8c2c0
+
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+
+Parent: !wdfobject  0xffffb0052f900800, !wdfhandle 0x00004ffad06ff7f8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00004ffad06ff7f8
+
+From the FxWorkItem object we can find workitem callback and the thread that is processing it:
+3: kd> dt FxWorkItem 0xffffb0052cc8c2c0
+Wdf01000!FxWorkItem
+   +0x000 __VFN_table : 0xfffff805`78a647f8 
+   +0x008 m_Type           : 0x1025
+   +0x00a m_ObjectSize     : 0xd0
+   +0x00c m_Refcnt         : 0n3
+   +0x010 m_Globals        : 0xffffb005`2eed3650 _FX_DRIVER_GLOBALS
+   +0x018 m_ObjectFlags    : 0x819
+   +0x018 m_ObjectFlagsByName : FxObject::<unnamed-tag>::<unnamed-type-m_ObjectFlagsByName>
+   +0x01a m_ObjectState    : 1
+   +0x020 m_ChildListHead  : _LIST_ENTRY [ 0xffffb005`2cc8c2e0 - 0xffffb005`2cc8c2e0 ]
+   +0x030 m_SpinLock       : MxLock
+   +0x040 m_ParentObject   : 0xffffb005`2f900800 FxObject
+   +0x048 m_ChildEntry     : _LIST_ENTRY [ 0xffffb005`2ecc2208 - 0xffffb005`2f8abd08 ]
+   +0x058 m_DisposeSingleEntry : _SINGLE_LIST_ENTRY
+   +0x060 m_DeviceBase     : 0xffffb005`2f900800 FxDeviceBase
+   +0x060 m_Device         : 0xffffb005`2f900800 FxDevice
+   +0x068 m_NPLock         : MxLock
+   +0x078 m_WorkItem       : MxWorkItem
+   +0x080 m_RunningDown    : 0 ''
+   +0x081 m_Enqueued       : 0 ''
+   +0x084 m_WorkItemRunningCount : 1
+   +0x088 m_Object         : 0xffffb005`2f900800 FxObject
+   +0x090 m_CallbackLock   : (null) 
+   +0x098 m_CallbackLockObject : (null) 
+   +0x0a0 m_Callback       : 0xfffff801`05651c80     void  UcmUcsi!Fdo_ConnectorAndNotificationWorkItem+0
+   +0x0a8 m_WorkItemCompleted : FxCREvent
+   +0x0c8 m_WorkItemThread : 0xffffb005`27eb4040 _KTHREAD
+
+The work item thread has been blocked for very long time waiting for a synchronous IOCTL to complete:
+3: kd> !thread ffffb00527eb4040
+THREAD ffffb00527eb4040  Cid 0004.00d4  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffe503055e2360  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffff8b09f7416960
+Owning Process            ffffb00526265480       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      4077           Ticks: 19211 (0:00:05:00.171)
+Context Switch Count      2080           IdealProcessor: 3  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:00.593
+Win32 Start Address nt!ExpWorkerThread (0xfffff800ede568c0)
+Stack Init ffffe503055e2b90 Current ffffe503055e1f50
+Base ffffe503055e3000 Limit ffffe503055dc000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffe503`055e1f90 fffff800`ede3fae3 : 00000000`00000000 00000000`00000000 fffff408`00000000 fffff805`789cb1ba : nt!KiSwapContext+0x76
+ffffe503`055e20d0 fffff800`ede3f13d : ffffb005`27eb4040 ffffb005`27eb4180 ffff9b00`20be1180 00000000`00000000 : nt!KiSwapThread+0x583
+ffffe503`055e2190 fffff800`ede3e847 : 00000000`00000000 fffff805`00000000 00000000`00000000 ffffe503`055e2360 : nt!KiCommitThreadWait+0x16d
+ffffe503`055e2230 fffff805`789df4a1 : ffffe503`055e2360 ffffe503`00000000 00000000`00000000 ffffe503`055e2300 : nt!KeWaitForSingleObject+0x2c7
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!MxEvent::WaitFor+0x17 (Inline Function @ fffff805`789df4a1)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxCREvent::EnterCRAndWait+0x1d (Inline Function @ fffff805`789df4a1)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x1d (Inline Function @ fffff805`789df4a1)
+ffffe503`055e2310 fffff805`789dd8be : ffffb005`2f8abc00 ffffb005`2eed3601 ffffb005`00000000 00000000`00000000 : Wdf01000!FxIoTarget::SubmitSync+0x1d1
+ffffe503`055e23f0 fffff805`78a425f8 : ffff9b00`20bf0000 ffffb005`2f8abcc0 00000000`00000006 ffffe503`055e2738 : Wdf01000!FxIoTargetSendIoctl+0x38e
+ffffe503`055e26b0 fffff801`0565c721 : ffffb005`2f900800 ffffe503`055e2769 00000000`00000006 00000000`00000000 : Wdf01000!imp_WdfIoTargetSendInternalIoctlSynchronously+0x48
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : UcmUcsi!WdfIoTargetSendInternalIoctlSynchronously+0x42 (Inline Function @ fffff801`0565c721)
+ffffe503`055e2710 fffff801`0565e66a : 00004ffa`d06ff7f8 ffffb005`2f900b68 00000000`00000000 00000000`00000400 : UcmUcsi!Ppm_SendCommandSynchronously+0x13d
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : UcmUcsi!Ppm_GetCapability+0x3b (Inline Function @ fffff801`0565e66a)
+ffffe503`055e27d0 fffff801`05651d1b : ffffb005`2cc8c2c0 00004ffa`d06ff7f8 ffffb005`2f900af0 00000000`00000000 : UcmUcsi!Ppm_CreateConnectors+0xb2
+ffffe503`055e2950 fffff805`789d8acd : ffffb005`2cc8c2c0 ffffb005`2f9cc700 00000000`00000000 00000000`00000000 : UcmUcsi!Fdo_ConnectorAndNotificationWorkItem+0x9b
+ffffe503`055e2990 fffff805`789d2de9 : ffffdef6`088fa100 ffffb005`2cc8c2c0 fffff800`ee212240 00000000`00000000 : Wdf01000!FxWorkItem::WorkItemHandler+0x81
+ffffe503`055e29d0 fffff800`ede3225c : ffffb005`2fbc6960 ffffb005`2fbc6960 fffff805`789d2dc0 fffff805`78ea17d0 : Wdf01000!FxWorkItem::WorkItemThunk+0x29
+ffffe503`055e2a10 fffff800`ede569af : ffffb005`262b2d30 ffffb005`27eb4040 fffff800`ede32130 00000000`0000000c : nt!IopProcessWorkItem+0x12c
+ffffe503`055e2a80 fffff800`edeca8c7 : ffffb005`263ce040 00000000`00000080 ffffb005`26265480 ffffb005`27eb4040 : nt!ExpWorkerThread+0xef
+ffffe503`055e2b10 fffff800`edf8eec6 : ffff9b00`20ba5180 ffffb005`27eb4040 fffff800`edeca880 00000000`00000000 : nt!PspSystemThreadStartup+0x47
+ffffe503`055e2b60 00000000`00000000 : ffffe503`055e3000 ffffe503`055dc000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16
+
+Switching to the thread context we can see the IOCTL IRP:
+3: kd> .thread /p /r ffffb00527eb4040
+…
+3: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 ffffe503`055e1f90 fffff800`ede3fae3 nt!KiSwapContext+0x76
+01 ffffe503`055e20d0 fffff800`ede3f13d nt!KiSwapThread+0x583
+02 ffffe503`055e2190 fffff800`ede3e847 nt!KiCommitThreadWait+0x16d
+03 ffffe503`055e2230 fffff805`789df4a1 nt!KeWaitForSingleObject+0x2c7
+04 (Inline Function) --------`-------- Wdf01000!MxEvent::WaitFor+0x17
+05 (Inline Function) --------`-------- Wdf01000!FxCREvent::EnterCRAndWait+0x1d
+06 (Inline Function) --------`-------- Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x1d
+07 ffffe503`055e2310 fffff805`789dd8be Wdf01000!FxIoTarget::SubmitSync+0x1d1
+08 ffffe503`055e23f0 fffff805`78a425f8 Wdf01000!FxIoTargetSendIoctl+0x38e
+09 ffffe503`055e26b0 fffff801`0565c721 Wdf01000!imp_WdfIoTargetSendInternalIoctlSynchronously+0x48
+0a (Inline Function) --------`-------- UcmUcsi!WdfIoTargetSendInternalIoctlSynchronously+0x42
+0b ffffe503`055e2710 fffff801`0565e66a UcmUcsi!Ppm_SendCommandSynchronously+0x13d
+0c (Inline Function) --------`-------- UcmUcsi!Ppm_GetCapability+0x3b
+0d ffffe503`055e27d0 fffff801`05651d1b UcmUcsi!Ppm_CreateConnectors+0xb2
+0e ffffe503`055e2950 fffff805`789d8acd UcmUcsi!Fdo_ConnectorAndNotificationWorkItem+0x9b
+0f ffffe503`055e2990 fffff805`789d2de9 Wdf01000!FxWorkItem::WorkItemHandler+0x81
+10 ffffe503`055e29d0 fffff800`ede3225c Wdf01000!FxWorkItem::WorkItemThunk+0x29
+11 ffffe503`055e2a10 fffff800`ede569af nt!IopProcessWorkItem+0x12c
+12 ffffe503`055e2a80 fffff800`edeca8c7 nt!ExpWorkerThread+0xef
+13 ffffe503`055e2b10 fffff800`edf8eec6 nt!PspSystemThreadStartup+0x47
+14 ffffe503`055e2b60 00000000`00000000 nt!KxStartSystemThread+0x16
+
+3: kd> .frame /r 7
+07 ffffe503`055e2310 fffff805`789dd8be Wdf01000!FxIoTarget::SubmitSync+0x1d1
+rax=0000000000000000 rbx=ffffe503055e2440 rcx=0000000000000000
+rdx=0000000000000000 rsi=000000000000000d rdi=0000000000000000
+rip=fffff805789df4a1 rsp=ffffe503055e2310 rbp=ffffe503055e2389
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000010 r13=0000000000000000
+r14=ffffb0052f8abcc0 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+Wdf01000!FxIoTarget::SubmitSync+0x1d1:
+fffff805`789df4a1 8bf8            mov     edi,eax
+3: kd> dv /V
+@r14              @r14                         this = 0xffffb005`2f8abcc0
+@rbx              @rbx                      Request = 0xffffe503`055e2440
+<unavailable>     <unavailable>             Options = <value unavailable>
+ffffe503`055e2408 @rsp+0x00f8                Action = 0x00000000`00000000
+ffffe503`055e2360 @rsp+0x0050                params = struct FxTargetSubmitSyncParams
+@esi              @esi                       action = 0xd
+ffffe503`055e23f8 @rsp+0x00e8                  irql = 0x01 ''
+ffffe503`055e2358 @rsp+0x0048               timeout = 0n-8772594640640
+ffffe503`055e2400 @rsp+0x00f0                status = 0n0
+3: kd> dt  Request m_Irp.
+Local var @ rbx Type FxRequestBase*
+   +0x098 m_Irp  : 
+      +0x000 m_Irp  : 0xffffb005`2f9e9680 _IRP
+…
+
+The IRP is owned by the UcmUcsi:
+3: kd> !irp 0xffffb005`2f9e9680
+Irp is active with 2 stacks 2 is current (= 0xffffb0052f9e9798)
+No Mdl: System buffer=ffffb0052fc42570: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_INTERNAL_DEVICE_CONTROL(f), N/A(0)]
+            0 e1 ffffb0052f993be0 00000000 fffff805789f1560-ffffe503055e2360 Success Error Cancel pending
+            \Driver\UcmUcsi     Wdf01000!FxIoTarget::_SyncCompletionRoutine (IopUnloadSafeCompletion)
+                Args: 00000010 00000018 0x80012400 00000000
+
+The device is going to Dx for Sx, so it won’t power on until next S0:
+3: kd> !wdfkd.wdfdriverinfo UcmUcsi
+----------------------------------
+Default driver image name: UcmUcsi
+WDF library image name: Wdf01000
+FxDriverGlobals  0xffffb0052eed3650
+WdfBindInfo      0xfffff80105657000
+   Version        v1.15
+Library module   0xffffb005265a81e0
+   ServiceName    \Registry\Machine\System\CurrentControlSet\Services\Wdf01000
+   ImageName      Wdf01000
+----------------------------------
+WDFDRIVER: 0x00004ffad07f4748
+Driver logs: !wdflogdump UcmUcsi.sys -d
+Framework logs: !wdflogdump UcmUcsi.sys -f
+
+    !wdfdevice 0x00004ffad06ff7f8 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerGotoDxIoStopped, WdfDevStatePwrPolSleepingNoWakeCompletePowerDown
+        context:  dt 0xffffb0052f900af0 UcmUcsi!FDO_CONTEXT (size is 0x110 bytes)
+        <no associated attribute callbacks>
+
+        context:  dt 0xffffb0052fb76630 UcmCx!UCMCX_CONTEXT (size is 0xa8 bytes)
+        EvtCleanupCallback fffff80105672cc0 UcmCx!UcmCxContextCleanup
+
+        context:  dt 0xffffb005262616e0 UcmCx!UPM_DEVICE_CONTEXT (size is 0x40 bytes)
+        EvtCleanupCallback fffff80105681fe0 UcmCx!UpmDeviceContextCleanup
+        !wdfdevicequeues 0x00004ffad06ff7f8
+
+----------------------------------
+
+WDF Verifier settings for UcmUcsi.sys is OFF
+----------------------------------
+3: kd> !wdfdevice 0x00004ffad06ff7f8 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x00004ffad06ff7f8
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffffb0052f993be0, attached ffffb0052fc53d70, pdo ffffb0052fc53d70
+
+Pnp state:  119 ( WdfDevStatePnpStarted )
+Power state:  31c ( WdfDevStatePowerGotoDxIoStopped )
+Power Pol state:  528 ( WdfDevStatePwrPolSleepingNoWakeCompletePowerDown )
+
+Default WDFIOTARGET: 00004ffad0754188
+
+Self    WDFIOTARGET: 00004ffad0754338
+
+Device is the power policy owner for the stack
+No pended pnp, wait-wake irps
+Pended device power !irp 0xffffb0052f833650 (D3)
+Pended system power !irp 0xffffb0052c0ea9a0 (S4)
+
+Pnp state history:
+[0] WdfDevStatePnpObjectCreated (0x100)
+[1] WdfDevStatePnpInit (0x105)
+[2] WdfDevStatePnpInitStarting (0x106)
+[3] WdfDevStatePnpHardwareAvailable (0x108)
+[4] WdfDevStatePnpEnableInterfaces (0x109)
+[5] WdfDevStatePnpStarted (0x119)
+
+owning thread:  ffffb0052f990040
+Power state history:
+[0] WdfDevStatePowerD0StartingConnectInterrupt (0x310)
+[1] WdfDevStatePowerD0StartingDmaEnable (0x311)
+[2] WdfDevStatePowerD0StartingStartSelfManagedIo (0x312)
+[3] WdfDevStatePowerDecideD0State (0x313)
+[4] WdfDevStatePowerD0 (0x307)
+[5] WdfDevStatePowerGotoDx (0x31a)
+[6] WdfDevStatePowerNotifyingD0ExitToWakeInterrupts (0x359)
+[7] WdfDevStatePowerGotoDxIoStopped (0x31c)
+…
+
+Looking at the device queues however, we can the IOCTL is in the power managed queue and not presented to the driver as queue is powered off:
+3: kd> !wdfdevicequeues 0x00004ffad06ff7f8
+Treating handle as a KMDF handle!
+
+Dumping queues of WDFDEVICE 0x00004ffad06ff7f8
+=====================================
+Number of queues: 3
+----------------------------------
+Queue: 1 !wdfqueue  0x00000bf7e5ac33d8
+    Sequential, Power-managed, PowerOff, Passive Only, Can accept, Can dispatch, ExecutionLevelPassive, SynchronizationScopeNone
+    Number of driver owned requests: 0
+    Number of waiting requests: 1
+!wdfrequest 0x00004ffad0c3dc18  !irp 0xffffb0052f9e9680
+…
+
+So this creates deadlock kind of situation: UcmUcsi cannot complete D0 Exit until its workitem is complete. The workitem cannot complete until IOCTL is complete. The IOCTL cannot complete until queue is powered back up which will not happen until next S0. And S-state is blocked because D0 Exit is not progressing.

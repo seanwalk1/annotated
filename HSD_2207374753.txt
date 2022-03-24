@@ -1,0 +1,157 @@
+[BUG]:		https://hsdes.intel.com/resource/2207374753
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a user-mode exception (see memory dump):
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Exception Analysis                                   *
+*                                                                             *
+*******************************************************************************
+…
+FAULTING_IP: 
+KERNELBASE!RaiseException+69
+00007ffd`a49ca839 0f1f440000      nop     dword ptr [rax+rax]
+…
+
+
+From the callstack:
+0: kd> kn
+ # Child-SP          RetAddr           Call Site
+00 000000fb`2527e2d0 00007ffd`a4a8f92a ntdll!RtlUnhandledExceptionFilter2+0x364
+01 000000fb`2527e350 00007ffd`a704f109 KERNELBASE!UnhandledExceptionFilter+0x1ea
+02 000000fb`2527e470 00007ffd`a704fc1e ntdll!TppExceptionFilter+0x75
+03 000000fb`2527e4b0 00007ffd`a6fe3cbe ntdll!TppWorkerpInnerExceptionFilter+0x1a
+04 000000fb`2527e4e0 00007ffd`a6fcc676 ntdll!TppWorkerThread$filt$5+0x19
+05 000000fb`2527e520 00007ffd`a6fdbc4e ntdll!__C_specific_handler+0x96
+06 000000fb`2527e590 00007ffd`a6fe119f ntdll!__GSHandlerCheck_SEH+0x6a
+07 000000fb`2527e5c0 00007ffd`a6faa229 ntdll!RtlpExecuteHandlerForException+0xf
+08 000000fb`2527e5f0 00007ffd`a6fa9fe3 ntdll!RtlDispatchException+0x219
+09 000000fb`2527ed00 00007ffd`a49ca839 ntdll!RtlRaiseException+0x153
+0a 000000fb`2527f570 00007ffd`8f1fded8 KERNELBASE!RaiseException+0x69
+0b 000000fb`2527f650 00007ffd`8f1d888f clipsvc!__delayLoadHelper2+0x2b3a8
+0c 000000fb`2527f710 00007ffd`8f1d5398 clipsvc!_tailMerge_oleaut32_dll+0x3f
+0d 000000fb`2527f780 00007ffd`8f1b3800 clipsvc!CBSTRConstInitDataStoresHelperT<CEmptyType>::Init+0x28
+0e 000000fb`2527f7b0 00007ffd`8f1b38e5 clipsvc!CGlobalInitializer<1>::Init+0x40
+0f 000000fb`2527f7e0 00007ffd`8f1b3604 clipsvc!CSvcGlobalState::InitPhase2+0x3d
+10 000000fb`2527f830 00007ffd`8f1c75d8 clipsvc!CSvcGlobalState::Init+0x18
+11 000000fb`2527f860 00007ffd`a6f7062d clipsvc!CClipServiceOperationT<CEmptyType>::Phase2InitWorker+0xac
+12 000000fb`2527f940 00007ffd`a6f70739 ntdll!RtlpTpTimerCallback+0x7d
+13 000000fb`2527f990 00007ffd`a6f745c4 ntdll!TppTimerpExecuteCallback+0xa9
+14 000000fb`2527f9e0 00007ffd`a6e47944 ntdll!TppWorkerThread+0x8d4
+15 000000fb`2527fda0 00007ffd`a6face71 KERNEL32!BaseThreadInitThunk+0x14
+16 000000fb`2527fdd0 00000000`00000000 ntdll!RtlUserThreadStart+0x21
+
+Clipsvc is trying to call OLEAUT32!SysAllocString:
+
+0: kd> .frame d
+0d 000000fb`2527f780 00007ffd`8f1b3800 clipsvc!CBSTRConstInitDataStoresHelperT<CEmptyType>::Init+0x28
+0: kd> ub
+clipsvc!CBSTRConstInitDataStoresHelperT<CEmptyType>::Init+0x5:
+00007ffd`8f1d5375 4889742410      mov     qword ptr [rsp+10h],rsi
+00007ffd`8f1d537a 57              push    rdi
+00007ffd`8f1d537b 4883ec20        sub     rsp,20h
+00007ffd`8f1d537f 33db            xor     ebx,ebx
+00007ffd`8f1d5381 488d3d18860c00  lea     rdi,[clipsvc!CBSTRConstInitDataStoresHelperT<CEmptyType>::m_consts (00007ffd`8f29d9a0)]
+00007ffd`8f1d5388 488d35f93e0a00  lea     rsi,[clipsvc!`CClipTokenDbT<CEmptyType>::BuildQueryParams'::`2'::arrNormalizedStrings+0x138 (00007ffd`8f279288)]
+00007ffd`8f1d538f 488b0e          mov     rcx,qword ptr [rsi]
+00007ffd`8f1d5392 ff15e80c0d00    call    qword ptr [clipsvc!_imp_SysAllocString (00007ffd`8f2a6080)]
+
+But Delayed Loader threw an exception.
+
+The last error is still present in the TIB:
+0: kd> !gle
+LastErrorValue: (Win32) 0x5af (1455) - The paging file is too small for this operation to complete.
+LastStatusValue: (NTSTATUS) 0xc000012d - {Out of Virtual Memory}  Your system is low on virtual memory. To ensure that Windows runs properly, increase the size of your virtual memory paging file. For more information, see Help.
+
+So the operation failed because of STATUS_COMMITMENT_LIMIT error.
+
+Looking at the MM stats, we can see that many allocations have failed:
+0: kd> !vm 21
+Page File: \??\C:\pagefile.sys
+  Current:  50331648 Kb  Free Space:  48208656 Kb
+  Minimum:  17825792 Kb  Maximum:     50331648 Kb
+Page File: \??\C:\swapfile.sys
+  Current:     16384 Kb  Free Space:     16376 Kb
+  Minimum:     16384 Kb  Maximum:     24948604 Kb
+No Name for Paging File
+  Current:  66964052 Kb  Free Space:  59092120 Kb
+  Minimum:  66964052 Kb  Maximum:     66964052 Kb
+
+Physical Memory:          4158101 (   16632404 Kb)
+Available Pages:          2133788 (    8535152 Kb)
+ResAvail Pages:           2487173 (    9948692 Kb)
+Locked IO Pages:                0 (          0 Kb)
+Free System PTEs:      4294973091 (17179892364 Kb)
+
+******* 36 system PTE allocations have failed ******
+
+
+******* 418368 kernel stack PTE allocations have failed ******
+
+
+******* 1676055424 kernel stack growth attempts have failed ******
+
+
+******* 888 system cache map requests have failed ******
+
+Modified Pages:            114845 (     459380 Kb)
+Modified PF Pages:         111950 (     447800 Kb)
+Modified No Write Pages:      741 (       2964 Kb)
+NonPagedPool Usage:            96 (        384 Kb)
+NonPagedPoolNx Usage:       61306 (     245224 Kb)
+NonPagedPool Max:      4294967296 (17179869184 Kb)
+PagedPool  0:                   0 (          0 Kb)
+PagedPool  1:                   0 (          0 Kb)
+PagedPool  2:                   0 (          0 Kb)
+PagedPool  3:                   0 (          0 Kb)
+PagedPool  4:                   0 (          0 Kb)
+PagedPool Usage:                0 (          0 Kb)
+PagedPool Maximum:     4294967296 (17179869184 Kb)
+
+********** 2084 pool allocations have failed **********
+
+Processor Commit:            1256 (       5024 Kb)
+Session Commit:            290212 (    1160848 Kb)
+Shared Commit:           12878327 (   51513308 Kb)
+Special Pool:                   0 (          0 Kb)
+Kernel Stacks:             648631 (    2594524 Kb)
+Pages For MDLs:              3259 (      13036 Kb)
+Pages For AWE:                  0 (          0 Kb)
+NonPagedPool Commit:       274956 (    1099824 Kb)
+PagedPool Commit:               0 (          0 Kb)
+Driver Commit:              26553 (     106212 Kb)
+Boot Commit:                 2869 (      11476 Kb)
+PFN Array Commit:           49279 (     197116 Kb)
+System PageTables:          65281 (     261124 Kb)
+ProcessLockedFilePages:        10 (         40 Kb)
+Pagefile Hash Pages:         1180 (       4720 Kb)
+Sum System Commit:       14241813 (   56967252 Kb)
+
+********** Number of committed pages is near limit ********
+
+********** 65533 commit requests have failed  **********
+
+Total Private:            2312480 (    9249920 Kb)
+Misc/Transient Commit:     186364 (     745456 Kb)
+Committed pages:         16740657 (   66962628 Kb)
+Commit limit:            16741013 (   66964052 Kb)
+
+System Region               Base Address    NumberOfBytes
+
+KernelStacks          : ffff818000000000      10000000000
+NonPagedPool          : ffff880000000000     100000000000
+PfnDatabase           : ffff9a8000000000      38000000000
+Cfg                   : ffffa35e5f45cf40      28000000000
+PagedPool             : ffffa80000000000     100000000000
+UltraZero             : ffffbe8000000000     100000000000
+PageTables            : ffffcf0000000000       8000000000
+SystemCache           : ffffcf8000000000     100000000000
+SystemPtes            : ffffe18000000000     100000000000
+Session               : fffff28000000000       8000000000
+SystemImages          : fffff80000000000       8000000000
+HyperSpace            : fffffd0000000000      10000000000
+
+So this issue is caused by a combination of Stress and lack of virtual memory.

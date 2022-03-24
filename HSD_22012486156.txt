@@ -1,0 +1,68 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22012486156
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+IA32_HRESET_ENABLE MSR is not restored upon resume from S4 which leads to #GP fault in nt!SwapContext when it attempts to reset the prediction history of the current logical processor using HRESET instruction.
+See attached memory dump.
+
+13: kd> vertarget
+Windows 10 Kernel Version 21318 MP (16 procs) Free x64
+Product: WinNt, suite: TerminalServer SingleUserTS
+Edition build lab: 21318.1000.amd64fre.rs_prerelease.210216-1530
+Machine Name:
+Kernel base = 0xfffff802`7140e000 PsLoadedModuleList = 0xfffff802`72037850
+Debug session time: Tue Feb 23 14:21:39.945 2021 (UTC - 8:00)
+System Uptime: 0 days 0:25:04.156
+
+13: kd> !analyze -show
+KMODE_EXCEPTION_NOT_HANDLED (1e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: ffffffffc0000005, The exception code that was not handled
+Arg2: fffff802718347d6, The address that the exception occurred at
+Arg3: 0000000000000000, Parameter 0 of the exception
+Arg4: ffffffffffffffff, Parameter 1 of the exception
+13: kd> k
+# Child-SP          RetAddr               Call Site
+00 ffffca00`6d303108 fffff802`719517d6     nt!KeBugCheckEx
+01 ffffca00`6d303110 fffff802`7183611f     nt!HvlpVtlCallExceptionHandler+0x22
+02 ffffca00`6d303150 fffff802`716d1ff1     nt!RtlpExecuteHandlerForException+0xf
+03 ffffca00`6d303180 fffff802`716d6b34     nt!RtlDispatchException+0x301
+04 ffffca00`6d3038d0 fffff802`7182d962     nt!KiDispatchException+0x334
+05 ffffca00`6d303fb0 fffff802`7182d930     nt!KyExceptionDispatchOnExceptionStack+0x12
+06 ffffc90f`49aef7c8 fffff802`7183f4c7     nt!KiExceptionDispatchOnExceptionStackContinue
+07 ffffc90f`49aef7d0 fffff802`7183b08f     nt!KiExceptionDispatch+0x107
+08 ffffc90f`49aef9b0 fffff802`718347d6     nt!KiGeneralProtectionFault+0x30f
+09 ffffc90f`49aefb40 fffff802`71830a36     nt!SwapContext+0x26
+0a ffffc90f`49aefb80 00000000`00000000     nt!KiIdleLoop+0x176
+13: kd> .frame /r 9
+09 ffffc90f`49aefb40 fffff802`71830a36     nt!SwapContext+0x26
+rax=0000000000000001 rbx=ffffca006d291180 rcx=0000000000000001
+rdx=0000012000000000 rsi=ffff91050e1ca080 rdi=ffffca006d29d440
+rip=fffff802718347d6 rsp=ffffc90f49aefb40 rbp=0000000000000000
+r8=00000000000003dd  r9=0000000000000000 r10=0000012059b9017a
+r11=ffffc90f49aefb50 r12=0000000000000e96 r13=ffffca006d291180
+r14=ffff9104ff2fe040 r15=ffffca006d2a0000
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+nt!SwapContext+0x26:
+fffff802`718347d6 f3              ???
+
+13: kd> db fffff802`718347d6 L5
+fffff802`718347d6  f3 0f 3a f0 c0                                   ..:..
+
+
+ 
+Protected Mode Exceptions #GP(0) If CPL > 0 or (EAX AND NOT IA32_HRESET_ENABLE) ≠0
+
+https://software.intel.com/content/dam/develop/external/us/en/documents-tps/architecture-instruction-set-extensions-programming-reference.pdf
+
+System is resuming from Hibernate:
+13: kd>  dt nt!HalpResumeFromHibernate
+0x1 ''
+
+But IA32_HRESET_ENABLE MSR is cleared:
+7: kd> rdmsr 17DA
+msr[17da] = 00000000`00000000

@@ -1,0 +1,164 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604284168/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This appears to be hardware problem – bit flip on IA (x86 macro) instruction fetch, see debug 
+
+Debug Analysis:
+This is DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1) crash:
+
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If kernel debugger is available get stack backtrace.
+Arguments:
+Arg1: fffff903985d774c, memory referenced
+Arg2: 00000000000000ff, IRQL
+Arg3: 0000000000000055, value 0 = read operation, 1 = write operation
+Arg4: fffff903985d774c, address which referenced memory
+…
+
+Looking at the trap we can confirm memory referenced address as fffff903985d774c:
+0: kd> .bugcheck
+Bugcheck code 000000D1
+Arguments fffff903`985d774c 00000000`000000ff 00000000`00000055 fffff903`985d774c
+0: kd> kV
+# Child-SP          RetAddr           : Args to Child                                                           : Call Site
+00 fffff803`9a9f8908 fffff803`985df829 : 00000000`0000000a fffff903`985d774c 00000000`000000ff 00000000`00000055 : nt!KeBugCheckEx
+01 fffff803`9a9f8910 fffff803`985dde07 : 00000000`00000002 00000000`00000000 fffff803`9a9f8b80 00000000`00000001 : nt!KiBugCheckDispatch+0x69
+02 fffff803`9a9f8a50 fffff903`985d774c : 00000000`00000000 fffff803`987cc180 fffff803`98847940 ffff8e09`c7916080 : nt!KiPageFault+0x247 (TrapFrame @ fffff803`9a9f8a50)
+03 fffff803`9a9f8be0 00000000`00000000 : fffff803`987cc180 fffff803`98847940 ffff8e09`c7916080 fffff803`9a9f8fc0 : 0xfffff903`985d774c
+0: kd> .trap fffff803`9a9f8a50
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=0000000000000000 rbx=0000000000000000 rcx=8470c00491690000
+rdx=ffff8e09c77270e0 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff903985d774c rsp=fffff8039a9f8be0 rbp=00000000001a6fd0
+r8=0000000000000000  r9=0000000000000004 r10=0000000000000000
+r11=fffff803985e094f r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di ng nz na pe nc
+fffff903`985d774c 0000            add     byte ptr [rax],al ds:00000000`00000000=??
+0: kd> rcr2
+Last set context:
+cr2=fffff903985d774c
+
+The address is valid but marked as NX – no execute:
+0: kd> !pte fffff903985d774c
+                                           VA fffff903985d774c
+PXE at FFFFF67B3D9ECF90    PPE at FFFFF67B3D9F2070    PDE at FFFFF67B3E40E610    PTE at FFFFF67C81CC2EB8
+contains 8000000002A83863  contains 8000000002A82863  contains 8000000002A81863  contains 8000000000A80121
+pfn 2a83      ---DA--KW-V  pfn 2a82      ---DA--KW-V  pfn 2a81      ---DA--KW-V  pfn a80       -G--A--KR-V
+
+And does not contain valid code:
+0: kd> u fffff903985d774c
+fffff903`985d774c 0000            add     byte ptr [rax],al
+fffff903`985d774e 0000            add     byte ptr [rax],al
+fffff903`985d7750 0000            add     byte ptr [rax],al
+fffff903`985d7752 0000            add     byte ptr [rax],al
+fffff903`985d7754 0000            add     byte ptr [rax],al
+fffff903`985d7756 0000            add     byte ptr [rax],al
+fffff903`985d7758 0000            add     byte ptr [rax],al
+fffff903`985d775a 0000            add     byte ptr [rax],al
+
+This is, however, an attempt to execute:
+0: kd> .trap fffff803`9a9f8a50
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=0000000000000000 rbx=0000000000000000 rcx=8470c00491690000
+rdx=ffff8e09c77270e0 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff903985d774c rsp=fffff8039a9f8be0 rbp=00000000001a6fd0
+ r8=0000000000000000  r9=0000000000000004 r10=0000000000000000
+r11=fffff803985e094f r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di ng nz na pe nc
+fffff903`985d774c 0000            add     byte ptr [rax],al ds:00000000`00000000=??
+0: kd> refl
+Last set context:
+efl=00010082
+0: kd> r cs; rss
+Last set context:
+cs=0010
+Last set context:
+ss=0018
+0: kd> rrip
+Last set context:
+rip=fffff903985d774c
+0: kd> dps fffff8039a9f8be0-40 fffff8039a9f8be0
+fffff803`9a9f8ba0  ffff7c73`5a9b1be9
+fffff803`9a9f8ba8  00000000`001a6fd0
+fffff803`9a9f8bb0  00000000`00000011
+fffff803`9a9f8bb8  fffff903`985d774c
+fffff803`9a9f8bc0  00000000`00000010
+fffff803`9a9f8bc8  00000000`00010082
+fffff803`9a9f8bd0  fffff803`9a9f8be0
+fffff803`9a9f8bd8  00000000`00000018
+fffff803`9a9f8be0  00000000`00000000
+
+This is why an attempt to execute caused #PF (Page Fault) exception – the error code is 0x11:
+
+ 
+Looking at the callstack it does not seem to make a lot of sense prior to the trap. PCR indicates that processor is idle and running Idle thread:
+0: kd> !prcb
+PRCB for Processor 0 at fffff803987cc180:
+Current IRQL -- 0
+Threads--  Current fffff80398847940 Next 0000000000000000 Idle fffff80398847940
+Processor Index 0 Number (0, 0) GroupSetMember 1
+Interrupt Count -- 002b60e5
+Times -- Dpc    00000fe7 Interrupt 00000990 
+         Kernel 0005e84e User      0000131c
+
+0: kd> !thread fffff80398847940
+THREAD fffff80398847940  Cid 0000.0000  Teb: 0000000000000000 Win32Thread: 0000000000000000 RUNNING on processor 0
+Not impersonating
+DeviceMap                 ffffc602bee14810
+Owning Process            fffff80398846940       Image:         Idle
+Attached Process          ffff8e09c348e040       Image:         System
+Wait Start TickCount      901137         Ticks: 3 (0:00:00:00.046)
+Context Switch Count      771394         IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                01:37:02.406
+Win32 Start Address nt!KiIdleLoop (0xfffff803985d7720)
+Stack Init fffff8039a9f8c10 Current fffff8039a9f8ba0
+Base fffff8039a9f9000 Limit fffff8039a9f2000 Call 0000000000000000
+Priority 0 BasePriority 0 PriorityDecrement 0 IoPriority 0 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff803`9a9f8908 fffff803`985df829 : 00000000`0000000a fffff903`985d774c 00000000`000000ff 00000000`00000055 : nt!KeBugCheckEx
+fffff803`9a9f8910 fffff803`985dde07 : 00000000`00000002 00000000`00000000 fffff803`9a9f8b80 00000000`00000001 : nt!KiBugCheckDispatch+0x69
+fffff803`9a9f8a50 fffff903`985d774c : 00000000`00000000 fffff803`987cc180 fffff803`98847940 ffff8e09`c7916080 : nt!KiPageFault+0x247 (TrapFrame @ fffff803`9a9f8a50)
+fffff803`9a9f8be0 00000000`00000000 : fffff803`987cc180 fffff803`98847940 ffff8e09`c7916080 fffff803`9a9f8fc0 : 0xfffff903`985d774c
+
+We can notice that Idle thread start address and address we hit #PF at are very close bit-wise:
+0: kd> ? 0xfffff803985d7720 ^ fffff903985d774c
+Evaluate expression: 1099511627884 = 00000100`0000006c
+
+This appears to be a bit-flip:
+0: kd> ? fffff903985d774c ^ fffff803`985d774c
+Evaluate expression: 1099511627776 = 00000100`00000000
+
+The actual address with the flipped bit clear is valid and execution is allowed and the code is what we’d expect”
+0: kd> !pte fffff803`985d774c
+                                           VA fffff803985d774c
+PXE at FFFFF67B3D9ECF80    PPE at FFFFF67B3D9F0070    PDE at FFFFF67B3E00E610    PTE at FFFFF67C01CC2EB8
+contains 0000000000A84063  contains 0000000000A45063  contains 00000002656009E3  contains 0000000000000000
+pfn a84       ---DA--KWEV  pfn a45       ---DA--KWEV  pfn 265600    -GLDA--KWEV  LARGE PAGE pfn 2657d7   
+
+0: kd> u fffff803`985d774c
+nt!KiIdleLoop+0x2c:
+fffff803`985d774c fb              sti
+fffff803`985d774d b902000000      mov     ecx,2
+fffff803`985d7752 440f22c1        mov     cr8,rcx
+fffff803`985d7756 80630700        and     byte ptr [rbx+7],0
+fffff803`985d775a 803de198250000  cmp     byte ptr [nt!HvlEnableIdleYield (fffff803`98831042)],0
+fffff803`985d7761 7402            je      nt!KiIdleLoop+0x45 (fffff803`985d7765)
+fffff803`985d7763 f390            pause
+fffff803`985d7765 fb              sti

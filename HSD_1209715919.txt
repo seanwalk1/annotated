@@ -1,0 +1,173 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209715919/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	Bugcheck A - IRQL_NOT_LESS_OR_EQUAL
+[BUGCHECK]:	0xA
+
+This is Bugcheck A - IRQL_NOT_LESS_OR_EQUAL (a):
+1: kd> vertarget
+Windows 10 Kernel Version 15037 MP (4 procs) Free x64
+Product: WinNt, suite: TerminalServer SingleUserTS
+Built by: 15037.1000.amd64fre.rsmain.170211-1430
+Machine Name: "SDS42"
+Kernel base = 0xfffff803`4c40f000 PsLoadedModuleList = 0xfffff803`4c74d5a0
+Debug session time: Thu Feb 16 19:06:47.435 2017 (UTC - 8:00)
+System Uptime: 0 days 0:15:05.900
+
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+IRQL_NOT_LESS_OR_EQUAL (a)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If a kernel debugger is available get the stack backtrace.
+Arguments:
+Arg1: fffff8034cb44470, memory referenced
+Arg2: 00000000000000ff, IRQL
+Arg3: 0000000000000040, bitfield :
+	bit 0 : value 0 = read operation, 1 = write operation
+	bit 3 : value 0 = not an execute operation, 1 = execute operation (only on chips which support this level of status)
+Arg4: fffff8034c65e393, address which referenced memory
+…
+
+This is a IR Time expiration read:
+1: kd> u fffff8034c65e393 L1
+nt!ExRecordOneTimerExpiry+0x2b:
+fffff803`4c65e393 418a4cc310      mov     cl,byte ptr [r11+rax*8+10h]
+
+1: kd> kV
+# Child-SP          RetAddr           : Args to Child                                                           : Call Site
+00 ffffaf01`8cb8a488 fffff803`4c57ada9 : 00000000`0000000a fffff803`4cb44470 00000000`000000ff 00000000`00000040 : nt!KeBugCheckEx
+01 ffffaf01`8cb8a490 fffff803`4c57937d : 00000000`00000008 fffff803`4c62345d 00000002`1bc00a12 00000000`00000000 : nt!KiBugCheckDispatch+0x69
+02 ffffaf01`8cb8a5d0 fffff803`4c65e393 : fffff803`4c59a5d7 00000000`00356701 ffffaf01`000000d1 ffffaf01`8cb5c100 : nt!KiPageFault+0x23d (TrapFrame @ ffffaf01`8cb8a5d0)
+03 ffffaf01`8cb8a768 fffff803`4c59a5d7 : 00000000`00356701 ffffaf01`000000d1 ffffaf01`8cb5c100 00000000`00000000 : nt!ExRecordOneTimerExpiry+0x2b
+04 ffffaf01`8cb8a770 fffff803`4c478276 : ffffffff`fffffffd 00000000`00000000 00000000`00000000 ffffaf01`8cb5c180 : nt!KeResumeClockTimerFromIdle+0x120f37
+05 ffffaf01`8cb8a810 fffff803`4c477968 : 00000000`00000003 00000000`00000002 ffffdd0d`1c61e0f0 00000000`00000000 : nt!PpmIdleExecuteTransition+0x766
+06 ffffaf01`8cb8aa80 fffff803`4c572acc : ffffffff`00000000 ffffaf01`8cb5c180 ffffaf01`8cb68c80 ffffdd0d`1f0d6640 : nt!PoIdle+0x348
+07 ffffaf01`8cb8abe0 00000000`00000000 : ffffaf01`8cb8b000 ffffaf01`8cb84000 00000000`00000000 00000000`00000000 : nt!KiIdleLoop+0x2c
+
+(The Arg3 bitfield is bogus because of a different bug – see VSO ID 10829336 / HSD-ES ID 120964688).
+
+The accessed data is paged out:
+1: kd> !pte fffff8034cb44470 
+                                           VA fffff8034cb44470
+PXE at FFFFF2793C9E4F80    PPE at FFFFF2793C9F0068    PDE at FFFFF2793E00D328    PTE at FFFFF27C01A65A20
+contains 0000000001209063  contains 000000000120A063  contains 0000000001318063  contains 0000000002B44860
+pfn 1209      ---DA--KWEV  pfn 120a      ---DA--KWEV  pfn 1318      ---DA--KWEV  not valid
+                                                                                  Transition: 2b44
+                                                                                  Protect: 3 - ExecuteRead
+
+The code was accessing nt!ExpIRTimerDescs global array:
+1: kd> u nt!ExRecordOneTimerExpiry fffff8034c65e393
+nt!ExRecordOneTimerExpiry:
+fffff803`4c65e368 4c8b1581420e00  mov     r10,qword ptr [nt!ExpIRTimerExpiryCounts (fffff803`4c7425f0)]
+fffff803`4c65e36f 4d85d2          test    r10,r10
+fffff803`4c65e372 7454            je      nt!ExRecordOneTimerExpiry+0x60 (fffff803`4c65e3c8)
+fffff803`4c65e374 80f90e          cmp     cl,0Eh
+fffff803`4c65e377 4c8d1de2604e00  lea     r11,[nt!ExpIRTimerDescs (fffff803`4cb44460)]
+fffff803`4c65e37e 1ac0            sbb     al,al
+fffff803`4c65e380 22c1            and     al,cl
+fffff803`4c65e382 440fb6c0        movzx   r8d,al
+fffff803`4c65e386 80f90e          cmp     cl,0Eh
+fffff803`4c65e389 451ac9          sbb     r9b,r9b
+fffff803`4c65e38c 4422ca          and     r9b,dl
+fffff803`4c65e38f 4b8d0440        lea     rax,[r8+r8*2]
+fffff803`4c65e393 418a4cc310      mov     cl,byte ptr [r11+rax*8+10h]
+
+The nt!ExpIRTimerDescs is located in pageable section:
+1: kd> !dh nt
+
+File Type: EXECUTABLE IMAGE
+FILE HEADER VALUES
+…
+
+SECTION HEADER #D
+    PAGE name
+  335E56 virtual size
+  408000 virtual address
+  336000 size of raw data
+  39CE00 file pointer to raw data
+      0 file pointer to relocation table
+       0 file pointer to line numbers
+       0 number of relocations
+       0 number of line numbers
+60000020 flags
+         Code
+         (no align specified)
+         Execute Read
+…
+1: kd> ? fffff803`4cb44460 - nt
+Evaluate expression: 7558240 = 00000000`00735460
+1: kd> ? fffff8034cb44470 – nt
+Evaluate expression: 7558256 = 00000000`00735470
+1: kd> ? 408000+335E56 
+Evaluate expression: 7593558 = 00000000`0073de56
+1: kd> ?? (0x00735470 > 0x408000) && (0x00735470 < 0x0073de56)
+bool true
+
+The nt!ExRecordOneTimerExpiry is called with interrupts disabled:
+1: kd> .trap ffffaf01`8cb8a5d0
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff8034c65e393 rsp=ffffaf018cb8a768 rbp=000000021bf56c0e
+r8=0000000000000000  r9=ffffaf018cb8a700 r10=ffffdd0d20afac00
+r11=fffff8034cb44460 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl zr na po nc
+nt!ExRecordOneTimerExpiry+0x2b:
+fffff803`4c65e393 418a4cc310      mov     cl,byte ptr [r11+rax*8+10h] ds:fffff803`4cb44470=01
+1: kd> rif
+Last set context:
+if=0
+
+The Idle loop disables interrupts:
+1: kd> u nt!KiIdleLoop
+nt!KiIdleLoop:
+fffff803`4c572aa0 4883ec28        sub     rsp,28h
+fffff803`4c572aa4 488364242800    and     qword ptr [rsp+28h],0
+fffff803`4c572aaa 65488b1c2520000000 mov   rbx,qword ptr gs:[20h]
+fffff803`4c572ab3 eb25            jmp     nt!KiIdleLoop+0x3a (fffff803`4c572ada)
+fffff803`4c572ab5 f6836c2e00003f  test    byte ptr [rbx+2E6Ch],3Fh
+fffff803`4c572abc 7518            jne     nt!KiIdleLoop+0x36 (fffff803`4c572ad6)
+fffff803`4c572abe 33c9            xor     ecx,ecx
+fffff803`4c572ac0 440f22c1        mov     cr8,rcx
+1: kd> u fffff803`4c572ada
+nt!KiIdleLoop+0x3a:
+fffff803`4c572ada 803d5dd5260000  cmp     byte ptr [nt!HvlEnableIdleYield (fffff803`4c7e003e)],0
+fffff803`4c572ae1 7402            je      nt!KiIdleLoop+0x45 (fffff803`4c572ae5)
+fffff803`4c572ae3 f390            pause
+fffff803`4c572ae5 fb              sti
+fffff803`4c572ae6 90              nop
+fffff803`4c572ae7 90              nop
+fffff803`4c572ae8 fa              cli
+fffff803`4c572ae9 f6836c2e00003f  test    byte ptr [rbx+2E6Ch],3Fh
+
+The data is paged out more aggressively because Verifier is on:
+1: kd> !verifier
+
+Verify Flags Level 0x000009bb
+
+  STANDARD FLAGS:
+    [X] (0x00000000) Automatic Checks
+    [X] (0x00000001) Special pool
+    [X] (0x00000002) Force IRQL checking
+    [X] (0x00000008) Pool tracking
+    [X] (0x00000010) I/O verification
+    [X] (0x00000020) Deadlock detection
+    [X] (0x00000080) DMA checking
+    [X] (0x00000100) Security checks
+    [X] (0x00000800) Miscellaneous checks
+    [ ] (0x00020000) DDI compliance checking
+…
+
+So basically nt!ExpIRTimerDescs is paced in pageable section and accessed with interrupts disabled – effectively an elevated IRQL which violates the rules:
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff560129(v=vs.85).aspx
+
+Since HLK tests must run with Verifier on, this issue has high impact and high applicability.

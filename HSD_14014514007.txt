@@ -1,0 +1,419 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/14014514007
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is DRIVER_POWER_STATE_FAILURE (9f) – power IRP timeout
+(\\amr.corp.intel.com\ec\proj\sv\FV\Automation\Execution\Logs\FM\NGA\nga_fv_execution_fm\adps_adl_b4c00bc64\fm05wvaw1106\s4_extwake8ff2f53b_198\FM05WVAW1106\FM05WVAW1106_TG\retry1\PostTest\MEMORY.DMP):
+
+12: kd> !analyze -show
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an IRP for too long a time
+Arg2: ffff8102586b8780, Physical Device Object of the stack
+Arg3: ffffa10ac18df710, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffff81024e126010, The blocked IRP
+
+The timed-out power IRP is owned by RTEK driver in this specific case but this is not relevant as we’ll see:
+12: kd> !irp ffff81024e126010
+Irp is active with 10 stacks 8 is current (= 0xffff81024e1262d8)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+…
+ [IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffff8102586b8780 00000000 fffff80064b9ae30-ffff8102587c51a0    
+	       \Driver\IntcOED	portcls!PowerIrpCompletionRoutine
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0  1 ffff8102587c5050 00000000 00000000-00000000    pending
+	       \Driver\RealtekHDASSTService
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff810258782d80 00000000 fffff8004af9cae0-ffff8102587f0818 Success Error Cancel pending
+	       \Driver\ksthunk	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000001 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffff8102587f0818    
+
+			Args: 00000000 00000000 00000000 00000000
+
+The worker thread “W” that works on the IRP:
+12: kd> !poaction
+PopAction: fffff8004b822720
+  State..........: 2 - Winlogon callout
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Hibernate
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: ??
+  System State...: Unspecified
+  Hiber Context..: 0000000000000000
+
+Allocated power irps (PopIrpList - fffff8004b822f00)
+  IRP: ffff81024e613ba0 (wait-wake/S4), PDO: ffff8102349df0a0
+  IRP: ffff810258ac39a0 (wait-wake/S4), PDO: ffff81024e5eb060
+  IRP: ffff81025d6888e0 (wait-wake/S4), PDO: ffff8102587e1060
+  IRP: ffff81024e438b10 (wait-wake/S3), PDO: ffff8102349bf060
+  IRP: ffff81025f1fc010 (wait-wake/S0), PDO: ffff8102586b89e0
+  IRP: ffff81024e624c20 (wait-wake/S3), PDO: ffff8102586b8780
+  IRP: ffff81024e126010 (set/D0,), PDO: ffff8102586b8780, CURRENT: ffff8102587c5050
+  IRP: ffff81025cc8b780 (wait-wake/S0), PDO: ffff8102586b8520
+
+Irp worker threads (PopIrpThreadList - fffff8004b81fa10)
+  THREAD: ffff81023090e040 (static), IRP: ffff81024e126010, DEVICE: ffff810258782d80
+…
+
+The thread is blocked as RTEK called IntcOED and IntcOED is waiting on a lock (1):
+12: kd> !thread 0xffff81023090e040
+THREAD ffff81023090e040  Cid 0004.0014  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffff8102587815d8  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffa60623831bb0
+Owning Process            ffff810230945040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      375429         Ticks: 7658 (0:00:01:59.656)
+Context Switch Count      6558           IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.531
+Win32 Start Address nt!PopIrpWorker (0xfffff8004afa7120)
+Stack Init ffffa10ac181fbb0 Current ffffa10ac181eb50
+Base ffffa10ac1820000 Limit ffffa10ac1819000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr               : Args to Child                                                           : Call Site
+ffffa10a`c181eb90 fffff800`4ae6371e     : ffffe780`00000004 ffffa10a`ffffffff 00000000`00000000 ffff8102`5ddb8158 : nt!KiSwapContext+0x76
+ffffa10a`c181ecd0 fffff800`4ae6578a     : 00000000`00000000 ffff8102`5ebfc830 00000000`00000000 ffff8102`3090e040 : nt!KiSwapThread+0x2ce
+ffffa10a`c181ede0 fffff800`4ae5f9a4     : 00000000`00000000 ffff8102`58780458 ffff590a`00000000 00000000`00000000 : nt!KiCommitThreadWait+0x14a
+ffffa10a`c181ee80 fffff800`4f7b18ec     : ffff8102`587815d8 00000000`00000000 00000000`00000100 fffff800`651e4c00 : nt!KeWaitForSingleObject+0x234
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!MxEvent::WaitFor+0x1c (Inline Function @ fffff800`4f7b18ec)
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxWaitLockInternal::AcquireLock+0x3a (Inline Function @ fffff800`4f7b18ec)
+ffffa10a`c181ef70 fffff800`6514dae9     : ffff8102`585a6350 ffff8102`58781570 00000000`00000000 00000000`00000000 : Wdf01000!imp_WdfWaitLockAcquire+0x9c
+ffffa10a`c181efc0 fffff800`6512b062     : 00000000`00000000 ffff8102`585a4000 ffff8102`00000001 ffff8102`586d2fa0 : IntcOED+0x4dae9
+ffffa10a`c181f080 fffff800`68f33cf3     : 00000000`00000001 ffff8102`58807ee0 ffff8102`58807c60 ffff8102`4e38ab20 : IntcOED+0x2b062
+ffffa10a`c181f0e0 fffff800`68ea9338     : 00000000`00000000 00000000`00000001 00000000`00000001 00000000`00000630 : RTKVHD64+0x93cf3
+ffffa10a`c181f130 fffff800`64b9babc     : 00000000`00000000 ffffa10a`c181f240 00000000`00000004 ffff8102`587c51a0 : RTKVHD64+0x9338
+ffffa10a`c181f1b0 fffff800`64b9b490     : ffff8102`587c5458 00000000`00000001 ffff8102`587c51a0 ffffa10a`c181f288 : portcls!iPowerChangeState+0x78
+ffffa10a`c181f1f0 fffff800`4ae65eb9     : ffff8102`4e126010 ffffa10a`c181f339 ffff8102`587c5050 ffff8102`58782348 : portcls!PowerIrpCompletionRoutine+0x660
+ffffa10a`c181f290 fffff800`4ae65d77     : ffff8102`4e126010 ffffa10a`c181f400 00000000`00000000 00000000`0000032b : nt!IopfCompleteRequest+0x129
+ffffa10a`c181f3a0 fffff800`4f7bce28     : 00000000`00000000 00000000`00000001 00000000`0000032b ffff8102`58782060 : nt!IofCompleteRequest+0x17
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxIrp::CompleteRequest+0x11 (Inline Function @ fffff800`4f7bce28)
+ffffa10a`c181f3d0 fffff800`4f7bca9a     : ffff8102`58782060 ffffa10a`c181f560 fffff800`4f846920 ffff8102`58782060 : Wdf01000!FxPkgPnp::CompletePowerRequest+0x44
+ffffa10a`c181f400 fffff800`4f7bd9ec     : ffff8102`4e126010 ffffa10a`c181f400 00000000`00000004 00000000`00000000 : Wdf01000!FxPkgPdo::PowerReleasePendingDeviceIrp+0x2a
+ffffa10a`c181f430 fffff800`4f7c6b67     : 00000000`0000032b 00000000`00000c60 ffff8102`58782060 00000000`00000000 : Wdf01000!FxPkgPnp::PowerStartSelfManagedIo+0x4c
+ffffa10a`c181f460 fffff800`4f7c6d20     : 00000000`00000c60 ffff8102`58782060 ffff8102`58782060 00000000`00000c60 : Wdf01000!FxPkgPnp::PowerEnterNewState+0x143
+ffffa10a`c181f5b0 fffff800`4f7c59ee     : ffff8102`58782060 00000000`00000000 ffffa10a`c181f700 fffff800`4f7bb800 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0xdc
+ffffa10a`c181f630 fffff800`4f7bc611     : 00000000`00000000 00000000`00000000 ffffa10a`c181f7a0 ffffa10a`c181f7b0 : Wdf01000!FxPkgPnp::PowerProcessEvent+0x142
+ffffa10a`c181f6c0 fffff800`4f7bc5b5     : ffff8102`58782060 00000000`00000000 00000000`00000004 00000000`00000000 : Wdf01000!FxPkgPdo::DispatchDeviceSetPower+0x51
+ffffa10a`c181f710 fffff800`4f7bb459     : ffff8102`58782060 00000000`00000000 00000000`00000000 00000000`00000000 : Wdf01000!FxPkgPdo::_DispatchSetPower+0x25
+ffffa10a`c181f740 fffff800`4f7b3d83     : ffff8102`4e126010 ffff8102`4e126010 00000000`00000020 00000000`00000040 : Wdf01000!FxPkgPnp::Dispatch+0xd9
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!DispatchWorker+0xfa (Inline Function @ fffff800`4f7b3d83)
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxDevice::Dispatch+0x11b (Inline Function @ fffff800`4f7b3d83)
+ffffa10a`c181f7b0 fffff800`4af9b6a7     : 00000000`00000001 ffffa10a`c181f930 ffff8102`587c51a0 00000000`00000000 : Wdf01000!FxDevice::DispatchWithLock+0x153
+ffffa10a`c181f820 fffff800`4ae5d93d     : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!IopPoHandleIrp+0x3b
+ffffa10a`c181f850 fffff800`4af9ef39     : 00000000`00000004 ffffa10a`c181f910 fffffd9f`178e918a 00000000`00000000 : nt!IofCallDriver+0x6d
+ffffa10a`c181f890 fffff800`64bdc145     : 00000000`00000001 ffffa10a`c181f930 00000000`00000000 ffff8102`58782d80 : nt!IoCallDriver+0x9
+ffffa10a`c181f8c0 fffff800`4af9b6a7     : ffff8102`4e126010 ffff8102`4e126010 ffff8102`4e126320 ffff8102`4e882cb0 : portcls!DispatchPower+0x685
+ffffa10a`c181f960 fffff800`4ae5d93d     : ffff8102`3090e040 fffff800`00000000 00000000`00000000 00000000`00000000 : nt!IopPoHandleIrp+0x3b
+ffffa10a`c181f990 fffff800`4af9ef39     : ffffe9ca`0e0500ec 00000000`00000000 00000000`00000001 00000000`00000001 : nt!IofCallDriver+0x6d
+ffffa10a`c181f9d0 fffff800`694d157e     : 00000000`00000004 ffff8102`586c0cf0 00000000`00000000 fffff800`4afa754e : nt!IoCallDriver+0x9
+ffffa10a`c181fa00 fffff800`694d1133     : ffff8102`3090e040 00000000`00000000 ffff8102`00000000 ffff8102`58782d80 : ksthunk!CKernelFilterDevice::DispatchIrp+0x25e
+ffffa10a`c181fa60 fffff800`4afa7327     : ffff8102`3090e040 ffff8102`3090e040 00000000`00000000 00000000`00000000 : ksthunk!CKernelFilterDevice::DispatchIrpBridge+0x13
+ffffa10a`c181fa90 fffff800`4af5a2b5     : 00000000`00000000 fffff800`4afa7120 00000000`00000000 00000000`000001c4 : nt!PopIrpWorker+0x207
+ffffa10a`c181fb30 fffff800`4b015104     : ffffe780`4bd00180 ffff8102`3090e040 fffff800`4af5a260 00000000`00000000 : nt!PspSystemThreadStartup+0x55
+ffffa10a`c181fb80 00000000`00000000     : ffffa10a`c1820000 ffffa10a`c1819000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x34
+
+Switching to the thread and the frame, determine the lock handle:
+12: kd> .thread /p /r 0xffff81023090e040
+Implicit thread is now ffff8102`3090e040
+…
+12: kd> .frame /r 7
+07 ffffa10a`c181efc0 fffff800`6512b062     IntcOED+0x4dae9
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=0000000000000000 rsi=00007efda79133a8 rdi=ffff8102585a6350
+rip=fffff8006514dae9 rsp=ffffa10ac181efc0 rbp=ffffa10ac181f021
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=0000000000000122
+r14=0000000000000001 r15=0000000000000001
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+IntcOED+0x4dae9:
+fffff800`6514dae9 488bcf          mov     rcx,rdi
+12: kd> ub
+IntcOED+0x4dac2:
+fffff800`6514dac2 488b5770        mov     rdx,qword ptr [rdi+70h]
+fffff800`6514dac6 4885d2          test    rdx,rdx
+fffff800`6514dac9 741e            je      IntcOED+0x4dae9 (fffff800`6514dae9)
+fffff800`6514dacb 488b0586630200  mov     rax,qword ptr [IntcOED+0x73e58 (fffff800`65173e58)]
+fffff800`6514dad2 4533c0          xor     r8d,r8d
+fffff800`6514dad5 488b0d84630200  mov     rcx,qword ptr [IntcOED+0x73e60 (fffff800`65173e60)]
+fffff800`6514dadc 488b80c8090000  mov     rax,qword ptr [rax+9C8h]
+fffff800`6514dae3 ff15a7470100    call    qword ptr [IntcOED+0x62290 (fffff800`65162290)]
+12: kd> !wdfhandle poi(ffff8102585a6350+70)
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00007efda787ea88
+=============================
+Handle type is WDFWAITLOCK
+Refcount: 1
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+Parent: !wdfhandle 0x00007efda7a5dfd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00007efda7a5dfd8
+
+!wdfobject 0xffff810258781570
+12: kd> !wdfobject 0xffff810258781570
+
+The type for object 0xffff810258781570 is FxWaitLock
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x00007efda787ea88
+
+dt Wdf01000!FxWaitLock 0xffff810258781570
+
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+
+Parent: !wdfobject  0xffff8102585a2020, !wdfhandle 0x00007efda7a5dfd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00007efda7a5dfd8
+
+From the wait lock, determine thread “A” that owns the lock now:
+12: kd> dt Wdf01000!FxWaitLock 0xffff810258781570 m_OwningThread
+   +0x088 m_OwningThread : 0xffff8102`60ce9080 _KTHREAD
+
+Thread “W” (which works on the timed-out power IRP) is effectively blocked by the thread “A”.
+
+Switching to the thread “A”, it too is waiting on a lock (2):
+12: kd> .thread /p /r 0xffff8102`60ce9080
+Implicit thread is now ffff8102`60ce9080
+Process ffff8102`673f4080 has invalid page directories
+12: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr               Call Site
+00 ffffa10a`c6055d80 fffff800`4ae6371e     nt!KiSwapContext+0x76
+01 ffffa10a`c6055ec0 fffff800`4ae6578a     nt!KiSwapThread+0x2ce
+02 ffffa10a`c6055fd0 fffff800`4ae5f9a4     nt!KiCommitThreadWait+0x14a
+03 ffffa10a`c6056070 fffff800`4f7b18ec     nt!KeWaitForSingleObject+0x234
+04 (Inline Function) --------`--------     Wdf01000!MxEvent::WaitFor+0x1c
+05 (Inline Function) --------`--------     Wdf01000!FxWaitLockInternal::AcquireLock+0x3a
+06 ffffa10a`c6056160 fffff800`651a52c4     Wdf01000!imp_WdfWaitLockAcquire+0x9c
+07 ffffa10a`c60561b0 fffff800`651882a5     IntcOED+0xa52c4
+08 ffffa10a`c6056260 fffff800`651e5a43     IntcOED+0x882a5
+09 ffffa10a`c6056380 fffff800`6515c120     IntcOED+0xe5a43
+0a ffffa10a`c6056400 fffff800`6a32cf6f     IntcOED+0x5c120
+0b ffffa10a`c6056520 fffff800`6a327a7e     AcxHdAudio!CStreamEngine::Init+0x583
+0c (Inline Function) --------`--------     AcxHdAudio!CRenderStreamEngine::Init+0x28
+0d ffffa10a`c6056610 fffff800`695616d9     AcxHdAudio!HDACodecR_EvtCircuitCreateStream+0x5ae
+0e ffffa10a`c60567b0 fffff800`6959cd37     Acx01000!Acx::AfxCircuit::CreateStream+0xc1d
+0f ffffa10a`c6056a60 fffff800`695609b1     Acx01000!Acx::AfxStream::FileCreate+0xb7
+10 ffffa10a`c6056ad0 fffff800`6955e9c7     Acx01000!Acx::AfxCircuit::CreateHandler+0x185
+11 ffffa10a`c6056b50 fffff800`695157d5     Acx01000!Acx::AfxCircuit::EvtQueueCreateHandler+0x147
+12 ffffa10a`c6056bf0 fffff800`4aecc4c8     Acx01000!Acx::AfxHelper::AfxExpandStackRequestHandler_Thunk+0x15
+13 ffffa10a`c6056c20 fffff800`4af91065     nt!KeExpandKernelStackAndCalloutInternal+0x78
+14 ffffa10a`c6056c90 fffff800`69515729     nt!KeExpandKernelStackAndCallout+0x15
+15 ffffa10a`c6056cd0 fffff800`6950a885     Acx01000!Acx::AfxHelper::AfxExpandStackRequestHandler+0x31
+16 ffffa10a`c6056d50 fffff800`4f7b9ff3     Acx01000!Acx::AfxCircuit::EvtQueueCreateHandler_ExpandStack+0x15
+17 (Inline Function) --------`--------     Wdf01000!FxIoQueueIoDefault::Invoke+0x2b
+18 ffffa10a`c6056d80 fffff800`4f7b9863     Wdf01000!FxIoQueue::DispatchRequestToDriver+0x2c3
+19 ffffa10a`c6056df0 fffff800`4f7ba20b     Wdf01000!FxIoQueue::DispatchEvents+0x313
+1a ffffa10a`c6056ea0 fffff800`4f7ba36a     Wdf01000!FxIoQueue::QueueRequestFromForward+0x15b
+1b ffffa10a`c6056f20 fffff800`4f7ba4d7     Wdf01000!FxIoQueue::ForwardRequestWorker+0x11a
+1c (Inline Function) --------`--------     Wdf01000!FxIoQueue::ForwardRequest+0x1b
+1d ffffa10a`c6056f80 fffff800`69551bef     Wdf01000!imp_WdfRequestForwardToIoQueue+0xc7
+1e ffffa10a`c6056fd0 fffff800`69550e6c     Acx01000!Acx::AfxFile::FileCreate+0x2df
+1f ffffa10a`c6057040 fffff800`4f7f3c50     Acx01000!Acx::AfxFile::EvtCxDeviceFileCreate+0x14c
+20 (Inline Function) --------`--------     Wdf01000!FxCxFileObjectFileCreate::Invoke+0x48
+21 ffffa10a`c60570a0 fffff800`4f7b3f74     Wdf01000!FxPkgGeneral::OnCreate+0x3fca0
+22 ffffa10a`c60571a0 fffff800`4f7b3d83     Wdf01000!FxPkgGeneral::Dispatch+0x84
+23 (Inline Function) --------`--------     Wdf01000!DispatchWorker+0xfa
+24 (Inline Function) --------`--------     Wdf01000!FxDevice::Dispatch+0x11b
+25 ffffa10a`c6057200 fffff800`4ae5d925     Wdf01000!FxDevice::DispatchWithLock+0x153
+26 ffffa10a`c6057270 fffff800`694d149f     nt!IofCallDriver+0x55
+27 ffffa10a`c60572b0 fffff800`694d1133     ksthunk!CKernelFilterDevice::DispatchIrp+0x17f
+28 ffffa10a`c6057310 fffff800`4ae5d925     ksthunk!CKernelFilterDevice::DispatchIrpBridge+0x13
+29 ffffa10a`c6057340 fffff800`4b2d7b36     nt!IofCallDriver+0x55
+2a ffffa10a`c6057380 fffff800`4b390aa7     nt!IopParseDevice+0x896
+2b ffffa10a`c6057540 fffff800`4b27edd2     nt!IopParseFile+0xc7
+2c ffffa10a`c60575b0 fffff800`4b27e231     nt!ObpLookupObjectName+0x652
+2d ffffa10a`c6057750 fffff800`4b29cc2f     nt!ObOpenObjectByNameEx+0x1f1
+2e ffffa10a`c6057880 fffff800`4b29c809     nt!IopCreateFile+0x40f
+2f ffffa10a`c6057920 fffff800`4b023575     nt!NtCreateFile+0x79
+30 ffffa10a`c60579b0 00007ff8`642c3784     nt!KiSystemServiceCopyEnd+0x25
+31 0000009a`17b7cbd8 00000000`00000000     0x00007ff8`642c3784
+
+Similarly, determine current lock owner – thread “B”:
+12: kd> .frame /r 7
+07 ffffa10a`c60561b0 fffff800`651882a5     IntcOED+0xa52c4
+rax=0000000000000000 rbx=ffff81025c4f7240 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffff81025878ff3f rdi=ffffa10ac6056300
+rip=fffff800651a52c4 rsp=ffffa10ac60561b0 rbp=ffff8102585a5350
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=ffffa10ac60562b0 r13=0000000000000000
+r14=ffffa10ac60562a0 r15=0000000000000001
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+IntcOED+0xa52c4:
+fffff800`651a52c4 488b93a8010000  mov     rdx,qword ptr [rbx+1A8h] ds:ffff8102`5c4f73e8=00007efd988bf418
+12: kd> ub
+IntcOED+0xa529f:
+fffff800`651a529f 0000            add     byte ptr [rax],al
+fffff800`651a52a1 4885d2          test    rdx,rdx
+fffff800`651a52a4 741e            je      IntcOED+0xa52c4 (fffff800`651a52c4)
+fffff800`651a52a6 488b05abebfcff  mov     rax,qword ptr [IntcOED+0x73e58 (fffff800`65173e58)]
+fffff800`651a52ad 4533c0          xor     r8d,r8d
+fffff800`651a52b0 488b0da9ebfcff  mov     rcx,qword ptr [IntcOED+0x73e60 (fffff800`65173e60)]
+fffff800`651a52b7 488b80c8090000  mov     rax,qword ptr [rax+9C8h]
+fffff800`651a52be ff15cccffbff    call    qword ptr [IntcOED+0x62290 (fffff800`65162290)]
+12: kd> ub fffff800`651a52a1
+IntcOED+0xa5276:
+fffff800`651a5276 488b4918        mov     rcx,qword ptr [rcx+18h]
+fffff800`651a527a 4c8d05b705fcff  lea     r8,[IntcOED+0x65838 (fffff800`65165838)]
+fffff800`651a5281 458bcf          mov     r9d,r15d
+fffff800`651a5284 4889742420      mov     qword ptr [rsp+20h],rsi
+fffff800`651a5289 baef000000      mov     edx,0EFh
+fffff800`651a528e e85d3af6ff      call    IntcOED+0x8cf0 (fffff800`65108cf0)
+fffff800`651a5293 488bab98010000  mov     rbp,qword ptr [rbx+198h]
+fffff800`651a529a 488b9588040000  mov     rdx,qword ptr [rbp+488h]
+12: kd> !wdfhandle poi(ffff8102585a5350+488)
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00007efda787f7a8
+=============================
+Handle type is WDFWAITLOCK
+Refcount: 1
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+Parent: !wdfhandle 0x00007efda7a5dfd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00007efda7a5dfd8
+
+!wdfobject 0xffff810258780850
+12: kd> !wdfobject 0xffff810258780850
+
+The type for object 0xffff810258780850 is FxWaitLock
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x00007efda787f7a8
+
+dt Wdf01000!FxWaitLock 0xffff810258780850
+
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+
+Parent: !wdfobject  0xffff8102585a2020, !wdfhandle 0x00007efda7a5dfd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00007efda7a5dfd8
+12: kd> dt Wdf01000!FxWaitLock 0xffff810258780850 m_OwningThread
+   +0x088 m_OwningThread : 0xffff8102`6464c080 _KTHREAD
+
+Thread “A” is effectively blocked by the thread “B”.
+
+Thread “B” is also waiting on a lock:
+12: kd> .thread /p /r 0xffff8102`6464c080
+Implicit thread is now ffff8102`6464c080
+Process ffff8102`673f4080 has invalid page directories
+12: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr               Call Site
+00 ffffa10a`c4fdd3d0 fffff800`4ae6371e     nt!KiSwapContext+0x76
+01 ffffa10a`c4fdd510 fffff800`4ae6578a     nt!KiSwapThread+0x2ce
+02 ffffa10a`c4fdd620 fffff800`4ae5f9a4     nt!KiCommitThreadWait+0x14a
+03 ffffa10a`c4fdd6c0 fffff800`4f7b18ec     nt!KeWaitForSingleObject+0x234
+04 (Inline Function) --------`--------     Wdf01000!MxEvent::WaitFor+0x1c
+05 (Inline Function) --------`--------     Wdf01000!FxWaitLockInternal::AcquireLock+0x3a
+06 ffffa10a`c4fdd7b0 fffff800`651e8a34     Wdf01000!imp_WdfWaitLockAcquire+0x9c
+07 ffffa10a`c4fdd800 fffff800`651b1a3f     IntcOED+0xe8a34
+08 ffffa10a`c4fdd850 fffff800`68864a18     IntcOED+0xb1a3f
+09 ffffa10a`c4fdd890 fffff800`68885cb8     IntcUSB+0x64a18
+0a ffffa10a`c4fdd8f0 fffff800`688eff03     IntcUSB+0x85cb8
+0b ffffa10a`c4fddd10 fffff800`688e8a51     IntcUSB+0xeff03
+0c ffffa10a`c4fddd80 fffff800`65129718     IntcUSB+0xe8a51
+0d ffffa10a`c4fdddd0 fffff800`65155778     IntcOED+0x29718
+0e ffffa10a`c4fdde20 fffff800`65153706     IntcOED+0x55778
+0f ffffa10a`c4fdde60 fffff800`651f1002     IntcOED+0x53706
+10 ffffa10a`c4fddec0 fffff800`651564ae     IntcOED+0xf1002
+11 ffffa10a`c4fddf20 fffff800`651ac7b3     IntcOED+0x564ae
+12 ffffa10a`c4fddfe0 fffff800`65129d6b     IntcOED+0xac7b3
+13 ffffa10a`c4fde900 fffff800`651f8677     IntcOED+0x29d6b
+14 ffffa10a`c4fde980 fffff800`651299d4     IntcOED+0xf8677
+15 ffffa10a`c4fdea10 fffff800`651f2785     IntcOED+0x299d4
+16 ffffa10a`c4fdeaa0 fffff800`651e8cfa     IntcOED+0xf2785
+17 ffffa10a`c4fdeb20 fffff800`651b1bbf     IntcOED+0xe8cfa
+18 ffffa10a`c4fdeb70 fffff800`68860b76     IntcOED+0xb1bbf
+19 ffffa10a`c4fdebb0 fffff800`68903a8f     IntcUSB+0x60b76
+1a ffffa10a`c4fded30 fffff800`6892e695     IntcUSB+0x103a8f
+1b ffffa10a`c4fdedf0 fffff800`6895e0f8     IntcUSB+0x12e695
+1c ffffa10a`c4fdee70 fffff800`6895fc2e     IntcUSB+0x15e0f8
+1d ffffa10a`c4fdefb0 fffff800`6896d13d     IntcUSB+0x15fc2e
+1e ffffa10a`c4fdf0a0 fffff800`689aa7f2     IntcUSB+0x16d13d
+1f ffffa10a`c4fdf150 fffff800`6897d940     IntcUSB+0x1aa7f2
+20 ffffa10a`c4fdf230 fffff800`64bc8115     IntcUSB+0x17d940
+21 ffffa10a`c4fdf2d0 fffff800`64bc8058     portcls!CPortPinWaveRT::DistributeDeviceState+0x9d
+22 ffffa10a`c4fdf410 fffff800`64c70f7f     portcls!PinPropertyDeviceState+0x128
+23 ffffa10a`c4fdf480 fffff800`64c7067b     ks!KspPropertyHandler+0x52f
+24 ffffa10a`c4fdf4f0 fffff800`64bc87ba     ks!KsPropertyHandler+0x1b
+25 ffffa10a`c4fdf540 fffff800`64bca3aa     portcls!CPortPinWaveRT::DeviceIoControl+0xaa
+26 ffffa10a`c4fdf5a0 fffff800`64c7eb8c     portcls!DispatchDeviceIoControl+0x10a
+27 ffffa10a`c4fdf620 fffff800`4ae5d925     ks!DispatchDeviceIoControl+0x3c
+28 ffffa10a`c4fdf650 fffff800`694d1415     nt!IofCallDriver+0x55
+29 ffffa10a`c4fdf690 fffff800`694d1133     ksthunk!CKernelFilterDevice::DispatchIrp+0xf5
+2a ffffa10a`c4fdf6f0 fffff800`4ae5d925     ksthunk!CKernelFilterDevice::DispatchIrpBridge+0x13
+2b ffffa10a`c4fdf720 fffff800`4b274cb2     nt!IofCallDriver+0x55
+2c ffffa10a`c4fdf760 fffff800`4b275aac     nt!IopSynchronousServiceTail+0x1d2
+2d ffffa10a`c4fdf810 fffff800`4b2754b6     nt!IopXxxControlFile+0x5dc
+2e ffffa10a`c4fdf940 fffff800`4b023575     nt!NtDeviceIoControlFile+0x56
+2f ffffa10a`c4fdf9b0 00007ff8`642c2dc4     nt!KiSystemServiceCopyEnd+0x25
+30 0000009a`1797d998 00000000`00000000     0x00007ff8`642c2dc4
+
+Using similar steps, determine that thread “B” is waiting for the lock (1):
+12: kd> .frame /r 7
+07 ffffa10a`c4fdd800 fffff800`651b1a3f     IntcOED+0xe8a34
+rax=0000000000000000 rbx=00000000c00000bb rcx=0000000000000000
+rdx=0000000000000000 rsi=00007efda78a3488 rdi=ffff8102585a6350
+rip=fffff800651e8a34 rsp=ffffa10ac4fdd800 rbp=0000000000000001
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=fffff80065171078 r13=fffff80065171078
+r14=0000000000000072 r15=ffffa10ac4fddf48
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+IntcOED+0xe8a34:
+fffff800`651e8a34 4c8bc6          mov     r8,rsi
+12: kd> ub
+IntcOED+0xe8a0c:
+fffff800`651e8a0c bbbb0000c0      mov     ebx,0C00000BBh
+fffff800`651e8a11 4885d2          test    rdx,rdx
+fffff800`651e8a14 741e            je      IntcOED+0xe8a34 (fffff800`651e8a34)
+fffff800`651e8a16 488b053bb4f8ff  mov     rax,qword ptr [IntcOED+0x73e58 (fffff800`65173e58)]
+fffff800`651e8a1d 4533c0          xor     r8d,r8d
+fffff800`651e8a20 488b0d39b4f8ff  mov     rcx,qword ptr [IntcOED+0x73e60 (fffff800`65173e60)]
+fffff800`651e8a27 488b80c8090000  mov     rax,qword ptr [rax+9C8h]
+fffff800`651e8a2e ff155c98f7ff    call    qword ptr [IntcOED+0x62290 (fffff800`65162290)]
+12: kd> ub fffff800`651e8a0c 
+IntcOED+0xe89e7:
+fffff800`651e89e7 84c0            test    al,al
+fffff800`651e89e9 741d            je      IntcOED+0xe8a08 (fffff800`651e8a08)
+fffff800`651e89eb 4533c9          xor     r9d,r9d
+fffff800`651e89ee 488d151b610100  lea     rdx,[IntcOED+0xfeb10 (fffff800`651feb10)]
+fffff800`651e89f5 41b850050000    mov     r8d,550h
+fffff800`651e89fb 488d0d1e430100  lea     rcx,[IntcOED+0xfcd20 (fffff800`651fcd20)]
+fffff800`651e8a02 ff153898f7ff    call    qword ptr [IntcOED+0x62240 (fffff800`65162240)]
+fffff800`651e8a08 488b5770        mov     rdx,qword ptr [rdi+70h]
+12: kd> !wdfhandle poi(ffff8102585a6350+70)
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00007efda787ea88
+=============================
+Handle type is WDFWAITLOCK
+Refcount: 1
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+Parent: !wdfhandle 0x00007efda7a5dfd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00007efda7a5dfd8
+
+!wdfobject 0xffff810258781570
+
+So here is the result:
+Power IRP is timed out, because worker thread “W” is waiting for the lock (1) owned by the thread “A” which is waiting for the lock (2).
+Lock (2) is owned by the thread “B” which is waiting for the lock (1).
+So this issue is caused by a deadlock in the IntcOED Driver – lack of lock ordering results in the deadlock between threads “A” and “B” and thread “W” is a victim.
+
+Other dumps show similar signature.

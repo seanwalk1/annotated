@@ -1,0 +1,616 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1208507960/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	Power IRP timeout
+[BUGCHECK]:	0x9F
+
+The crash is Bugcheck 9F - power IRP timeout:
+3: kd> .bugcheck
+Bugcheck code 0000009F
+Arguments 00000000`00000003 ffffe001`a9450060 fffff801`62c11ce0 ffffe001`b03a9120
+3: kd> !irp ffffe001`b03a9120
+Irp is active with 4 stacks 3 is current (= 0xffffe001b03a9280)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                                             Args: 00000000 00000000 00000000 00000000
+[IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffe001a9450060 00000000 fffff801b0a12e30-ffffe001ad3b81a0    
+                      \Driver\pci   ndis!ndisSetDevicePowerOnComplete
+                                             Args: 00000000 00000000 00000000 00000002
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe001ad3b8050 00000000 fffff80160b9b0d8-ffffe001b247ef00 Success Error Cancel pending
+                      \Driver\e1dexpress   nt!PopRequestCompletion
+                                             Args: 00041100 00000001 00000001 00000002
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffe001b247ef00    
+
+                                             Args: 00000000 00000000 00000000 00000000
+This is D0 IRP for the Ethernet Adapter:
+3: kd> !poaction
+PopAction: fffff80160d65fe0
+  State..........: 0 - Idle
+  Updates........: 0 
+  Action.........: None
+  Lightest State.: Unspecified
+  Flags..........: 10000003 QueryApps|UIAllowed
+  Irp minor......: ??
+  System State...: Unspecified
+  Hiber Context..: 0000000000000000
+
+Allocated power irps (PopIrpList - fffff80160d664f0)
+  IRP: ffffe001a84bb010 (wait-wake/S3), PDO: ffffe001a93c5a40
+  IRP: ffffe001ad11faa0 (wait-wake/S4), PDO: ffffe001a9450060
+  IRP: ffffe001b03a9120 (set/D0,), PDO: ffffe001a9450060, CURRENT: ffffe001ad3b8050
+  IRP: ffffe001b09a7960 (wait-wake/S4), PDO: ffffe001aea5f060
+  IRP: ffffe001b181db40 (wait-wake/S3), PDO: ffffe001addeb710
+
+Irp worker threads (PopIrpThreadList - fffff80160d65100)
+  THREAD: ffffe001a8538040 (static)
+  THREAD: ffffe001a8539040 (static)
+
+Broadcast in progress: FALSE
+
+No Device State present
+
+The driver is trying to power on the device but has been pre-empted:
+3: kd> dt nt!_device_object ffffe001ad3b8050 driverobject
+   +0x008 DriverObject : 0xffffe001`ad32c800 _DRIVER_OBJECT
+3: kd> dt 0xffffe001`ad32c800 _DRIVER_OBJECT DriverStart
+hal!_DRIVER_OBJECT
+   +0x018 DriverStart : 0xfffff801`b4d30000 Void
+3: kd> u  0xfffff801`b4d30000 L1
+e1d65x64:
+fffff801`b4d30000 4d5a            pop     r10
+3: kd> !stacks 2 e1d65x64
+Proc.Thread  .Thread  Ticks   ThreadState Blocker
+                            [fffff80160e1da40 Idle]
+                            [ffffe001a841c680 System]
+   4.000100  ffffe001aa3e9040 fc59233e READY      nt!KiSwapContext+0x76
+                                        nt!KiQuantumEnd+0x30d
+                                        nt!KiDispatchInterruptContinue+0x16
+                                        nt!KiDpcInterruptBypass+0x25
+                                        nt!KiInterruptDispatchNoLockNoEtw+0xb1
+                                        hal!HalpTimerStallExecutionProcessor+0x101
+                                        e1d65x64+0x51a82
+                                        e1d65x64+0x48c50
+                                        e1d65x64+0x44694
+                                        e1d65x64+0x489fd
+                                        e1d65x64+0x3b63d
+                                        e1d65x64+0x3a428
+                                        e1d65x64+0x3cb30
+                                        e1d65x64+0x5a9e0
+                                        e1d65x64+0x5a245
+                                        e1d65x64+0x5a17d
+                                        e1d65x64+0x27a02
+                                        e1d65x64+0x2ca81
+                                        e1d65x64+0x2d446
+                                        ndis!ndisMInvokeOidRequest+0xad
+                                        ndis!ndisMDoOidRequest+0x25a
+                                        ndis!ndisQueueOidRequest+0x4b6
+                                        ndis!NdisFOidRequest+0xc2
+                                        wfplwfs!LwfLowerOidRequest+0x6e
+                                        ndis!ndisFDoOidRequestInternal+0x22c
+                                        nt!KeExpandKernelStackAndCalloutInternal+0x85
+                                        ndis!ndisQueueOidRequest+0x2c5
+                                        ndis!NdisFOidRequest+0xc2
+                                        pacer!PcFilterRequest+0x5c
+                                        ndis!ndisFDoOidRequestInternal+0x22c
+                                        nt!KeExpandKernelStackAndCalloutInternal+0x85
+                                        ndis!ndisQueueOidRequest+0x2c5
+                                        ndis!ndisQuerySetMiniportEx+0x120
+                                        ndis!ndisQuerySetMiniport+0x19
+                                        ndis!ndisQuerySetMiniportDeviceState+0xb8
+                                        ndis!ndisDevicePowerOn+0x12b
+                                        ndis!ndisWorkerThread+0x9e
+                                        nt!PspSystemThreadStartup+0x41
+                                        nt!KiStartSystemThread+0x16
+
+Threads Processed: 4
+3: kd> !thread ffffe001aa3e9040
+THREAD ffffe001aa3e9040  Cid 0004.0100  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+Not impersonating
+DeviceMap                 ffffc00161c1d240
+Owning Process            ffffe001a841c680       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      61267138       Ticks: 1071 (0:00:00:16.734)
+Context Switch Count      321560         IdealProcessor: 3             
+UserTime                  00:00:00.000
+KernelTime                00:00:12.468
+Win32 Start Address ndis!ndisWorkerThread (0xfffff801b0a21130)
+Stack Init ffffd0018b7afb90 Current ffffd0018b7ae2e0
+Base ffffd0018b7b0000 Limit ffffd0018b7a9000 Call 0
+Priority 8 BasePriority 8 UnusualBoost 0 ForegroundBoost 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd001`8b7ae320 fffff801`60ad15cd : ffffd001`8b7ae4e9 ffffd001`00000000 00000000`00000000 00000000`00000001 : nt!KiSwapContext+0x76
+ffffd001`8b7ae460 fffff801`60bd22d6 : ffffd001`8b7ae620 fffff801`60b2d580 00000000`000000fe fffff801`00000000 : nt!KiQuantumEnd+0x30d
+ffffd001`8b7ae550 fffff801`60bd0d95 : 0000bde6`9b10ab11 fffff801`60bcf051 00000000`00000103 fffff801`60bcec45 : nt!KiDispatchInterruptContinue+0x16
+ffffd001`8b7ae580 fffff801`60bcf051 : 00000000`00000103 fffff801`60bcec45 00000000`00000000 00001f80`00000000 : nt!KiDpcInterruptBypass+0x25
+ffffd001`8b7ae590 fffff801`60a19441 : ffffd001`8b7ae730 fffff801`60a1947d ffffe001`aa3e9040 fffff801`60b08b19 : nt!KiInterruptDispatchNoLockNoEtw+0xb1 (TrapFrame @ ffffd001`8b7ae590)
+ffffd001`8b7ae720 fffff801`b4d81a82 : 00000000`00000032 00000000`00000032 00000000`00000017 00000000`00000032 : hal!HalpTimerStallExecutionProcessor+0x101
+ffffd001`8b7ae7b0 fffff801`b4d78c50 : 00000000`00000000 00000000`00000017 ffffe001`adc27358 00000000`00000301 : e1d65x64+0x51a82
+ffffd001`8b7ae7e0 fffff801`b4d74694 : 00000000`00000000 00000000`00000001 00000000`00008000 00000000`00000000 : e1d65x64+0x48c50
+ffffd001`8b7ae830 fffff801`b4d789fd : ffffe001`adc27358 00000000`00000000 00000000`00008000 ffffd001`8b7ae8c8 : e1d65x64+0x44694
+ffffd001`8b7ae8b0 fffff801`b4d6b63d : 910deddf`a24538a2 00000000`00000000 00000000`00000018 fffff801`b4d32035 : e1d65x64+0x489fd
+ffffd001`8b7ae8f0 fffff801`b4d6a428 : 00000000`00008000 00000000`00000018 00000000`60000040 00000000`00000000 : e1d65x64+0x3b63d
+ffffd001`8b7ae940 fffff801`b4d6cb30 : ffffe001`ad1620d0 00000000`00000000 ffffd001`8b7aea00 ffffe001`adc0f000 : e1d65x64+0x3a428
+ffffd001`8b7ae980 fffff801`b4d8a9e0 : 00000000`00000000 00000000`00000000 ffffe001`adc0f000 ffffc001`6e526380 : e1d65x64+0x3cb30
+ffffd001`8b7ae9c0 fffff801`b4d8a245 : ffffe001`ad1620d0 fffff801`60cbc201 ffffd001`8b7aea88 00000000`00000000 : e1d65x64+0x5a9e0
+ffffd001`8b7aea40 fffff801`b4d8a17d : ffffe001`ad1620d0 00000000`00000000 ffffe001`adc2ffd0 ffffe001`adc0f000 : e1d65x64+0x5a245
+ffffd001`8b7aea80 fffff801`b4d57a02 : ffffd001`8b7aec50 00000000`00000801 00000000`000000a0 fffff801`00000002 : e1d65x64+0x5a17d
+ffffd001`8b7aeac0 fffff801`b4d5ca81 : ffffd001`8b7aec50 ffffe001`adc0f000 00000000`00000000 00000000`00000000 : e1d65x64+0x27a02
+ffffd001`8b7aeb10 fffff801`b4d5d446 : 00000000`00000004 00000000`00000000 ffffe001`a841e5bc ffffc001`657fb360 : e1d65x64+0x2ca81
+ffffd001`8b7aebb0 fffff801`b0a963c9 : ffffe001`ad3b81a0 ffffe001`00000004 ffffe001`af989274 ffffe001`af989278 : e1d65x64+0x2d446
+ffffd001`8b7aec40 fffff801`b0a09122 : 00000000`00000000 ffffe001`ad3b81a0 ffffd001`8b7aed10 ffffe001`af989240 : ndis!ndisMInvokeOidRequest+0xad
+ffffd001`8b7aec90 fffff801`b0a078d6 : ffffe001`00000000 00000000`00000000 ffffe001`ad3b9330 ffffe001`00000000 : ndis!ndisMDoOidRequest+0x25a
+ffffd001`8b7aed50 fffff801`b0a06992 : 00000000`00000000 fffff801`60d9fb48 00000000`00280100 00000000`00000002 : ndis!ndisQueueOidRequest+0x4b6
+ffffd001`8b7aef00 fffff801`b0ea191e : ffffe001`b2138f00 ffffe001`b2138f00 ffffe001`b2138f00 00000000`00000000 : ndis!NdisFOidRequest+0xc2
+ffffd001`8b7aefc0 fffff801`b0a0820c : ffffe001`af989240 ffffe001`adde1650 ffffe001`adde16e0 00000000`00000000 : wfplwfs!LwfLowerOidRequest+0x6e
+ffffd001`8b7aeff0 fffff801`60b31e95 : ffffd001`00000000 ffffe001`b2138f00 ffffd001`8b7af220 fffff801`60b2a719 : ndis!ndisFDoOidRequestInternal+0x22c
+ffffd001`8b7af0d0 fffff801`b0a076e5 : ffffe001`ad3b8200 00000000`00000000 ffffe001`ad3b81a0 00000000`00000000 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd001`8b7af120 fffff801`b0a06992 : 00000000`00000000 fffff801`60d9fb48 00000000`00000000 00000000`00000000 : ndis!ndisQueueOidRequest+0x2c5
+ffffd001`8b7af2d0 fffff801`b29929cc : ffffe001`adddff20 00000000`00000000 ffffe001`adddff20 ffffe001`b126ace0 : ndis!NdisFOidRequest+0xc2
+ffffd001`8b7af390 fffff801`b0a0820c : ffffe001`b126ace0 ffffe001`adde0010 ffffe001`adde00a0 00000000`00000000 : pacer!PcFilterRequest+0x5c
+ffffd001`8b7af3c0 fffff801`60b31e95 : ffffd001`00000000 00000000`00000000 ffffd001`8b7af5f0 00000000`00000000 : ndis!ndisFDoOidRequestInternal+0x22c
+ffffd001`8b7af4a0 fffff801`b0a076e5 : ffffe001`ad3b8200 00000000`00000000 ffffe001`ad3b81a0 00000000`00000000 : nt!KeExpandKernelStackAndCalloutInternal+0x85
+ffffd001`8b7af4f0 fffff801`b0a05b08 : 00000000`00000000 ffffd001`8b7af7a0 00000000`00000000 ffffe001`ad3b81a0 : ndis!ndisQueueOidRequest+0x2c5
+ffffd001`8b7af6a0 fffff801`b0a059e1 : ffffe001`ad3b81a0 ffffd001`8b7af840 ffffe001`ad3b8101 fffff801`00000004 : ndis!ndisQuerySetMiniportEx+0x120
+ffffd001`8b7af700 fffff801`b0a97b04 : ffffd001`90a25180 00000000`00000000 ffffd001`8b7af901 00000000`00000000 : ndis!ndisQuerySetMiniport+0x19
+ffffd001`8b7af740 fffff801`b0adf4fb : ffffe001`ae9f3200 ffffe001`b0bc6b00 ffffd001`8b7af9e0 ffffe001`ad3b81a0 : ndis!ndisQuerySetMiniportDeviceState+0xb8
+ffffd001`8b7af8e0 fffff801`b0a211ce : ffffe001`b07d7960 00000000`00000080 ffffe001`b0bc6b10 ffffe001`b0bc6b10 : ndis!ndisDevicePowerOn+0x12b
+ffffd001`8b7afae0 fffff801`60b78b65 : ffffe001`aa3e9040 fffff801`b0a21130 aff2320a`00010023 00000000`00410f48 : ndis!ndisWorkerThread+0x9e
+ffffd001`8b7afb10 fffff801`60bd2926 : fffff801`60da8180 ffffe001`aa3e9040 fffff801`60b78b24 ec29d0d1`c4800000 : nt!PspSystemThreadStartup+0x41
+ffffd001`8b7afb60 00000000`00000000 : ffffd001`8b7b0000 ffffd001`8b7a9000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+There are a lot of threads ready:
+3: kd> !ready
+KSHARED_READY_QUEUE fffff80160dae680: (00) ****------------------------------------------------------------
+SharedReadyQueue fffff80160dae680: Ready Threads at priority 10
+    THREAD ffffe001aff59080  Cid 08e0.08fc  Teb: 0000006356245000 Win32Thread: ffffe001af93fea0 READY on processor 80000001
+    THREAD ffffe001b0ec7080  Cid 0808.21ac  Teb: 0000000954170000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b0e79800  Cid 0808.20c4  Teb: 0000000a41096000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001b27f9800  Cid 0808.0f78  Teb: 0000000a41098000 Win32Thread: 0000000000000000 READY on processor 80000001
+SharedReadyQueue fffff80160dae680: Ready Threads at priority 9
+    THREAD ffffe001b265a800  Cid 06ac.23cc  Teb: 0000003c1643a000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001a8d58800  Cid 065c.2b1c  Teb: 00000067df878000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001ad258800  Cid 0004.020c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001b25d1800  Cid 0464.248c  Teb: 0000003d479ce000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b2738800  Cid 0464.10f8  Teb: 0000003d47980000 Win32Thread: 0000000000000000 READY on processor 80000001
+SharedReadyQueue fffff80160dae680: Ready Threads at priority 8
+    THREAD ffffe001b1579800  Cid 0540.28f4  Teb: 000000ce02b66000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b1216080  Cid 0394.28a4  Teb: 000000a4f3b45000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b15ce380  Cid 0464.2824  Teb: 0000003d47976000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b046e080  Cid 0ac0.0b00  Teb: 00000000003c9000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001af5a1080  Cid 0d24.0d28  Teb: 0000002a1c20a000 Win32Thread: ffffe001af7c01c0 READY on processor 80000000
+    THREAD ffffe001ade8b800  Cid 03e8.1438  Teb: 000000f23552b000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b094e800  Cid 0464.20f4  Teb: 0000003d478b0000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b0cf1680  Cid 0b5c.164c  Teb: 0000004a82e0a000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b11be800  Cid 0464.1be8  Teb: 0000003d478a4000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001aa3e9040  Cid 0004.0100  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b0945080  Cid 065c.0f10  Teb: 00000067df8a0000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001af5c8080  Cid 065c.1114  Teb: 00000067df8a5000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001ad14a380  Cid 06ac.113c  Teb: 0000003c16507000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b0d6b040  Cid 06ac.2458  Teb: 0000003c164ed000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001a97cb080  Cid 0ac0.2708  Teb: 00000000003d8000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001b0ea5080  Cid 0ac0.1348  Teb: 000000000037e000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001af515040  Cid 065c.240c  Teb: 00000067df89a000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001b24c6800  Cid 03e8.2658  Teb: 000000f23550d000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001afe6a800  Cid 0424.0db0  Teb: 000000919c72f000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001b2747040  Cid 049c.09e4  Teb: 0000004aabddf000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b0d3a040  Cid 0540.1c60  Teb: 000000ce02bd2000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001adef63c0  Cid 0540.27a8  Teb: 000000ce02b86000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001aceec2c0  Cid 0540.2808  Teb: 000000ce02a80000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001ae5d3040  Cid 0540.1980  Teb: 000000ce02bc2000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001b2618080  Cid 06ac.0514  Teb: 0000003c1643e000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b1495340  Cid 06ac.1dec  Teb: 0000003c164e5000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001b04af080  Cid 0408.08cc  Teb: 000000101cce4000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001ad175800  Cid 0540.20a4  Teb: 000000ce02bd6000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001afe3a080  Cid 065c.03ac  Teb: 00000067df8bf000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001a9798800  Cid 065c.1b04  Teb: 00000067df85c000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001ae533080  Cid 0464.0e98  Teb: 0000003d478ae000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001a8c3d5c0  Cid 0464.1184  Teb: 0000003d478aa000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001b05ea800  Cid 0540.02f0  Teb: 000000ce02bd8000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001ade52800  Cid 0424.1a58  Teb: 000000919c735000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b1b67080  Cid 065c.0fb8  Teb: 00000067df824000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001a8f66800  Cid 065c.1310  Teb: 00000067df846000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001a9674800  Cid 06ac.106c  Teb: 0000003c1648f000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b08353c0  Cid 0ac0.2710  Teb: 000000000030c000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001b19b8800  Cid 0ac0.1cf8  Teb: 0000000000333000 Win32Thread: ffffe001ae9390b0 READY on processor 80000001
+    THREAD ffffe001ac8ba040  Cid 0004.01a8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001a9b03080  Cid 0464.1750  Teb: 0000003d478b2000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001a886f040  Cid 0394.1a54  Teb: 000000a4f3b4d000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001a8ccd800  Cid 0394.28a8  Teb: 000000a4f3b2f000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001a9036800  Cid 06ac.1994  Teb: 0000003c164c5000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001a9743800  Cid 0ac0.261c  Teb: 0000000000243000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffffe001b050b280  Cid 0ac0.1350  Teb: 000000000023d000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001b16be080  Cid 03e8.18ac  Teb: 000000f235521000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b0a13080  Cid 0540.0778  Teb: 000000ce02b56000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001ad1aa440  Cid 0540.090c  Teb: 000000ce02bda000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001a965a800  Cid 0808.2568  Teb: 0000000a410a2000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffffe001b085c800  Cid 0808.1468  Teb: 0000000a4107a000 Win32Thread: 0000000000000000 READY on processor 80000000
+SharedReadyQueue fffff80160dae680: Ready Threads at priority 7
+    THREAD ffffe001af5f7800  Cid 0004.0c2c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001af4db580  Cid 0408.0a50  Teb: 000000101cd66000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffffe001b0613800  Cid 0004.2a54  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffffe001b0602080  Cid 0004.28b8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+SharedReadyQueue fffff80160dae680: Ready Threads at priority 6
+    THREAD ffffe001b008c800  Cid 0004.1fcc  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+SharedReadyQueue fffff80160dae680: Ready Threads at priority 0
+    THREAD ffffe001a856c040  Cid 0004.0048  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+Processor 0: No threads in READY state
+Processor 1: No threads in READY state
+Processor 2: No threads in READY state
+Processor 3: No threads in READY state
+
+The processor is busy with Trend Micro running:
+3: kd> !running
+
+System Processors:  (000000000000000f)
+  Idle Processors:  (0000000000000000)
+
+       Prcbs             Current         (pri) Next            (pri) Idle
+  0    fffff80160da8180  ffffe001a98d1080 (10) ffffe001a93ed040 (16) fffff80160e1e740  ................
+  1    ffffd00190a25180  ffffe001af54f800 (10)                       ffffd00190a31bc0  ................
+  2    ffffd00190aa4180  ffffe001ac8e3080 (10)                       ffffd00190ab0bc0  ................
+  3    ffffd00190b24180  ffffe001b0652800 (10)                       ffffd00190b30bc0  ................
+
+3: kd> !thread ffffe001a98d1080
+THREAD ffffe001a98d1080  Cid 0808.1944  Teb: 0000000a410b2000 Win32Thread: 0000000000000000 RUNNING on processor 0
+Not impersonating
+DeviceMap                 ffffc00161c1d240
+Owning Process            ffffe001af9bc7c0       Image:         coreServiceShell.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      61268208       Ticks: 1 (0:00:00:00.015)
+Context Switch Count      65697          IdealProcessor: 3             
+UserTime                  00:10:39.578
+KernelTime                00:00:00.062
+Win32 Start Address 0x00007ff83d60f5d0
+Stack Init ffffd000206d6b90 Current ffffd000206d6880
+Base ffffd000206d7000 Limit ffffd000206d0000 Call 0
+Priority 10 BasePriority 8 UnusualBoost 0 ForegroundBoost 2 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff801`62c11ca8 fffff801`60c6beda : 00000000`0000009f 00000000`00000003 ffffe001`a9450060 fffff801`62c11ce0 : nt!KeBugCheckEx
+fffff801`62c11cb0 fffff801`60c6bdfa : ffffe001`b247ef00 000008b4`eca7b9a0 00000000`00000000 00000000`00000005 : nt!PopIrpWatchdogBugcheck+0xde
+fffff801`62c11d10 fffff801`60ad9786 : ffffe001`00000000 ffffe001`b247ef38 fffff801`62c11e68 00000000`00000002 : nt!PopIrpWatchdog+0x32
+fffff801`62c11d60 fffff801`60bd24b5 : 00000000`00000000 fffff801`60da8180 fffff801`60a654b0 00007ff8`332ea3d0 : nt!KiRetireDpcList+0x5f6
+fffff801`62c11fb0 fffff801`60bd22c0 : 0000000f`223fd808 fffff801`60b2d580 00000000`00000000 00000000`00000002 : nt!KxRetireDpcList+0x5 (TrapFrame @ fffff801`62c11e70)
+ffffd000`206d69c0 fffff801`60bd0d95 : 00007ff8`332ea3d0 fffff801`60bcf051 0000000f`223fd808 00000000`20ff0000 : nt!KiDispatchInterruptContinue
+ffffd000`206d69f0 fffff801`60bcf051 : 0000000f`223fd808 00000000`20ff0000 ffffe001`00000000 ffffe001`afeaa500 : nt!KiDpcInterruptBypass+0x25
+ffffd000`206d6a00 00007ff8`32ab595a : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiInterruptDispatchNoLockNoEtw+0xb1 (TrapFrame @ ffffd000`206d6a00)
+0000000f`223fd5c0 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ff8`32ab595a
+
+3: kd> 
+THREAD ffffe001a98d1080  Cid 0808.1944  Teb: 0000000a410b2000 Win32Thread: 0000000000000000 RUNNING on processor 0
+Not impersonating
+DeviceMap                 ffffc00161c1d240
+Owning Process            ffffe001af9bc7c0       Image:         coreServiceShell.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      61268208       Ticks: 1 (0:00:00:00.015)
+Context Switch Count      65697          IdealProcessor: 3             
+UserTime                  00:10:39.578
+KernelTime                00:00:00.062
+Win32 Start Address 0x00007ff83d60f5d0
+Stack Init ffffd000206d6b90 Current ffffd000206d6880
+Base ffffd000206d7000 Limit ffffd000206d0000 Call 0
+Priority 10 BasePriority 8 UnusualBoost 0 ForegroundBoost 2 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff801`62c11ca8 fffff801`60c6beda : 00000000`0000009f 00000000`00000003 ffffe001`a9450060 fffff801`62c11ce0 : nt!KeBugCheckEx
+fffff801`62c11cb0 fffff801`60c6bdfa : ffffe001`b247ef00 000008b4`eca7b9a0 00000000`00000000 00000000`00000005 : nt!PopIrpWatchdogBugcheck+0xde
+fffff801`62c11d10 fffff801`60ad9786 : ffffe001`00000000 ffffe001`b247ef38 fffff801`62c11e68 00000000`00000002 : nt!PopIrpWatchdog+0x32
+fffff801`62c11d60 fffff801`60bd24b5 : 00000000`00000000 fffff801`60da8180 fffff801`60a654b0 00007ff8`332ea3d0 : nt!KiRetireDpcList+0x5f6
+fffff801`62c11fb0 fffff801`60bd22c0 : 0000000f`223fd808 fffff801`60b2d580 00000000`00000000 00000000`00000002 : nt!KxRetireDpcList+0x5 (TrapFrame @ fffff801`62c11e70)
+ffffd000`206d69c0 fffff801`60bd0d95 : 00007ff8`332ea3d0 fffff801`60bcf051 0000000f`223fd808 00000000`20ff0000 : nt!KiDispatchInterruptContinue
+ffffd000`206d69f0 fffff801`60bcf051 : 0000000f`223fd808 00000000`20ff0000 ffffe001`00000000 ffffe001`afeaa500 : nt!KiDpcInterruptBypass+0x25
+ffffd000`206d6a00 00007ff8`32ab595a : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiInterruptDispatchNoLockNoEtw+0xb1 (TrapFrame @ ffffd000`206d6a00)
+0000000f`223fd5c0 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ff8`32ab595a
+
+3: kd> !process ffffe001af9bc7c0 4
+PROCESS ffffe001af9bc7c0
+    SessionId: 0  Cid: 0808    Peb: 9540b3000  ParentCid: 0324
+    DirBase: 18d59000  ObjectTable: ffffc00164075b00  HandleCount: <Data Not Accessible>
+    Image: coreServiceShell.exe
+
+        THREAD ffffe001afe52080  Cid 0808.080c  Teb: 00000009540b4000 Win32Thread: ffffe001af846420 WAIT
+        THREAD ffffe001afea1080  Cid 0808.0824  Teb: 00000009540bc000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001ae5ad340  Cid 0808.0828  Teb: 00000009540be000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001aff3c800  Cid 0808.096c  Teb: 00000009540c2000 Win32Thread: ffffe001ae5602f0 WAIT
+        THREAD ffffe001a8503800  Cid 0808.0970  Teb: 00000009540c4000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0e99080  Cid 0808.1098  Teb: 00000009540d0000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001aebb5580  Cid 0808.19e4  Teb: 00000009540d4000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b10e4800  Cid 0808.19d0  Teb: 00000009540d6000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001af9b9800  Cid 0808.17f4  Teb: 00000009540d8000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0b27800  Cid 0808.1164  Teb: 00000009540da000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b10ce080  Cid 0808.19cc  Teb: 00000009540dc000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0abe5c0  Cid 0808.1f80  Teb: 00000009540de000 Win32Thread: ffffe001b11111a0 WAIT
+        THREAD ffffe001b0b34780  Cid 0808.1fb8  Teb: 00000009540e0000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8446800  Cid 0808.1798  Teb: 00000009540e2000 Win32Thread: ffffe001af952430 WAIT
+        THREAD ffffe001b08bb800  Cid 0808.1314  Teb: 00000009540e4000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b06a9800  Cid 0808.1a18  Teb: 00000009540e6000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0ac2800  Cid 0808.1a70  Teb: 00000009540e8000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0e3d800  Cid 0808.12a0  Teb: 00000009540ea000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b072a080  Cid 0808.0ff8  Teb: 00000009540ec000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0439800  Cid 0808.1d94  Teb: 00000009540fa000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0741080  Cid 0808.0b10  Teb: 00000009540fc000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0d34080  Cid 0808.1ac4  Teb: 00000009540fe000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0f4e080  Cid 0808.1fc8  Teb: 0000000954100000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b043b080  Cid 0808.1d04  Teb: 0000000954102000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001ae6f1800  Cid 0808.1e68  Teb: 0000000954104000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b1024800  Cid 0808.1d64  Teb: 0000000954106000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b108d800  Cid 0808.1ce4  Teb: 0000000954108000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001aea22080  Cid 0808.1ce0  Teb: 000000095410a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0817080  Cid 0808.1ce8  Teb: 000000095410c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001aea15080  Cid 0808.1cec  Teb: 000000095410e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a888f080  Cid 0808.1d00  Teb: 0000000954110000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9020080  Cid 0808.1cdc  Teb: 0000000954112000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001aea06080  Cid 0808.1cfc  Teb: 0000000954114000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a889a080  Cid 0808.1d14  Teb: 0000000954116000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a889e080  Cid 0808.1d28  Teb: 0000000954118000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001af1ff080  Cid 0808.1d30  Teb: 000000095411a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001aea16080  Cid 0808.1d58  Teb: 000000095411c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a88c2080  Cid 0808.1d68  Teb: 000000095411e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0e83080  Cid 0808.1d6c  Teb: 0000000954120000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001af3f2080  Cid 0808.1d88  Teb: 0000000954122000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a907b080  Cid 0808.1da4  Teb: 0000000954124000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a908b080  Cid 0808.1d54  Teb: 0000000954126000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a908a080  Cid 0808.1e24  Teb: 0000000954128000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9089080  Cid 0808.1fc4  Teb: 000000095412a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9088080  Cid 0808.1e20  Teb: 000000095412c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9087080  Cid 0808.09c8  Teb: 000000095412e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9086080  Cid 0808.066c  Teb: 0000000954130000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9085080  Cid 0808.09e0  Teb: 0000000954132000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9084080  Cid 0808.14a4  Teb: 0000000954134000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9083080  Cid 0808.1558  Teb: 0000000954136000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b091d080  Cid 0808.004c  Teb: 0000000954138000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0f6b080  Cid 0808.1210  Teb: 000000095413a000 Win32Thread: ffffe001a9c5d8a0 WAIT
+        THREAD ffffe001af4a7080  Cid 0808.1a74  Teb: 000000095413c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0e75080  Cid 0808.1d9c  Teb: 000000095413e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0edf080  Cid 0808.0418  Teb: 0000000954140000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9061080  Cid 0808.0708  Teb: 0000000954142000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0ffa080  Cid 0808.03f4  Teb: 0000000954144000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0e85080  Cid 0808.0584  Teb: 0000000954146000 Win32Thread: ffffe001b07812f0 WAIT
+        THREAD ffffe001b0e8a080  Cid 0808.1ff4  Teb: 0000000954148000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a887a080  Cid 0808.1e78  Teb: 000000095414a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a88cf080  Cid 0808.15a8  Teb: 000000095414c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b1049080  Cid 0808.2160  Teb: 000000095414e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0ceb580  Cid 0808.2164  Teb: 0000000954150000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8bad080  Cid 0808.2168  Teb: 0000000954152000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001af4da6c0  Cid 0808.216c  Teb: 0000000954154000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0e58080  Cid 0808.2170  Teb: 0000000954156000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b096d080  Cid 0808.2174  Teb: 0000000954158000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0b42080  Cid 0808.2178  Teb: 000000095415a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a942e080  Cid 0808.217c  Teb: 000000095415c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8897080  Cid 0808.2180  Teb: 000000095415e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8b88080  Cid 0808.2184  Teb: 0000000954160000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8aff080  Cid 0808.2188  Teb: 0000000954162000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8b42080  Cid 0808.218c  Teb: 0000000954164000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8b3c080  Cid 0808.2190  Teb: 0000000954166000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0ffb800  Cid 0808.2198  Teb: 0000000954168000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001afe32080  Cid 0808.21a0  Teb: 000000095416a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001af489080  Cid 0808.21a4  Teb: 000000095416c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b041d080  Cid 0808.21a8  Teb: 000000095416e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0ec7080  Cid 0808.21ac  Teb: 0000000954170000 Win32Thread: 0000000000000000 READY on processor 80000001
+        THREAD ffffe001a9c6a080  Cid 0808.21b0  Teb: 0000000954172000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0946800  Cid 0808.21b8  Teb: 0000000954174000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9c1f080  Cid 0808.21c8  Teb: 0000000954176000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9c8f080  Cid 0808.21cc  Teb: 0000000954178000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9c59080  Cid 0808.21d0  Teb: 000000095417a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001ac90a080  Cid 0808.21d4  Teb: 000000095417c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b04aa080  Cid 0808.21d8  Teb: 000000095417e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b04a9080  Cid 0808.21dc  Teb: 0000000954180000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a88ba080  Cid 0808.2280  Teb: 0000000954182000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9c94080  Cid 0808.2284  Teb: 0000000954184000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9c24080  Cid 0808.2298  Teb: 0000000954186000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0aac3c0  Cid 0808.22c4  Teb: 0000000954192000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0ac0640  Cid 0808.22c8  Teb: 0000000954194000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001ace8e800  Cid 0808.22cc  Teb: 0000000954196000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b107d800  Cid 0808.22d0  Teb: 0000000954198000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b1093080  Cid 0808.22d4  Teb: 000000095419a000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b035b580  Cid 0808.22d8  Teb: 000000095419c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9c2f080  Cid 0808.22dc  Teb: 000000095419e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9cb6600  Cid 0808.22ec  Teb: 00000009541a6000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9c8e080  Cid 0808.2364  Teb: 00000009541e0000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a88a4080  Cid 0808.2380  Teb: 00000009541ee000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001acf1d080  Cid 0808.2384  Teb: 00000009541f0000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9cb7080  Cid 0808.238c  Teb: 00000009541f4000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9ca0800  Cid 0808.23d0  Teb: 0000000954010000 Win32Thread: ffffe001b10590d0 WAIT
+        THREAD ffffe001acf14080  Cid 0808.23d4  Teb: 0000000954012000 Win32Thread: ffffe001a9599c80 WAIT
+        THREAD ffffe001ace9b080  Cid 0808.1f10  Teb: 00000009540f6000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001af4d3800  Cid 0808.20c0  Teb: 0000000954188000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8be0800  Cid 0808.21f4  Teb: 00000009541ac000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001acf2d080  Cid 0808.2224  Teb: 00000009541ae000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a9cb2080  Cid 0808.21f8  Teb: 00000009541be000 Win32Thread: ffffe001b0e131f0 WAIT
+        THREAD ffffe001a99d0800  Cid 0808.2314  Teb: 000000095405c000 Win32Thread: ffffe001b06b8750 WAIT
+        THREAD ffffe001a951f080  Cid 0808.12c8  Teb: 0000000954030000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a94f5580  Cid 0808.23fc  Teb: 0000000954032000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b085c800  Cid 0808.1468  Teb: 0000000a4107a000 Win32Thread: 0000000000000000 READY on processor 80000000
+        THREAD ffffe001b135b080  Cid 0808.13d8  Teb: 0000000a4107c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001afe81080  Cid 0808.04a4  Teb: 0000000a4108e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a889f800  Cid 0808.170c  Teb: 0000000a41090000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8899800  Cid 0808.22b4  Teb: 0000000a41092000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0e79800  Cid 0808.20c4  Teb: 0000000a41096000 Win32Thread: 0000000000000000 READY on processor 80000002
+        THREAD ffffe001b27f9800  Cid 0808.0f78  Teb: 0000000a41098000 Win32Thread: 0000000000000000 READY on processor 80000001
+        THREAD ffffe001ac8e3080  Cid 0808.1150  Teb: 0000000a4109e000 Win32Thread: 0000000000000000 RUNNING on processor 2
+        THREAD ffffe001a965a800  Cid 0808.2568  Teb: 0000000a410a2000 Win32Thread: 0000000000000000 READY on processor 80000003
+        THREAD ffffe001b0652800  Cid 0808.0bb0  Teb: 0000000a410a4000 Win32Thread: 0000000000000000 RUNNING on processor 3
+        THREAD ffffe001af54f800  Cid 0808.1ab0  Teb: 0000000a410a6000 Win32Thread: 0000000000000000 RUNNING on processor 1
+        THREAD ffffe001a98d1080  Cid 0808.1944  Teb: 0000000a410b2000 Win32Thread: 0000000000000000 RUNNING on processor 0
+        THREAD ffffe001a8e44080  Cid 0808.1c78  Teb: 0000000a410b6000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001af578800  Cid 0808.1398  Teb: 0000000a410f0000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001ae563680  Cid 0808.272c  Teb: 0000000a41100000 Win32Thread: ffffe001b1b61110 WAIT
+        THREAD ffffe001b0484080  Cid 0808.0474  Teb: 0000000a41102000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001ad1ec800  Cid 0808.20d8  Teb: 0000000a411c8000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b2557800  Cid 0808.1848  Teb: 0000000a411ca000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b230f080  Cid 0808.14fc  Teb: 0000000a411ec000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001ade67800  Cid 0808.08d0  Teb: 0000000a41030000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8d88800  Cid 0808.27cc  Teb: 0000000a41038000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001a8ad6800  Cid 0808.2bc4  Teb: 0000000a4103c000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b0ae5800  Cid 0808.1090  Teb: 0000000a4103e000 Win32Thread: 0000000000000000 WAIT
+        THREAD ffffe001b1975080  Cid 0808.1294  Teb: 0000000a41042000 Win32Thread: 0000000000000000 WAIT
+
+3: kd> !vm
+
+*** Virtual Memory Usage ***
+               Physical Memory:        1018671 (    4074684 Kb)
+               Page File: \??\C:\pagefile.sys
+                 Current:    720896 Kb  Free Space:    699452 Kb
+                 Minimum:    720896 Kb  Maximum:     12582912 Kb
+               Page File: \??\C:\swapfile.sys
+                 Current:    262144 Kb  Free Space:    262136 Kb
+                 Minimum:    262144 Kb  Maximum:      6112024 Kb
+               No Name for Paging File
+
+                 Current:  16657596 Kb  Free Space:  16189812 Kb
+                 Minimum:  16657596 Kb  Maximum:     16657596 Kb
+               Available Pages:         645624 (    2582496 Kb)
+               ResAvail Pages:          901975 (    3607900 Kb)
+               Locked IO Pages:              0 (          0 Kb)
+               Free System PTEs:    4295003337 (17180013348 Kb)
+               Modified Pages:           30717 (     122868 Kb)
+               Modified PF Pages:        30435 (     121740 Kb)
+               Modified No Write Pages:     36 (        144 Kb)
+               NonPagedPool Usage:        3872 (      15488 Kb)
+               NonPagedPoolNx Usage:     44709 (     178836 Kb)
+               NonPagedPool Max:    4294967296 (17179869184 Kb)
+               PagedPool 0 Usage:        35609 (     142436 Kb)
+               PagedPool 1 Usage:        10621 (      42484 Kb)
+               PagedPool 2 Usage:         5265 (      21060 Kb)
+               PagedPool 3 Usage:         5263 (      21052 Kb)
+               PagedPool 4 Usage:         5284 (      21136 Kb)
+               PagedPool Usage:          62042 (     248168 Kb)
+               PagedPool Maximum:   4160749568 (16642998272 Kb)
+               Session Commit:            3490 (      13960 Kb)
+               Shared Commit:            28893 (     115572 Kb)
+               Special Pool:                 0 (          0 Kb)
+               Shared Process:            8419 (      33676 Kb)
+               Pages For MDLs:            3515 (      14060 Kb)
+               Pages For AWE:                0 (          0 Kb)
+               NonPagedPool Commit:      41705 (     166820 Kb)
+               PagedPool Commit:         62042 (     248168 Kb)
+               Driver Commit:            25336 (     101344 Kb)
+               Boot Commit:              13852 (      55408 Kb)
+               System PageTables:          897 (       3588 Kb)
+               VAD/PageTable Bitmaps:     4289 (      17156 Kb)
+               ProcessLockedFilePages:       0 (          0 Kb)
+               Pagefile Hash Pages:        107 (        428 Kb)
+               Sum System Commit:       192545 (     770180 Kb)
+               Total Private:           252024 (    1008096 Kb)
+               Misc/Transient Commit:     5932 (      23728 Kb)
+               Committed pages:         450501 (    1802004 Kb)
+               Commit limit:           1198895 (    4795580 Kb)
+
+         Pid  ImageName       Commit(P) Commit(KB)       Debt(P)   Debt(KB)        
+
+         0808 coreServiceShe     122942 (     491768 Kb)         0 (          0 Kb)
+         0408 svchost.exe         17361 (      69444 Kb)         0 (          0 Kb)
+         0ac0 Lenovo.Modern.       9288 (      37152 Kb)         0 (          0 Kb)
+         17c8 SearchIndexer.       8100 (      32400 Kb)         0 (          0 Kb)
+         0464 svchost.exe          7906 (      31624 Kb)         0 (          0 Kb)
+         2a68 officeclicktor       7134 (      28536 Kb)         0 (          0 Kb)
+         09b4 PresentationFo       6197 (      24788 Kb)         0 (          0 Kb)
+         035c dwm.exe              5905 (      23620 Kb)         0 (          0 Kb)
+         0848 DolbyDAX2API.e       5816 (      23264 Kb)         0 (          0 Kb)
+         09f0 PtSvcHost.exe        5416 (      21664 Kb)         0 (          0 Kb)
+         065c svchost.exe          4684 (      18736 Kb)         0 (          0 Kb)
+         0540 svchost.exe          4565 (      18260 Kb)         0 (          0 Kb)
+         171c LogonUI.exe          4443 (      17772 Kb)         0 (          0 Kb)
+         20d4 isa.exe              3677 (      14708 Kb)         0 (          0 Kb)
+         032c lsass.exe            2994 (      11976 Kb)         0 (          0 Kb)
+         0424 svchost.exe          2781 (      11124 Kb)         0 (          0 Kb)
+         06ac svchost.exe          2700 (      10800 Kb)         0 (          0 Kb)
+         0868 svchost.exe          2266 (       9064 Kb)         0 (          0 Kb)
+         0394 svchost.exe          2137 (       8548 Kb)         0 (          0 Kb)
+         0744 spoolsv.exe          2104 (       8416 Kb)         0 (          0 Kb)
+         03e8 svchost.exe          1569 (       6276 Kb)         0 (          0 Kb)
+         0938 coreFrameworkH       1429 (       5716 Kb)         0 (          0 Kb)
+         1a2c csrss.exe            1336 (       5344 Kb)         0 (          0 Kb)
+         0b5c ZeroConfigServ       1223 (       4892 Kb)         0 (          0 Kb)
+         07d0 wlanext.exe          1201 (       4804 Kb)         0 (          0 Kb)
+         09cc EvtEng.exe           1138 (       4552 Kb)         0 (          0 Kb)
+         0a54 svchost.exe          1109 (       4436 Kb)         0 (          0 Kb)
+         0cf4 WmiPrvSE.exe          981 (       3924 Kb)         0 (          0 Kb)
+         0324 services.exe          963 (       3852 Kb)         0 (          0 Kb)
+         08e0 conhost.exe           904 (       3616 Kb)         0 (          0 Kb)
+         1c74 LMS.exe               825 (       3300 Kb)         0 (          0 Kb)
+         049c svchost.exe           745 (       2980 Kb)         0 (          0 Kb)
+         0b08 tphkload.exe          734 (       2936 Kb)         0 (          0 Kb)
+         222c PWMDBSVC.exe          621 (       2484 Kb)         0 (          0 Kb)
+         0ad4 micmute.exe           610 (       2440 Kb)         0 (          0 Kb)
+         05e8 igfxCUIService        602 (       2408 Kb)         0 (          0 Kb)
+         0b84 UoipService.ex        557 (       2228 Kb)         0 (          0 Kb)
+         06f4 IntelCpHeciSvc        538 (       2152 Kb)         0 (          0 Kb)
+         0b34 svchost.exe           525 (       2100 Kb)         0 (          0 Kb)
+         09e8 RegSrvc.exe           460 (       1840 Kb)         0 (          0 Kb)
+         192c winlogon.exe          418 (       1672 Kb)         0 (          0 Kb)
+         0920 CxAudMsg64.exe        407 (       1628 Kb)         0 (          0 Kb)
+         02f4 wininit.exe           402 (       1608 Kb)         0 (          0 Kb)
+         02a0 csrss.exe             366 (       1464 Kb)         0 (          0 Kb)
+         0d24 unsecapp.exe          353 (       1412 Kb)         0 (          0 Kb)
+         0940 conhost.exe           348 (       1392 Kb)         0 (          0 Kb)
+         0494 WUDFHost.exe          322 (       1288 Kb)         0 (          0 Kb)
+         0a20 SASrv.exe             318 (       1272 Kb)         0 (          0 Kb)
+         1f6c uiWatchDog.exe        306 (       1224 Kb)         0 (          0 Kb)
+         0004 System                293 (       1172 Kb)         0 (          0 Kb)
+         1e3c dasHost.exe           283 (       1132 Kb)         0 (          0 Kb)
+         23f4 jhi_service.ex        281 (       1124 Kb)         0 (          0 Kb)
+         0974 ibtsiva.exe           276 (       1104 Kb)         0 (          0 Kb)
+         07dc conhost.exe           276 (       1104 Kb)         0 (          0 Kb)
+         0508 ibmpmsvc.exe          276 (       1104 Kb)         0 (          0 Kb)
+         0c4c PtWatchDog.exe        267 (       1068 Kb)         0 (          0 Kb)
+         083c HidMonitorSvc.        256 (       1024 Kb)         0 (          0 Kb)
+         0210 smss.exe               90 (        360 Kb)         0 (          0 Kb)
+         2b3c Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         2acc Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         2a24 smss.exe                0 (          0 Kb)         0 (          0 Kb)
+         2994 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         2900 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         28e0 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         27c4 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         259c iexplore.exe            0 (          0 Kb)         0 (          0 Kb)
+         2534 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         24cc SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         247c SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         241c Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         23b8 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         2370 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         22b0 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         221c dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         2140 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         2124 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         1fec Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         1dbc Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         1d98 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         1c88 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         1c0c SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         1bb0 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         1b10 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         18c0 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         1898 SkypeHost.exe           0 (          0 Kb)         0 (          0 Kb)
+         17e8 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         175c Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         1754 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         1740 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         1700 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         16d0 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         16b8 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         1630 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         15fc dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         157c Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         144c SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         13c0 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         138c Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         1368 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         1308 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         11f8 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         1108 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         0fc0 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         0e84 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         0cd4 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         0cb0 Lenovo.Modern.          0 (          0 Kb)         0 (          0 Kb)
+         0b2c SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+         03b4 dwm.exe                 0 (          0 Kb)         0 (          0 Kb)
+         0244 SACpl.exe               0 (          0 Kb)         0 (          0 Kb)
+
+
+This is a known issue: https://esupport.trendmicro.com/en-us/home/pages/technical-support/1101714.aspx

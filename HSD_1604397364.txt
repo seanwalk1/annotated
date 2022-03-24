@@ -1,0 +1,227 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604397364
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:
+
+This is DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5) – see attached memory dump:
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5)
+Memory was referenced after it was freed.
+This cannot be protected by try-except.
+When possible, the guilty driver's name (Unicode string) is printed on
+the bugcheck screen and saved in KiBugCheckDriver.
+Arguments:
+Arg1: ffff83b8c6faef60, memory referenced
+Arg2: 0000000000000000, value 0 = read operation, 1 = write operation
+Arg3: ffff83e15e7abdb3, if non-zero, the address which referenced memory.
+Arg4: 0000000000000000, (reserved)
+…
+
+win32kfull!CLegacyRotationMgr::RotationRequired attempted to access freed-up memory:
+2: kd> u ffff83e15e7abdb3 L1
+win32kfull!CLegacyRotationMgr::RotationRequired+0x3b:
+ffff83e1`5e7abdb3 8b9b60030000    mov     ebx,dword ptr [rbx+360h]
+2: kd> r cr2
+cr2=ffff83b8c6faef60
+2: kd> !pte ffff83b8c6faef60
+                                           VA ffff83b8c6faef60
+PXE at FFFFCCE673399838    PPE at FFFFCCE673307718    PDE at FFFFCCE660EE31B8    PTE at FFFFCCC1DC637D70
+contains 0A0000025688B863  contains 0A0000025690D863  contains 0A0000001383A863  contains 0038C77C20000000
+pfn 25688b    ---DA--KWEV  pfn 25690d    ---DA--KWEV  pfn 1383a     ---DA--KWEV  not valid
+                                                                                  Page has been freed
+
+The memory address is the rotation which is the second argument to the win32kfull!CLegacyRotationMgr::RotationRequired:
+2: kd> u  win32kfull!CLegacyRotationMgr::RotationRequired
+win32kfull!CLegacyRotationMgr::RotationRequired:
+ffff83e1`5e7abd78 48895c2408      mov     qword ptr [rsp+8],rbx
+ffff83e1`5e7abd7d 4889742410      mov     qword ptr [rsp+10h],rsi
+ffff83e1`5e7abd82 57              push    rdi
+ffff83e1`5e7abd83 4883ec20        sub     rsp,20h
+ffff83e1`5e7abd87 498bf0          mov     rsi,r8
+ffff83e1`5e7abd8a 488bda          mov     rbx,rdx
+ffff83e1`5e7abd8d e83ef4eeff      call    win32kfull!CLegacyRotationMgr::QueryAutoRotationState (ffff83e1`5e69b1d0)
+ffff83e1`5e7abd92 8bf8            mov     edi,eax
+
+Looking at the callstack:
+2: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffff9a00`7912f4f8 fffff802`8581c272 nt!DbgBreakPointWithStatus
+01 ffff9a00`7912f500 fffff802`8581bb22 nt!KiBugCheckDebugBreak+0x12
+02 ffff9a00`7912f560 fffff802`8578b4f7 nt!KeBugCheck2+0x922
+03 ffff9a00`7912fc70 fffff802`857c0d08 nt!KeBugCheckEx+0x107
+04 ffff9a00`7912fcb0 fffff802`856ac246 nt!MiSystemFault+0x116c68
+05 ffff9a00`7912fd50 fffff802`85794c72 nt!MmAccessFault+0xae6
+06 ffff9a00`7912ff40 ffff83e1`5e7abdb3 nt!KiPageFault+0x132
+07 ffff9a00`791300d0 ffff83e1`5e765fa2 win32kfull!CLegacyRotationMgr::RotationRequired+0x3b
+08 ffff9a00`79130100 ffff83e1`5e69b46d win32kfull!InkDevice::`vector deleting destructor'+0x316e2
+09 ffff9a00`79130130 ffff83e1`5ea1822d win32kfull!CLegacyRotationMgr::xxxRefreshDisplayOrientation+0x10d
+0a ffff9a00`79130220 ffff83e1`5ea17a45 win32kbase!PowerOnMonitor+0x31d
+0b ffff9a00`791302a0 ffff83e1`5ea17760 win32kbase!xxxUserPowerEventCalloutWorker+0x1b5
+0c ffff9a00`791303b0 ffff83e1`5e664f2f win32kbase!xxxUserPowerCalloutWorker+0xb0
+0d ffff9a00`79130410 fffff802`85796313 win32kfull!NtUserCallNoParam+0x2f
+0e ffff9a00`79130440 00007fff`460a1124 nt!KiSystemServiceCopyEnd+0x13
+0f 0000005b`14b7fb28 00007fff`45872a9a win32u!ZwUserCallNoParam+0x14
+10 0000005b`14b7fb30 00007fff`494f0d6f winsrvext!PowerNotificationThread+0x5a
+11 0000005b`14b7fb60 00000000`00000000 ntdll!RtlUserThreadStart+0x2f
+
+We can see that it came from the currently active process for the current input:
+2: kd> ub ffff83e1`5e69b46d
+win32kfull!CLegacyRotationMgr::xxxRefreshDisplayOrientation+0xf8:
+ffff83e1`5e69b458 1329            adc     ebp,dword ptr [rcx]
+ffff83e1`5e69b45a 004585          add     byte ptr [rbp-7Bh],al
+ffff83e1`5e69b45d c9              leave
+ffff83e1`5e69b45e 7532            jne     win32kfull!CLegacyRotationMgr::xxxRefreshDisplayOrientation+0x132 (ffff83e1`5e69b492)
+ffff83e1`5e69b460 4585d2          test    r10d,r10d
+ffff83e1`5e69b463 752d            jne     win32kfull!CLegacyRotationMgr::xxxRefreshDisplayOrientation+0x132 (ffff83e1`5e69b492)
+ffff83e1`5e69b465 488bcb          mov     rcx,rbx
+ffff83e1`5e69b468 e82ffdffff      call    win32kfull!CLegacyRotationMgr::xxxApplyOrientationPreference (ffff83e1`5e69b19c)
+
+2: kd> uf ffff83e1`5e69b19c
+win32kfull!CLegacyRotationMgr::xxxApplyOrientationPreference:
+ffff83e1`5e69b19c 48895c2408      mov     qword ptr [rsp+8],rbx
+ffff83e1`5e69b1a1 57              push    rdi
+ffff83e1`5e69b1a2 4883ec20        sub     rsp,20h
+ffff83e1`5e69b1a6 488bd9          mov     rbx,rcx
+ffff83e1`5e69b1a9 e822000000      call    win32kfull!CLegacyRotationMgr::QueryAutoRotationState (ffff83e1`5e69b1d0)
+ffff83e1`5e69b1ae 83f801          cmp     eax,1
+ffff83e1`5e69b1b1 0f86c1ad0c00    jbe     win32kfull!InkDevice::`vector deleting destructor'+0x316b8 (ffff83e1`5e765f78)  Branch
+
+win32kfull!CLegacyRotationMgr::xxxApplyOrientationPreference+0x1b:
+ffff83e1`5e69b1b7 488b5c2430      mov     rbx,qword ptr [rsp+30h]
+ffff83e1`5e69b1bc 4883c420        add     rsp,20h
+ffff83e1`5e69b1c0 5f              pop     rdi
+ffff83e1`5e69b1c1 c3              ret
+
+win32kfull!InkDevice::`vector deleting destructor'+0x316b8:
+ffff83e1`5e765f78 e8631beaff      call    win32kfull!CRotationMgr::GetActivePpi (ffff83e1`5e607ae0)
+ffff83e1`5e765f7d 488d4c2438      lea     rcx,[rsp+38h]
+ffff83e1`5e765f82 488bf8          mov     rdi,rax
+ffff83e1`5e765f85 e8226af3ff      call    win32kfull!GetCurrentOrientation (ffff83e1`5e69c9ac)
+ffff83e1`5e765f8a 85c0            test    eax,eax
+ffff83e1`5e765f8c 0f882552f3ff    js      win32kfull!CLegacyRotationMgr::xxxApplyOrientationPreference+0x1b (ffff83e1`5e69b1b7)  Branch
+
+win32kfull!InkDevice::`vector deleting destructor'+0x316d2:
+ffff83e1`5e765f92 4c8d442438      lea     r8,[rsp+38h]
+ffff83e1`5e765f97 488bd7          mov     rdx,rdi
+ffff83e1`5e765f9a 488bcb          mov     rcx,rbx
+ffff83e1`5e765f9d e8d65d0400      call    win32kfull!CLegacyRotationMgr::RotationRequired (ffff83e1`5e7abd78)
+ffff83e1`5e765fa2 85c0            test    eax,eax
+…
+
+And indeed we get the same address:
+2: kd> uf win32kfull!CRotationMgr::GetActivePpi
+win32kfull!CRotationMgr::GetActivePpi:
+ffff83e1`5e607ae0 488b05e9533500  mov     rax,qword ptr [win32kfull!_imp_grpdeskRitInput (ffff83e1`5e95ced0)]
+ffff83e1`5e607ae7 488b00          mov     rax,qword ptr [rax]
+ffff83e1`5e607aea 4885c0          test    rax,rax
+ffff83e1`5e607aed 7408            je      win32kfull!CRotationMgr::GetActivePpi+0x17 (ffff83e1`5e607af7)  Branch
+
+win32kfull!CRotationMgr::GetActivePpi+0xf:
+ffff83e1`5e607aef 488b8000010000  mov     rax,qword ptr [rax+100h]
+ffff83e1`5e607af6 c3              ret
+
+win32kfull!CRotationMgr::GetActivePpi+0x17:
+ffff83e1`5e607af7 c3              ret 
+
+2: kd> dq win32kfull!_imp_grpdeskRitInput L1
+ffff83e1`5e95ced0  ffff83e1`5eb33200
+2: kd> dq  ffff83e1`5eb33200 L1
+ffff83e1`5eb33200  ffffaa8e`2eee0ea0
+2: kd> dq  ffffaa8e`2eee0ea0+100 L1
+ffffaa8e`2eee0fa0  ffff83b8`c6faec00
+
+But the memory already freed:
+2: kd> !verifier 80 ffff83b8c6faef60-360
+
+Log of recent kernel pool Allocate and Free operations:
+
+There are up to 0x10000 entries in the log.
+
+Parsing 0x0000000000010000 log entries, searching for address 0xffff83b8c6faec00.
+
+
+======================================================================
+Pool block ffff83b8c6faec00, Size 0000000000000400, Thread ffffaa8e321a0080
+fffff80285d918ff nt!VfFreePoolNotification+0x5b
+fffff80285876c61 nt!ExpFreePoolChecks+0x81
+fffff8028589fe38 nt!ExFreePoolWithTag+0xe18
+fffff8095a9499a0 VerifierExt!ExFreePoolWithTag_wrapper+0x10
+fffff80285d8084a nt!VerifierExFreePoolWithTag+0x4a
+ffff83e15e9d26fc win32kbase!Win32FreePool+0x1c
+ffff83e15ea82d88 win32kbase!UserDeleteW32Process+0x88
+ffff83e15e6de36c win32kfull!DereferenceW32Process+0x1c
+ffff83e15e6de24d win32kfull!W32pProcessCallout+0x11d
+ffff83e15e9d8b04 win32kbase!W32CalloutDispatch+0x3a4
+fffff80285a5d0d1 nt!ExCallCallBack+0x3d
+fffff80285a59855 nt!PspExitThread+0x521
+fffff80285b19ef9 nt!NtTerminateProcess+0xe9
+======================================================================
+Pool block ffff83b8c6faec00, Size 00000000000003f8, Thread ffffaa8e30be4080
+fffff80285d80412 nt!VeAllocatePoolWithTagPriority+0x302
+fffff8095a94a112 VerifierExt!ExAllocatePoolWithTagPriority_internal_wrapper+0x82
+fffff80285d806ad nt!VerifierExAllocatePoolWithQuotaTag+0xcd
+ffff83e15e6cd6a1 win32kfull!Win32AllocPoolWithQuotaImpl+0x31
+ffff83e15e9d576a win32kbase!Win32AllocPoolWithQuota+0x2a
+ffff83e15e6de2e8 win32kfull!AllocateW32Process+0x68
+ffff83e15e9ea745 win32kbase!xxxSetProcessInitState+0x35
+ffff83e15e698254 win32kfull!xxxUserNotifyConsoleApplication+0x3c
+ffff83e15e698072 win32kfull!xxxConsoleControl+0xf6
+ffff83e15e697f1b win32kfull!NtUserConsoleControl+0xab
+fffff80285796313 nt!KiSystemServiceCopyEnd+0x13
+
+Finished parsing all pool tracking information.
+
+Because process was terminated:
+2: kd> !thread ffffaa8e321a0080
+THREAD ffffaa8e321a0080  Cid 091c.0d8c  Teb: 0000000000000000 Win32Thread: 0000000000000000 TERMINATED
+Not impersonating
+Owning Process            ffffaa8e31e2a080       Image:         Rtc.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      20755          Ticks: 3 (0:00:00:00.046)
+Context Switch Count      53             IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.093
+Win32 Start Address 0x000000000126fcb2
+Stack Init 0000000000000000 Current ffff9a0079255010
+Base ffff9a0079256000 Limit ffff9a007924f000 Call 0000000000000000
+Priority 9 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffff9a00`79255050 fffff802`85652a9a : ffffaa8e`321a0080 00000000`0000c628 fffff802`844a2180 fffff802`844a2180 : nt!KiSwapContext+0x76
+ffff9a00`79255190 fffff802`85639754 : ffffaa8e`321a0378 ffffaa8e`321a0088 ffffaa8e`00000000 ffffaa8e`321a0080 : nt!KiSwapThread+0x16a
+ffff9a00`79255240 fffff802`85a5966b : ffffcf8e`caf7e990 00000000`00000000 ffffaa8e`31e2a080 00000000`00000000 : nt!KeTerminateThread+0x180
+ffff9a00`792552d0 fffff802`85b19ef9 : 00000000`00000000 ffffaa8e`31e2a001 00000000`00b87000 ffffaa8e`321a0080 : nt!PspExitThread+0x337
+ffff9a00`792553d0 fffff802`85796313 : ffffaa8e`31e2a080 ffffaa8e`321a0080 ffff9a00`792554c0 00000000`00000000 : nt!NtTerminateProcess+0xe9
+ffff9a00`79255440 00000000`5ecf21cc : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffff9a00`79255440)
+00000000`00c3e8a8 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x5ecf21cc
+
+2: kd> !process ffffaa8e31e2a080
+PROCESS ffffaa8e31e2a080
+    SessionId: 1  Cid: 091c    Peb: 00b85000  ParentCid: 0ec0
+    DirBase: 24ce0d000  ObjectTable: 00000000  HandleCount:   0.
+    Image: Rtc.exe
+    VadRoot 0000000000000000 Vads 0 Clone 0 Private 0. Modified 885. Locked 0.
+    DeviceMap 0000000000000000
+    Token                             0000000000000000
+    ElapsedTime                       00:00:01.710
+    UserTime                          00:00:00.000
+    KernelTime                        00:00:00.093
+    QuotaPoolUsage[PagedPool]         0
+    QuotaPoolUsage[NonPagedPool]      0
+    Working Set Sizes (now,min,max)  (1, 50, 345) (4KB, 200KB, 1380KB)
+    PeakWorkingSetSize                763
+    VirtualSize                       0 Mb
+    PeakVirtualSize                   16 Mb
+    PageFaultCount                    874
+    MemoryPriority                    BACKGROUND
+    BasePriority                      8
+    CommitCharge                      4
+
+No active threads
+
+So this looks like a race condition in win32kfull.sys between monitor powering on and currently active process termination.

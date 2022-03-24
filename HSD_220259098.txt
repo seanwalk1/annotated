@@ -1,0 +1,167 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220259098
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL – Bugcheck D5
+[BUGCHECK]:	0xD5
+
+
+This is DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL – Bugcheck D5  (see dump at \\wosext.amr.corp.intel.com\friday$\ivan\touch\iaPreciseTouch.sys.dmp.zip):
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5)
+Memory was referenced after it was freed.
+This cannot be protected by try-except.
+When possible, the guilty driver's name (Unicode string) is printed on
+the bugcheck screen and saved in KiBugCheckDriver.
+Arguments:
+Arg1: fffffb0654a6cff8, memory referenced
+Arg2: 0000000000000000, value 0 = read operation, 1 = write operation
+Arg3: fffff80516fe9d99, if non-zero, the address which referenced memory.
+Arg4: 0000000000000000, (reserved)
+…
+
+iaPreciseTouch!QueueWDFReqAsDispatched attempts to reference already freed memory:
+0: kd> u fffff80516fe9d99 L1
+iaPreciseTouch!QueueWDFReqAsDispatched+0x881 [c:\tcwork\8d48d0591eb6f14c\src\hid.c @ 565]:
+fffff805`16fe9d99 8b4008          mov     eax,dword ptr [rax+8]
+0: kd> !pte fffffb0654a6cff8
+                                           VA fffffb0654a6cff8
+PXE at FFFFDDEEF77BBFB0    PPE at FFFFDDEEF77F60C8    PDE at FFFFDDEEFEC19528    PTE at FFFFDDFD832A5360
+contains 0A00000010155863  contains 0A00000010151863  contains 0A0000045AA56863  contains 7B065852C0000000
+pfn 10155     ---DA--KWEV  pfn 10151     ---DA--KWEV  pfn 45aa56    ---DA--KWEV  not valid
+                                                                                  Page has been freed
+
+Switching to the trap frame:
+0: kd> kV
+ # Child-SP          RetAddr           : Args to Child                                                           : Call Site
+00 ffff9781`9ebbee68 fffff801`aa5add5c : 00000000`00000050 fffffb06`54a6cff8 00000000`00000000 ffff9781`9ebbf100 : nt!KeBugCheckEx
+01 ffff9781`9ebbee70 fffff801`aa481766 : 00000000`00000000 fffffb06`54a6cff8 ffff9781`9ebbf100 ffffab0d`aa09b500 : nt!MiSystemFault+0x12e79c
+02 ffff9781`9ebbef10 fffff801`aa588872 : fffff805`14804d80 fffffb06`55546e10 00000000`00000000 00000000`00000001 : nt!MmAccessFault+0xae6
+03 ffff9781`9ebbf100 fffff805`16fe9d99 : fffffb06`4f632200 fffffb06`4f632260 fffffb06`55ac4c20 fffffb06`5852ce60 : nt!KiPageFault+0x132 (TrapFrame @ ffff9781`9ebbf100)
+04 ffff9781`9ebbf290 fffff805`16ffd276 : ffffab0d`b3f94320 fffff805`16ffb50d fffffb06`00000001 fffff805`146d70ea : iaPreciseTouch!QueueWDFReqAsDispatched+0x881
+05 ffff9781`9ebbf3d0 fffff805`16ffb9eb : fffffb06`4f632e28 fffff801`aab885a8 cccccccc`cccccccd fffff805`16ffcf44 : iaPreciseTouch!Main_HidModeTouchReady_WDFReqForTouchController+0x32
+06 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : iaPreciseTouch!DequeueDeferredEventsAndProcessIfPossible+0x6d (Inline Function @ fffff805`16ffb9eb)
+07 ffff9781`9ebbf400 fffff805`16ffe91f : 0624dd2f`1a9fbe77 ffffab0d`b3f1aa10 fffff805`170620f0 00000000`00002710 : iaPreciseTouch!DefaultEntryRoutine+0x15f
+08 ffff9781`9ebbf450 fffff805`16ffbdb7 : fffffb06`4f632260 fffff805`16ffcf24 ffffab0d`b3f1aa10 fffff805`170620f0 : iaPreciseTouch!SetCursorTo+0x1a7
+09 ffff9781`9ebbf4d0 fffff805`17008974 : fffffb06`55a24ef0 ffff9781`00000019 ffffab0d`af26b040 fdfdfdfd`00000000 : iaPreciseTouch!HandleEvent+0x1a7
+0a ffff9781`9ebbf790 fffff805`170018f2 : ffffab0d`b3f94320 ffffab0d`0000000c ffffab0d`af26b040 fffff805`14778b9b : iaPreciseTouch!TouchHIDDriverReady+0x294
+0b ffff9781`9ebbf950 fffff805`17005c4e : ffffab0d`b3f94320 00000000`00000006 00000000`00000000 00000000`00000200 : iaPreciseTouch!HID_TouchHEC2_Interface+0x1f6
+0c ffff9781`9ebbf9a0 fffff805`1477c13d : 000004f9`aa5db108 00000000`00000000 00000000`00000000 00000000`0000000c : iaPreciseTouch!PerformSensorOperations+0xd2
+0d ffff9781`9ebbfa10 fffff805`147794b9 : ffffab0d`af26b000 fffffb06`55a24ef0 ffffab0d`ade25700 fffffb06`55a2cfa0 : Wdf01000!FxWorkItem::WorkItemHandler+0x81
+0e ffff9781`9ebbfa50 fffff801`aa4bfa1b : fffffb06`55a2cfa0 fffffb06`55a2cfa0 fffff805`14779490 ffffab0d`ade25700 : Wdf01000!FxWorkItem::WorkItemThunk+0x29
+0f ffff9781`9ebbfa90 fffff801`aa4321c8 : 00000000`00000200 ffffab0d`ade25700 fffff801`aa4bf920 00000000`0000000c : nt!IopProcessWorkItem+0xfb
+10 ffff9781`9ebbfb00 fffff801`aa4cca37 : 00000000`00000000 00000000`00000080 ffffab0d`aa09b500 ffffab0d`ade25700 : nt!ExpWorkerThread+0xd8
+11 ffff9781`9ebbfb90 fffff801`aa584456 : ffff9781`9a78f180 ffffab0d`ade25700 fffff801`aa4cc9f0 00000000`00000246 : nt!PspSystemThreadStartup+0x47
+12 ffff9781`9ebbfbe0 00000000`00000000 : ffff9781`9ebc0000 ffff9781`9ebb9000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+0: kd> .trap ffff9781`9ebbf100
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=fffffb0654a6cff0 rbx=0000000000000000 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff80516fe9d99 rsp=ffff97819ebbf290 rbp=000000000000000a
+ r8=00000000ffffffff  r9=0000000000000091 r10=0000000000000020
+r11=0000000000000001 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+iaPreciseTouch!QueueWDFReqAsDispatched+0x881:
+fffff805`16fe9d99 8b4008          mov     eax,dword ptr [rax+8] ds:fffffb06`54a6cff8=????????
+
+We can see the access was a dereference of a pointer in RAX
+0: kd> r cr2
+Last set context:
+cr2=fffffb0654a6cff8
+
+Disassembling backwards, we can see that pointer in RAX is actually transferPacket:
+0: kd> ub
+iaPreciseTouch!QueueWDFReqAsDispatched+0x847:
+fffff805`16fe9d5f c744246401000000 mov     dword ptr [rsp+64h],1
+fffff805`16fe9d67 eb08            jmp     iaPreciseTouch!QueueWDFReqAsDispatched+0x859 (fffff805`16fe9d71)
+fffff805`16fe9d69 c744246400000000 mov     dword ptr [rsp+64h],0
+fffff805`16fe9d71 c744244000000000 mov     dword ptr [rsp+40h],0
+fffff805`16fe9d79 e9b8000000      jmp     iaPreciseTouch!QueueWDFReqAsDispatched+0x91e (fffff805`16fe9e36)
+fffff805`16fe9d7e c78424b800000010000000 mov dword ptr [rsp+0B8h],10h
+fffff805`16fe9d89 c78424b000000000000000 mov dword ptr [rsp+0B0h],0
+fffff805`16fe9d94 488b442438      mov     rax,qword ptr [rsp+38h]
+0: kd> dv /V
+ffff9781`9ebbf3d0 @rsp+0x0140       pDeviceExtension = 0xffffab0d`b3f94320
+ffff9781`9ebbf2d8 @rsp+0x0048                 status = 0n0
+ffff9781`9ebbf2e8 @rsp+0x0058                request = 0x000004f9`a7ad3198
+ffff9781`9ebbf340 @rsp+0x00b0           HID2MEBuffer = struct _TOUCH_FEEDBACK_HDR
+ffff9781`9ebbf2c8 @rsp+0x0038         transferPacket = 0xfffffb06`54a6cff0
+ffff9781`9ebbf380 @rsp+0x00f0                 params = struct _WDF_REQUEST_PARAMETERS
+ffff9781`9ebbf2c0 @rsp+0x0030            pdevContext = 0xffffab0d`b3f94320
+ffff9781`9ebbf2e0 @rsp+0x0050          IoControlCode = 0xb0191
+ffff9781`9ebbf2d0 @rsp+0x0040             returnCode = 0n1
+
+Disassembling whole function, we can see that transeferPacket is a UserBuffer from the IRP from the WDF request:
+0: kd> uf iaPreciseTouch!QueueWDFReqAsDispatched
+iaPreciseTouch!QueueWDFReqAsDispatched:
+…
+fffff805`16fe967f b808000000      mov     eax,8
+fffff805`16fe9684 4869c01d010000  imul    rax,rax,11Dh
+fffff805`16fe968b 488d0dae990700  lea     rcx,[iaPreciseTouch!WdfFunctions (fffff805`17063040)]
+fffff805`16fe9692 48898c2490000000 mov     qword ptr [rsp+90h],rcx
+fffff805`16fe969a 488b542458      mov     rdx,qword ptr [rsp+58h]
+fffff805`16fe969f 488b0d22a60700  mov     rcx,qword ptr [iaPreciseTouch!WdfDriverGlobals (fffff805`17063cc8)]
+fffff805`16fe96a6 488bbc2490000000 mov     rdi,qword ptr [rsp+90h]
+fffff805`16fe96ae ff1407          call    qword ptr [rdi+rax]
+fffff805`16fe96b1 488b4070        mov     rax,qword ptr [rax+70h]
+fffff805`16fe96b5 4889442438      mov     qword ptr [rsp+38h],rax
+…
+
+0: kd> u poi(iaPreciseTouch!WdfFunctions + 8*11d) L1
+Wdf01000!imp_WdfRequestWdmGetIrp:
+fffff805`14798120 48895c2408      mov     qword ptr [rsp+8],rbx
+0: kd> dt nt!_IRP UserBuffer
+   +0x070 UserBuffer : Ptr64 Void
+
+Looking at the request, we can see that it was earlier forwarded to an I/O queue, where it was cancelled and freed:
+0: kd> !wdfkd.wdfhandle 0x000004f9`a7ad3198
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x000004f9a7ad3198
+=============================
+Refcount: 0
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+!wdfobject 0xfffffb065852ce60
+0: kd> !verifier 80 0xfffffb065852ce60
+
+Log of recent kernel pool Allocate and Free operations:
+
+There are up to 0x10000 entries in the log.
+
+Parsing 0x0000000000010000 log entries, searching for address 0xfffffb065852ce60.
+
+
+======================================================================
+Pool block fffffb065852cde0, Size 0000000000000220, Thread ffffab0dade25700
+fffff801aab858bf nt!VfFreePoolNotification+0x5b
+fffff801aa66a9d1 nt!ExpFreePoolChecks+0x81
+fffff801aa693e3e nt!ExFreePoolWithTag+0xe2e
+fffff805146d99a0 VerifierExt!ExFreePoolWithTag_wrapper+0x10
+fffff801aab7480a nt!VerifierExFreePoolWithTag+0x4a
+fffff805147b0f5b Wdf01000!FxRequest::Release+0x463bb
+fffff8051479e021 Wdf01000!FxIoQueue::CancelForQueue+0x191
+fffff8051476f429 Wdf01000!FxIoQueue::QueueRequestFromForward+0x289
+fffff80514765b5a Wdf01000!imp_WdfRequestForwardToIoQueue+0x1aa
+fffff80516fe9cd2 iaPreciseTouch!QueueWDFReqAsDispatched+0x7ba
+fffff80516ffd276 iaPreciseTouch!Main_HidModeTouchReady_WDFReqForTouchController+0x32
+fffff80516ffb9eb iaPreciseTouch!DefaultEntryRoutine+0x15f
+fffff80516ffe91f iaPreciseTouch!SetCursorTo+0x1a7
+
+Finished parsing all pool tracking information.
+
+It is illegal for the driver to access request (or any of its properties) after it has been forwarded to a queue as driver will no longer own the request and as soon as WdfRequestForwardToIoQueue returns, request could be cancelled already which is what we have in this case:
+“After the driver calls WdfRequestForwardToIoQueue, the driver does not own the requeued request until the framework delivers the request from the new queue to the driver. While the request is in the new queue, the framework owns the request and can cancel it without notifying the driver.”
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff549958(v=vs.85).aspx
+
+So this is a race condition in iaPreciseTouch.sys.
+
+While the bug was reported on version 1.2.0.83 of the driver, reverse engineering analysis confirms that issue is still present on version 1.2.0.91.

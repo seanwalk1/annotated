@@ -1,0 +1,216 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1405648333
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a debug break point caused by a problem in a UMDF driver esif_umdf2.dll – see attached memory dump.
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+Unknown bugcheck code (0)
+Unknown bugcheck description
+Arguments:
+Arg1: 0000000000000000
+Arg2: 0000000000000000
+Arg3: 0000000000000000
+Arg4: 0000000000000000
+
+Debugging Details:
+------------------
+
+   This is a debug break point caused by a problem in a UMDF driver esif_umdf2.dll
+   Dump process hosting the UMDF driver: !process 0xffff95065b1c4640 0x1f 
+   Suspect Thread: !thread 0xffff95065e6ef080 
+   Dump UMDF device stack: !wdfkd.wdfumdevstack 0x2080b7cde20 
+   Dump UM IRPs for this stack: !wdfkd.wdfumirps 0x2080b7cde20 
+   Dump UMDF trace log: !wmitrace.logdump WUDFTrace 
+   Other UMDF debugger extension commands: !wdfkd.wdfhelp 
+   UMDF PROBLEM CODE: 0x3 <WudfProblem_Timeout> 
+
+   Note that driver host process may get terminated if you go past this break, making it difficult to debug the problem! 
+   Visit http://msdn.microsoft.com/en-us/library/windows/hardware/ff561237(v=vs.85).aspx for assistance debugging UMDF driver problems.
+…
+
+The driver is blocking D3 IRP processing:
+1: kd> !irp ffff95065d11f430
+Irp is active with 4 stacks 3 is current (= 0xffff95065d11f590)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            1  0 ffff95065e6cb150 00000000 00000000-00000000    
+	      ffff95065e6cb150: is not a device object
+
+			Args: ffff95065e603010 00000000 00000000 0000008d
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff95065e603e20 00000000 fffff800b8f409a0-ffff95065f1d26e0 Success Error Cancel pending
+	       \Driver\WUDFRd	nt!PopRequestCompletion
+			Args: 00016600 00000001 00000004 00000005
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffff95065f1d26e0    
+
+			Args: 00000000 00000000 00000000 00000000
+1: kd> !devstack ffff95065e603e20
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffff95065e603e20  \Driver\WUDFRd     ffff95065e603f70  
+  ffff95065e618c60  \Driver\esif_lf    ffff95065e620310  esif_lf
+  ffff950658bfbe40  \Driver\ACPI       ffff950658b19b50  00000023
+!DevNode ffff950658bcea50 :
+  DeviceInst is "ACPI\INT3400\2&daba3ff&0"
+  ServiceName is "esif_lf"
+
+The driver is blocked because it is waiting on the initialization thread to finish:
+1: kd> !thread 0xffff95065e6ef080
+THREAD ffff95065e6ef080  Cid 0610.074c  Teb: 0000002f92305000 Win32Thread: ffff95065e6f51a0 WAIT: (UserRequest) UserMode Non-Alertable
+    ffff95065ca66080  Thread
+Not impersonating
+DeviceMap                 ffffdf0292bad960
+Owning Process            ffff95065b1c4640       Image:         WUDFHost.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      6380           Ticks: 18495 (0:00:04:48.984)
+Context Switch Count      202            IdealProcessor: 0             
+UserTime                  00:00:00.046
+KernelTime                00:00:00.046
+Win32 Start Address ntdll!TppWorkerThread (0x00007ffa9e1a12d0)
+Stack Init ffffaa005913cc10 Current ffffaa005913c670
+Base ffffaa005913d000 Limit ffffaa0059136000 Call 0000000000000000
+Priority 14 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffaa00`5913c6b0 fffff800`b8e21f8a : ffff9506`5e6ef080 00000000`00003a10 fffff800`b7c5d180 00000208`00000844 : nt!KiSwapContext+0x76
+ffffaa00`5913c7f0 fffff800`b8e21951 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSwapThread+0x16a
+ffffaa00`5913c8a0 fffff800`b8e21268 : 00000000`00000000 00000000`00000000 00000000`00000000 ffff9506`5ca66080 : nt!KiCommitThreadWait+0x101
+ffffaa00`5913c940 fffff800`b925cde8 : ffff9506`5ca66080 00000208`00000006 00000000`00000001 00000000`00000000 : nt!KeWaitForSingleObject+0x2b8
+ffffaa00`5913ca10 fffff800`b8f83f13 : ffff9506`5e6ef080 00000000`ffffffff 00000000`00000000 ffff9506`5ca66080 : nt!NtWaitForSingleObject+0xf8
+ffffaa00`5913ca80 00007ffa`9e205434 : 00007ffa`97175abc 00000208`060846e8 00007ffa`9e176f1c 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffaa00`5913ca80)
+0000002f`926fe458 00007ffa`97175abc : 00000208`060846e8 00007ffa`9e176f1c 00000000`00000000 00000000`00000003 : ntdll!ZwWaitForSingleObject+0x14
+0000002f`926fe460 00007ffa`9b48988f : 00000000`00000464 00000000`00000000 00007ffa`9e2c0a44 00007ffa`9e2c0a44 : vfbasics!AVrfpNtWaitForSingleObject+0x38
+0000002f`926fe490 00007ffa`97175785 : 00000000`ffffffff 00000024`00000000 00000000`00000000 00000000`00000464 : KERNELBASE!WaitForSingleObjectEx+0x9f
+0000002f`926fe530 00007ffa`95fe1fdf : 00000000`00000001 00000208`0c4b7f78 00000000`00000000 00000000`00000464 : vfbasics!AVrfpWaitForSingleObject+0xa9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : esif_umdf2!esif_ccb_thread_join+0x28 (Inline Function @ 00007ffa`95fe1fdf)
+0000002f`926fe560 00007ffa`95e91630 : 00000208`0c4b7f78 00007ffa`00000000 00000000`0000000c 00000000`00000000 : esif_umdf2!EvtDeviceSelfManagedIoSuspend+0xbb
+0000002f`926fe5e0 00007ffa`95e8b75b : 00000208`0c459ec0 0000002f`926fe6c8 00000000`00000004 0000002f`926fe6d0 : WUDFx02000!FxPnpDeviceSelfManagedIoSuspend::InvokeClient+0x20
+0000002f`926fe630 00007ffa`95e95b8a : 0000002f`926fe718 00000000`0000000c 00000208`0c4b7fc8 00000000`00000000 : WUDFx02000!FxPrePostCallback::InvokeStateless+0x3f
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : WUDFx02000!FxPnpDeviceSelfManagedIoSuspend::Invoke+0x9 (Inline Function @ 00007ffa`95e95b8a)
+0000002f`926fe660 00007ffa`95e95a7b : 00000208`0c4b7f00 00000000`0000000c 00000208`0c4b7fc8 0000002f`926fe710 : WUDFx02000!FxSelfManagedIoMachine::Suspending+0x3a
+0000002f`926fe690 00007ffa`95e92d05 : 00000208`0c48d8d0 0000002f`00000000 0000002f`926fe809 0000002f`926fe7b8 : WUDFx02000!FxSelfManagedIoMachine::ProcessEvent+0x173
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : WUDFx02000!FxSelfManagedIoMachine::Suspend+0xc (Inline Function @ 00007ffa`95e92d05)
+0000002f`926fe710 00007ffa`95e92c79 : 00007ffa`95eb4698 00000000`00000307 00000000`00000000 00000208`0c48d8d0 : WUDFx02000!FxPkgPnp::PowerGotoDx+0x21
+0000002f`926fe750 00007ffa`95e923b9 : 00000000`0000031a 0000002f`926fe809 00000000`ffff7fff 00000000`00000200 : WUDFx02000!FxPkgPnp::PowerGotoDNotZero+0x9
+0000002f`926fe780 00007ffa`95e92131 : 00000208`0c48d8d0 00000000`00000000 00000208`0c48d8d0 0000002f`92305000 : WUDFx02000!FxPkgPnp::PowerEnterNewState+0x1f5
+0000002f`926fe870 00007ffa`95e91e59 : 00000208`0c48d8d0 00000000`00000000 00000208`0c48daf8 00007ffa`00000000 : WUDFx02000!FxPkgPnp::PowerProcessEventInner+0x229
+0000002f`926fe8e0 00007ffa`95e9641a : 00000000`00000000 00000208`0c48d8d0 0000002f`926fea70 00007ffa`95e6849f : WUDFx02000!FxPkgPnp::PowerProcessEvent+0x1c5
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : WUDFx02000!FxPkgFdo::LowerDevicePower+0x1a (Inline Function @ 00007ffa`95e9641a)
+0000002f`926fe970 00007ffa`95e96031 : 0000002f`926feaa8 00000208`16918f70 00000000`00000004 00000208`16918f70 : WUDFx02000!FxPkgFdo::DispatchDeviceSetPower+0x186
+0000002f`926fe9e0 00007ffa`95e867e0 : 00000000`00000002 00000000`00000000 00000208`0c2bde10 0000002f`926feaf8 : WUDFx02000!FxPkgFdo::_DispatchSetPower+0x41
+0000002f`926fea10 00007ffa`95e6f21a : 00000208`16918f70 00000208`16918f70 00000208`0c459eb0 00000208`0c459cc0 : WUDFx02000!FxPkgPnp::Dispatch+0x3c0
+0000002f`926feaa0 00007ffa`95e6ef4a : 00000000`00000000 00000208`16918f70 00000208`16918f70 00000000`00000016 : WUDFx02000!DispatchWorker+0x116
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : WUDFx02000!FxDevice::Dispatch+0x22 (Inline Function @ 00007ffa`95e6ef4a)
+0000002f`926feaf0 00007ffa`95e72d44 : 00000208`16918f70 00000208`16918f70 00000208`03b80000 ffff9506`5d11f430 : WUDFx02000!FxDevice::DispatchWithLock+0x126
+0000002f`926feb30 00007ff6`36239cca : 00000000`00000000 00000208`16918f70 00000000`0016b6c8 00000000`00000000 : WUDFx02000!FxMessageDispatch::DispatchPnP+0xd4
+0000002f`926feba0 00007ff6`3622416a : 00000208`16918dd0 00000000`00000002 00000208`16918dd0 00000208`16918dd0 : WUDFHost!CWudfDeviceStack::OnDispatchPnp+0x276
+0000002f`926fed60 00007ff6`36233278 : 00000208`0c4bdfb0 00000208`16918dd0 00000000`0000000e 00000000`00000002 : WUDFHost!CWudfDeviceStack::Forward+0x5ba
+0000002f`926fedf0 00007ff6`3623358e : 00000208`16918dd0 00000000`0000000e 00000000`00000002 00000000`00000002 : WUDFHost!CLpcNotification::UnloadSafeDispatchIrp+0x34
+0000002f`926fee20 00007ff6`36232b26 : 00000000`01000002 00000208`03b81000 00000000`00000000 00000000`00000000 : WUDFHost!CLpcNotification::WudfPnpHandler+0x26e
+0000002f`926fef10 00007ff6`36225e73 : 00007ff6`3625c000 0000002f`926ff080 0000002f`926ff470 00000208`0b5bfe40 : WUDFHost!CLpcNotification::ProcessPnpPowerIrp+0x10a
+0000002f`926fef80 00007ffa`974d1fed : 00000208`0b78df00 00000000`00000000 00000208`0b78df10 0000002f`926ff448 : WUDFHost!CLpcNotification::Message+0x18a3
+0000002f`926ff270 00007ffa`974d2e9f : 00007ffa`974e7d18 00000000`00000001 00000208`0b62bf90 00007ffa`974d5367 : WUDFPlatform!WdfLpcPort::ProcessMessage+0x45d
+0000002f`926ff330 00007ffa`974d3b81 : 00000208`0b6dff00 00000208`0b6dff30 00000208`0b6dff00 00000208`0b78df10 : WUDFPlatform!WdfLpcCommPort::ProcessMessage+0x9f
+0000002f`926ff380 00007ffa`974d3cd8 : 00000208`0b6dff30 00000000`00000000 00007ffa`974f3000 00000208`0b615fa0 : WUDFPlatform!WdfLpcConnPort::ProcessMessage+0xd1
+
+But the thread it is waiting on is not initialization thread and in fact has been waiting even longer:
+1: kd> !thread ffff95065ca66080
+THREAD ffff95065ca66080  Cid 0610.0844  Teb: 0000002f92325000 Win32Thread: ffff95065ccfe080 WAIT: (WrQueue) UserMode Alertable
+    ffff95065a9ffc40  QueueObject
+Not impersonating
+DeviceMap                 ffffdf0292bad960
+Owning Process            ffff95065b1c4640       Image:         WUDFHost.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      1457           Ticks: 23418 (0:00:06:05.906)
+Context Switch Count      22             IdealProcessor: 0             
+UserTime                  00:00:00.015
+KernelTime                00:00:00.000
+Win32 Start Address ntdll!TppWorkerThread (0x00007ffa9e1a12d0)
+Stack Init ffffaa005926fc10 Current ffffaa005926f330
+Base ffffaa0059270000 Limit ffffaa0059269000 Call 0000000000000000
+Priority 14 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffaa00`5926f370 fffff800`b8e21f8a : ffff9506`5ca66080 00000000`00003959 ffffaa00`55280180 ffffaa00`5926f579 : nt!KiSwapContext+0x76
+ffffaa00`5926f4b0 fffff800`b8e21951 : 00000000`00000095 fffff800`b8e7fd26 00000000`00000000 00000000`00000000 : nt!KiSwapThread+0x16a
+ffffaa00`5926f560 fffff800`b8e207d8 : 00000000`00000001 00000000`00000000 ffffbb80`0424cb00 ffff9506`5a9ffc40 : nt!KiCommitThreadWait+0x101
+ffffaa00`5926f600 fffff800`b8e202ed : ffff9506`5a9ffc40 00000000`00000001 00000000`00000001 ffffffff`ffffff00 : nt!KeRemoveQueueEx+0x238
+ffffaa00`5926f6b0 fffff800`b8e1f0db : fffff800`b7c5d180 fffff800`b908c4a0 ffffaa00`5926f7f0 00000000`00000001 : nt!IoRemoveIoCompletion+0x8d
+ffffaa00`5926f7d0 fffff800`b8f83f13 : ffff9506`5ca66080 0000002f`92eff748 ffffaa00`5926fa28 00000000`00000000 : nt!NtWaitForWorkViaWorkerFactory+0x30b
+ffffaa00`5926fa10 00007ffa`9e208c44 : 00007ffa`9e1a1563 00000208`03bebfa8 00000208`03bebfa8 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffaa00`5926fa80)
+0000002f`92eff978 00007ffa`9e1a1563 : 00000208`03bebfa8 00000208`03bebfa8 00000000`00000000 00000000`00000000 : ntdll!ZwWaitForWorkViaWorkerFactory+0x14
+0000002f`92eff980 00007ffa`9c1b2774 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!TppWorkerThread+0x293
+0000002f`92effc90 00007ffa`9e1d0d61 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : KERNEL32!BaseThreadInitThunk+0x14
+0000002f`92effcc0 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlUserThreadStart+0x21
+
+The problem here is how the wait is implemented:
+1: kd> u 00007ffa`95fe1fdf-0x28 00007ffa`95fe1fdf
+esif_umdf2!esif_ccb_thread_join [inlined in esif_umdf2!EvtDeviceSelfManagedIoSuspend+0x93]:
+00007ffa`95fe1fb7 448b0546800700  mov     r8d,dword ptr [esif_umdf2!g_ufInitThread (00007ffa`9605a004)]
+00007ffa`95fe1fbe 33d2            xor     edx,edx
+00007ffa`95fe1fc0 b9ffff1f00      mov     ecx,1FFFFFh
+00007ffa`95fe1fc5 ff15d5340300    call    qword ptr [esif_umdf2!_imp_OpenThread (00007ffa`960154a0)]
+00007ffa`95fe1fcb 488bf8          mov     rdi,rax
+00007ffa`95fe1fce 4885c0          test    rax,rax
+00007ffa`95fe1fd1 7415            je      esif_umdf2!EvtDeviceSelfManagedIoSuspend+0xc4 (00007ffa`95fe1fe8)
+00007ffa`95fe1fd3 83caff          or      edx,0FFFFFFFFh
+00007ffa`95fe1fd6 488bc8          mov     rcx,rax
+00007ffa`95fe1fd9 ff15e1350300    call    qword ptr [esif_umdf2!_imp_WaitForSingleObject (00007ffa`960155c0)]
+00007ffa`95fe1fdf 488bcf          mov     rcx,rdi
+
+Basically what esif_umdf2.dll does is that it signals the initialization thread to stop and then opens handle to it by thread Id and if open succeeded – waits.
+If open failed, then there is no wait as initialization thread must have finished already:
+NTSTATUS __fastcall EvtDeviceSelfManagedIoSuspend(WDFDEVICE__ *p_wdfDevice)
+{
+…
+  HANDLE hThread;
+…
+  esif_uf_stop_init();
+  hThread = OpenThread(0x1FFFFFu, 0, g_ufInitThread);
+  if ( hThread )
+  {
+    WaitForSingleObject(hThread, INFINITE);
+    CloseHandle(hThread);
+  }
+…
+
+The problem with this approach is how initialization thread was created in the first place during D0 entry:
+NTSTATUS __fastcall EvtDeviceD0Entry(WDFDEVICE__ *wdfDevice, _WDF_POWER_DEVICE_STATE p_PreviousState)
+{
+…
+  InitThreadParams *ThreadParameters;
+  HANDLE hThread;
+…
+  if ( wdfDevice )
+  {
+    ThreadParameters = (InitThreadParams *)malloc(0x10ui64);
+    if ( ThreadParameters )
+    {
+      ThreadParameters->WdfDevice = wdfDevice;
+      ThreadParameters->StartRoutine = Umdf2UfInitThread;
+      hThread = CreateThread(0i64, 0i64, (LPTHREAD_START_ROUTINE)thread_wrapper, ThreadParameters, 0, &g_ufInitThread);
+      if ( hThread )
+      {
+        CloseHandle(hThread);
+        goto Exit;
+      }
+      free(ThreadParameters);
+    }
+…
+
+So EvtDeviceD0Entry creates new thread, stores its Id in a global variable g_ufInitThread and then closes handle to the thread.
+When initialization thread terminates, since there are no open handles to it, its Id can be re-used. In most cases this is going to be bengin because subsequent OpentThread will fail (either because thread with this id will be in a different process or because Id was not re-used at all or because Id was re-used for a process and OpenThread cannot open process object).
+But in this case the Id was re-used for a thread in the same process but it is a different thread which is not going to terminate so the wait will not be satisfied.
+If not for UMDF breakpoint this will result in Bugcheck 9F when the power IRP will timeout.
+
+The correct approach would be to keep the handle instead the thread Id and wait on the original handle.

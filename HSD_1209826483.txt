@@ -1,0 +1,252 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209826483/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is PAGE_FAULT_IN_FREED_SPECIAL_POOL (cc) -  Bugcheck CC (see memory dump at \\wosext3\BSP\Dumps\Bug_No_1209826483\MEMORY.zip):
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+PAGE_FAULT_IN_FREED_SPECIAL_POOL (cc)
+Memory was referenced after it was freed.
+This cannot be protected by try-except.
+When possible, the guilty driver's name (Unicode string) is printed on
+the bugcheck screen and saved in KiBugCheckDriver.
+Arguments:
+Arg1: ffffc783a48e0f58, memory referenced
+Arg2: 0000000000000002, value 0 = read operation, 1 = write operation
+Arg3: fffff802e4201880, if non-zero, the address which referenced memory.
+Arg4: 0000000000000000, Mm internal code.
+…
+
+The memory referenced accesses freed page which is not valid so the access causes Trap E – page fault:
+2: kd> rcr2
+cr2=ffffc783a48e0f58
+
+2: kd> !pte ffffc783a48e0f58
+                                           VA ffffc783a48e0f58
+PXE at FFFF9FCFE7F3FC78    PPE at FFFF9FCFE7F8F070    PDE at FFFF9FCFF1E0E920    PTE at FFFF9FE3C1D24700
+contains 0A00000003612863  contains 0A00000003611863  contains 0A00000177AA3863  contains 7802E43F60000000
+pfn 3612      ---DA--KWEV  pfn 3611      ---DA--KWEV  pfn 177aa3    ---DA--KWEV  not valid
+                                                                                  Page has been freed
+
+
+2: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffffa481`28571448 fffff802`e42365f4 nt!KeBugCheckEx
+01 ffffa481`28571450 fffff802`e40c992a nt!MiSystemFault+0x1002d4
+02 ffffa481`28571500 fffff802`e41fef72 nt!MmAccessFault+0xa7a
+03 ffffa481`285716f0 fffff802`e4201880 nt!KiPageFault+0x132
+04 ffffa481`28571888 fffff802`e40b94f9 nt!memcpy+0x80
+05 ffffa481`28571890 fffff802`e40fecdd nt!IopCompleteRequest+0x629
+06 ffffa481`28571980 fffff802`e40fd645 nt!KiDeliverApc+0x13d
+07 ffffa481`28571a10 fffff802`e40fce51 nt!KiSwapThread+0x345
+08 ffffa481`28571ad0 fffff802`e40f24d4 nt!KiCommitThreadWait+0x101
+09 ffffa481`28571b70 fffff802`e40f20a0 nt!KeRemovePriQueue+0x1e4
+0a ffffa481`28571c00 fffff802`e4152957 nt!ExpWorkerThread+0x80
+0b ffffa481`28571c90 fffff802`e41fab26 nt!PspSystemThreadStartup+0x47
+0c ffffa481`28571ce0 00000000`00000000 nt!KiStartSystemThread+0x16
+
+The memory was initially allocated by the Audio driver IntcSST.sys and freed:
+2: kd> !verifier 80 ffffc783a48e0f58
+
+Log of recent kernel pool Allocate and Free operations:
+
+There are up to 0x10000 entries in the log.
+
+Parsing 0x0000000000010000 log entries, searching for address 0xffffc783a48e0f58.
+
+
+======================================================================
+Pool block ffffc783a48e0f40, Size 00000000000000c0, Thread ffff8c0d44cc8040
+fffff802e47ffc9f nt!VfFreePoolNotification+0x5b
+fffff802e42e3641 nt!ExpFreePoolChecks+0x81
+fffff802e430ce35 nt!ExFreePoolWithTag+0xe55
+fffff8006b9599a0 VerifierExt!ExFreePoolWithTag_wrapper+0x10
+fffff802e47ee80a nt!VerifierExFreePoolWithTag+0x4a
+fffff8006e24a335 IntcSST!DeAllocateMemory+0x61
+fffff8006e281f46 IntcSST!HwCodec::ExecuteDelayedCall+0xb2
+fffff802e41455db nt!IopProcessWorkItem+0xfb
+fffff802e40f210f nt!ExpWorkerThread+0xef
+fffff802e4152957 nt!PspSystemThreadStartup+0x47
+fffff802e41fab26 nt!KiStartSystemThread+0x16
+======================================================================
+Pool block ffffc783a48e0f40, Size 00000000000000b8, Thread ffff8c0d47197040
+fffff802e47ee3d2 nt!VeAllocatePoolWithTagPriority+0x302
+fffff8006b95a112 VerifierExt!ExAllocatePoolWithTagPriority_internal_wrapper+0x82
+fffff802e47ee4f5 nt!VerifierExAllocatePoolEx+0x55
+fffff8006e24a25b IntcSST!AllocateMemory+0x47
+fffff8006e249ea6 IntcSST!HwCodec::PrepareDelayedCallArg+0x32
+fffff8006e249b27 IntcSST!HwCodec::NotifyPowerChange+0xbf
+fffff8006e277ebd IntcSST!SSPCodec::NotifyPowerChange+0x85
+fffff8006e27875c IntcSST!SSPCodec::SetPowerState+0xc0
+fffff8006e2a723d IntcSST!HDACodec::PowerChangeState+0x1c1
+fffff8006e2b2cef IntcSST!PowerManagementInterface::PowerChangeState3+0x173
+fffff8006ccd2a2a portcls!iPowerChangeState+0x72
+fffff8006ccd2510 portcls!PowerIrpCompletionRoutine+0x2d0
+fffff802e47ed945 nt!IovpLocalCompletionRoutine+0x175
+======================================================================
+…
+
+
+PrepareDelayedCallArg allocates the workitem and memory to use for I/O:
+NTSTATUS __fastcall HwCodec::PrepareDelayedCallArg(HwCodec *this, _HWCodec_Codec_Data *Data)
+{
+…
+  HwCodec **memoryData;
+  struct _IO_WORKITEM *IoWorkItem;
+  …
+  memoryData = AllocateMemory(184ui64, NonPagedPoolNx, 'HCxA', 0i64);
+…
+  IoWorkItem = IoAllocateWorkItem(v3->m_pDeviceObject);
+…
+  IoQueueWorkItem(IoWorkItem, HwCodec::ExecuteDelayedCall, DelayedWorkQueue, memoryData);
+  return STATUS_SUCCESS;
+}
+
+
+And ExecuteDelayedCall frees the workitem and de-allocates memory after ExecuteCall returns: 
+void __fastcall HwCodec::ExecuteDelayedCall(_DEVICE_OBJECT *_pDevObj, void *_pCtx)
+{
+  HwCodec *Codec;
+…
+  Codec = _pCtx;
+…
+  if ( Codec )
+  {
+    if ( Codec->vfptr )
+    {
+      HwCodec::ExecuteCall(Codec->vfptr, &Codec->m_pUnknownOuter);
+      (*(Codec->vfptr->QueryInterface + 2))();
+      Codec->vfptr = 0i64;
+    }
+    IoFreeWorkItem(*&Codec->m_lRefCount);
+    DeAllocateMemory(Codec, 'HCxA');
+  }
+…
+}
+
+The problem is that ExecuteCall calls ExecuteCallHelloHandshake:
+2: kd> dps ffffa481`28571b80 L1
+ffffa481`28571b80  fffff800`6e281e00 IntcSST!HwCodec::ExecuteCallHelloHandshake+0x69c [d:\qba1\workspace\11058\cavs_sw\sw\hdaudiodrv\drv\hwcodec.cpp @ 764]
+
+ExecuteCallHelloHandshake  unconditionally calls CmdHelloHandshake:
+NTSTATUS __fastcall HwCodec::ExecuteCallHelloHandshake(HwCodec *this)
+{
+  HwCodec *Codec;
+  …
+  NTSTATUS status;
+…
+
+  Codec = this;
+…
+  status = HwCodec::CmdHelloHandshake(Codec);
+…
+  return status;
+}
+  
+CmdHelloHandshake unconditionally calls CallArg and supplies stack-allocated destination buffer:
+NTSTATUS __fastcall HwCodec::CmdHelloHandshake(HwCodec *this)
+{
+…
+  char DestinationBuffer[158]’
+…
+  memset(&DestinationBuffer[0], 0, sizeof(DesitantionBuffer));
+…
+  return HwCodec::CallArg(this, &DestinationBuffer);
+}
+
+CallArg unconditionally calls IntcMakeSynchronousIoctlWithTimeOut to send synchronous IOCTL:
+NTSTATUS __fastcall HwCodec::CallArg(HwCodec *this, _HWCodec_Codec_Data *Data)
+{
+…
+  NTSTATUS status;
+…
+  status = IntcMakeSynchronousIoctlWithTimeOut(
+             this->m_pHwCodecDeviceObject,
+             FileObject,
+             0xDEAFF1F0,                        // IOCTL code
+             Data,
+             158u,
+             Data,
+             &_OutputBufferLength,
+             2000u,
+             &this->m_IoctlLock);
+…
+return status;
+}
+
+IntcMakeSynchronousIoctlWithTimeOut builds synchronous IOCTL IRP :
+
+NTSTATUS __fastcall IntcMakeSynchronousIoctlWithTimeOut(_DEVICE_OBJECT *pTopOfDeviceStack, _FILE_OBJECT *pFileObject, unsigned int IoctlControlCode, void *pInputBuffer, unsigned int InputBufferLength, void *pOutputBuffer, unsigned int *OutputBufferLength, unsigned int Milliseconds, _KSEMAPHORE *pSemaphore)
+{
+…
+  KeInitializeEvent(&Event, 0, 0);
+  irp = IoBuildDeviceIoControlRequest(
+          IoctlControlCode,
+          Device,
+…
+          OutputBuffer,
+…
+         NULL,
+          &IoStatusBlock);
+…
+
+But instead of passing event to the I/O Manager, it sets IntcMakeSynchronousIoctlWithTimeOutCompletion as completion routine and sends the IRP and then waits for event:
+…
+  irpSp = irp->Tail.Overlay.CurrentStackLocation;
+  irpSp[-1].CompletionRoutine = IntcMakeSynchronousIoctlWithTimeOutCompletion;
+…
+  status = IofCallDriver(Device, irp);
+…
+  status = KeWaitForSingleObject(&Event, 0, 0, 0, &Timeout);
+…
+
+IntcMakeSynchronousIoctlWithTimeOutCompletion sets the event when completion routine is invoked:
+NTSTATUS __fastcall IntcMakeSynchronousIoctlWithTimeOutCompletion(_DEVICE_OBJECT *pDeviceObject, _IRP *pIrp, void *pContext)
+{
+  if ( !pContext )
+    return STATUS_UNSUCCESSFUL;
+…
+  KeSetEvent((pContext + 16), 8, 0);
+  return STATUS_SUCCESS;
+}
+
+Since the IRP is synchronous, it is threaded which means I/O Manager has to complete it in the context of the original queueing thread.
+If completion is done in an arbitrary thread context, I/O Manager queues an APC to do final operations with the IRP and since the IOCTL
+code 0xDEAFF1F0 indicated READ/WRITE and METHOD_BUFFERED access, the output buffer would have to be copied into the destination
+buffer memory for which is freed already:
+2: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffffa481`28571448 fffff802`e42365f4 nt!KeBugCheckEx
+01 ffffa481`28571450 fffff802`e40c992a nt!MiSystemFault+0x1002d4
+02 ffffa481`28571500 fffff802`e41fef72 nt!MmAccessFault+0xa7a
+03 ffffa481`285716f0 fffff802`e4201880 nt!KiPageFault+0x132
+04 ffffa481`28571888 fffff802`e40b94f9 nt!memcpy+0x80
+05 ffffa481`28571890 fffff802`e40fecdd nt!IopCompleteRequest+0x629
+06 ffffa481`28571980 fffff802`e40fd645 nt!KiDeliverApc+0x13d
+07 ffffa481`28571a10 fffff802`e40fce51 nt!KiSwapThread+0x345
+08 ffffa481`28571ad0 fffff802`e40f24d4 nt!KiCommitThreadWait+0x101
+09 ffffa481`28571b70 fffff802`e40f20a0 nt!KeRemovePriQueue+0x1e4
+0a ffffa481`28571c00 fffff802`e4152957 nt!ExpWorkerThread+0x80
+0b ffffa481`28571c90 fffff802`e41fab26 nt!PspSystemThreadStartup+0x47
+0c ffffa481`28571ce0 00000000`00000000 nt!KiStartSystemThread+0x16
+
+The correct implantation would need to pass the event to IoBuildDeviceIoControlRequest and let I/O Manager signal it (instead of completion routine) when copy operation is complete and IRP is freed.
+This is a memory corruption caused by the IntcSST.SYS driver:
+2: kd> lmvi mIntcSST
+Browse full module list
+start             end                 module name
+fffff800`6e240000 fffff800`6e2dd000   IntcSST    (private pdb symbols)  IntcSST.sys
+    Symbol file: d:\symcache\IntcSST.pdb\7F37537C686B44C7965FFC707D9B95C11\IntcSST.pdb
+    Image path: \SystemRoot\system32\DRIVERS\IntcSST.sys
+    Image name: IntcSST.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Tue Aug  9 05:53:31 2016 (57A9D24B)
+    CheckSum:         000A8A57
+    ImageSize:        0009D000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4

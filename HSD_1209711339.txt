@@ -1,0 +1,39 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209711339/main
+[AUTHOR]:	Joel Faber
+
+[ANALYSYS]:	Remove device function fails to terminate loop with now invalid data
+[BUGCHECK]:	Debug
+
+Call stack of thread ffffad828d72c040:
+0000000e`afbfe3b0 00007ffb`bab2e0ce : 00000000`00000000 00000000`00000000 0000014b`73e615f0 00000000`00000000 : ntdll!RtlDispatchException+0x586 [minkernel\ntos\rtl\amd64\exdsptch.c @ 564] 
+0000000e`afbfeac0 00007ffb`948ace28 : 0000014b`73d70000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!KiUserExceptionDispatch+0x2e (TrapFrame @ 0000000e`afbfeee8) [d:\rs2\minkernel\ntos\rtl\amd64\trampoln.asm @ 715] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_String_val<std::_Simple_types<unsigned short> >::_Myptr+0x11 (Inline Function @ 00007ffb`948ace28) [internal\sdk\inc\ucrt\stl120\xstring @ 1631] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_String_alloc<std::_String_base_types<unsigned short,std::allocator<unsigned short> > >::_Myptr+0x11 (Inline Function @ 00007ffb`948ace28) [internal\sdk\inc\ucrt\stl120\xstring @ 1698] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::basic_string<unsigned short,std::char_traits<unsigned short>,std::allocator<unsigned short> >::_Equal+0x11 (Inline Function @ 00007ffb`948ace28) [internal\sdk\inc\ucrt\stl120\xstring @ 3358] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::operator==+0x11 (Inline Function @ 00007ffb`948ace28) [internal\sdk\inc\ucrt\stl120\xstring @ 3762] 
+0000000e`afbff140 00007ffb`948b16b4 : 0000014b`73e68d60 00007ffb`b74e436f 0000000e`afbff280 00000000`00000000 : sensorservice!BrightnessManager::RemoveDevice+0x9c [onecoreuap\drivers\mobilepc\sensors\convergence\services\brightness\lib\brightnessmanager.cpp @ 1811] 
+0000000e`afbff210 00007ffb`948b46e7 : 00007ffb`00000000 0000014b`00000001 00000000`00000001 0000014b`73e68d88 : sensorservice!BrightnessManager::OnDeviceRemoved+0x54 [onecoreuap\drivers\mobilepc\sensors\convergence\services\brightness\lib\brightnessmanager.cpp @ 3784] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_pmf_pointer::_Call+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::invoke+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_ret<std::_Unforced,0>::_Call+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\type_traits @ 1575] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Call_binder+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\stl120\functional @ 816] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Binder<std::_Unforced,void (__cdecl BrightnessManager::*)(void *,bool,_GUID),BrightnessManager * const,std::_Ph<1> const &,std::_Ph<2> const &,_GUID const &>::operator()+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\stl120\functional @ 871] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_functor::_Call+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::invoke+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\type_traits @ 1529] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Invoker_ret<void,1>::_Call+0x23 (Inline Function @ 00007ffb`948b46e7) [internal\sdk\inc\ucrt\type_traits @ 1554] 
+0000000e`afbff250 00007ffb`948b7ca5 : 0000000e`afbff310 0000014b`00000000 00007ffb`00000000 0000014b`73e68d60 : sensorservice!std::_Func_impl<std::_Binder<std::_Unforced,void (__cdecl BrightnessManager::*)(void * __ptr64,bool,_GUID) __ptr64,BrightnessManager * __ptr64 const,std::_Ph<1> const & __ptr64,std::_Ph<2> const & __ptr64,_GUID const & __ptr64>,std::allocator<int>,void,void * __ptr64,bool>::_Do_call+0x27 [internal\sdk\inc\ucrt\stl120\functional @ 212] 
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : sensorservice!std::_Func_class<void,void *,bool>::operator()+0x38 (Inline Function @ 00007ffb`948b7ca5) [internal\sdk\inc\ucrt\stl120\functional @ 277] 
+0000000e`afbff2a0 00007ffb`948b79cb : 0000014b`73e38101 0000014b`73e6fa30 00000000`000003ec 0000014b`73e5b180 : sensorservice!PnpDeviceInstance::OnDeviceRemoval+0x6d [onecoreuap\drivers\mobilepc\sensors\convergence\common\pnpmanager\pnpmanager.cpp @ 570] 
+0000000e`afbff2d0 00007ffb`948a9030 : 0000014b`73e6fa58 0000000e`afbff380 00000000`00000000 00000000`00000280 : sensorservice!PnpDeviceInstance::Teardown+0x2b [onecoreuap\drivers\mobilepc\sensors\convergence\common\pnpmanager\pnpmanager.cpp @ 479] 
+0000000e`afbff310 00007ffb`948b4500 : 0000014b`73e37eb0 0000014b`73e37eb0 0000014b`73e458f8 0000014b`73e458f8 : sensorservice!BrightnessManager::~BrightnessManager+0x2e4 [onecoreuap\drivers\mobilepc\sensors\convergence\services\brightness\lib\brightnessmanager.cpp
+
+From this function:
+\\ntssl1\threshold$\15031.RS2.RELEASE\VHD\15031.0.170204-1546.rs2_release_mount\src\onecoreuap\drivers\mobilepc\sensors\convergence\services\Brightness\lib\BrightnessManager.cpp
+void BrightnessManager::OnDeviceRemoved(
+
+get a reference to the device ID:
+        const std::wstring& deviceId = m_prx->GetDeviceId();
+then call RemoveDevice passing in this reference:
+        hr = HRESULT_FROM_WIN32(RemoveDevice(deviceId));
+
+BrightnessManager::RemoveDevice loops through an array of objects and deletes the one that owns the string that was passed by reference to the function.  It doesn't terminate the loop, causing more comparisons to be performed using a reference to a now deleted string.  This causes the exception.

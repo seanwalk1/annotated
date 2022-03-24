@@ -1,0 +1,107 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22010605521
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 7E - SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e) (see attached memory dump):
+7: kd> !analyze -show
+SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: ffffffffc0000005, The exception code that was not handled
+Arg2: fffff805451426b3, The address that the exception occurred at
+Arg3: fffffe83cee06ce8, Exception Record Address
+Arg4: fffffe83cee06520, Context Record Address
+
+mssecflt!SecCleanRegistrationWatchdog hit a page fault that resulted in  the unhandled exception and subsequent Bugcheck:
+7: kd> k
+ # Child-SP          RetAddr           Call Site
+00 fffffe83`cee05518 fffff805`417452a2 nt!DbgBreakPointWithStatus
+01 fffffe83`cee05520 fffff805`41744b3b nt!KiBugCheckDebugBreak+0x12
+02 fffffe83`cee05580 fffff805`4160e157 nt!KeBugCheck2+0x9bb
+03 fffffe83`cee05c80 fffff805`41629a64 nt!KeBugCheckEx+0x107
+04 fffffe83`cee05cc0 fffff805`415c90af nt!PspSystemThreadStartup$filt$0+0x44
+05 fffffe83`cee05d00 fffff805`41616f0f nt!_C_specific_handler+0x9f
+06 fffffe83`cee05d70 fffff805`414c51a1 nt!RtlpExecuteHandlerForException+0xf
+07 fffffe83`cee05da0 fffff805`414cb096 nt!RtlDispatchException+0x2d1
+08 fffffe83`cee064f0 fffff805`4162006c nt!KiDispatchException+0x186
+09 fffffe83`cee06bb0 fffff805`4161c203 nt!KiExceptionDispatch+0x12c
+0a fffffe83`cee06d90 fffff805`451426b3 nt!KiPageFault+0x443
+0b fffffe83`cee06f20 fffff805`45146145 mssecflt!SecCleanRegistrationWatchdog+0xb
+0c fffffe83`cee06f60 fffff805`45146030 mssecflt!DriverEntry+0xcd
+0d fffffe83`cee06f90 fffff805`41cce81d mssecflt!GsDriverEntry+0x20
+0e fffffe83`cee06fc0 fffff805`41cce481 nt!IopInitializeBuiltinDriver+0x351
+0f fffffe83`cee070a0 fffff805`41ccd3d4 nt!PnpInitializeBootStartDriver+0x119
+10 fffffe83`cee07160 fffff805`41ccdb92 nt!PipInitializeCoreDriversByGroup+0xec
+11 fffffe83`cee07200 fffff805`41ce82ff nt!IopInitializeBootDrivers+0x146
+12 fffffe83`cee073b0 fffff805`41ceecc5 nt!IoInitSystemPreDrivers+0xb27
+13 fffffe83`cee074f0 fffff805`419e8deb nt!IoInitSystem+0x15
+14 fffffe83`cee07520 fffff805`4153c2a5 nt!Phase1Initialization+0x3b
+15 fffffe83`cee07550 fffff805`416156a8 nt!PspSystemThreadStartup+0x55
+16 fffffe83`cee075a0 00000000`00000000 nt!KiStartSystemThread+0x28
+
+The exception is caused by a NULL-dereference:
+7: kd> .frame /r b
+0b fffffe83`cee06f20 fffff805`45146145 mssecflt!SecCleanRegistrationWatchdog+0xb
+rax=fffff80541e4e9cc rbx=00000000c000035f rcx=0000000000000000
+rdx=fffff8054120aa70 rsi=ffffe1074148b960 rdi=0000000000000000
+rip=fffff805451426b3 rsp=fffffe83cee06f20 rbp=0000000000000000
+ r8=ffffe10741413a10  r9=4000000000000a20 r10=0000000000000000
+r11=fffff8054120b930 r12=fffff80545110000 r13=fffff8053e1180e0
+r14=fffff8053e13f7e0 r15=0000000000000000
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+mssecflt!SecCleanRegistrationWatchdog+0xb:
+fffff805`451426b3 4883b9e004000000 cmp     qword ptr [rcx+4E0h],0 ds:002b:00000000`000004e0=????????????????
+
+The mssecflt!SecData is not initialized and NULL:
+7: kd> u mssecflt!SecCleanRegistrationWatchdog  fffff805451426b3
+mssecflt!SecCleanRegistrationWatchdog:
+fffff805`451426a8 4883ec38        sub     rsp,38h
+fffff805`451426ac 488b0d25ebfdff  mov     rcx,qword ptr [mssecflt!SecData (fffff805`451211d8)]
+fffff805`451426b3 4883b9e004000000 cmp     qword ptr [rcx+4E0h],0
+7: kd> dq fffff805`451211d8 L1
+fffff805`451211d8  00000000`00000000
+
+This is because we are booting in Safe Mode and Driver entry fails early:
+7: kd> u  mssecflt!DriverEntry
+mssecflt!DriverEntry:
+fffff805`45146078 488bc4          mov     rax,rsp
+fffff805`4514607b 48895808        mov     qword ptr [rax+8],rbx
+fffff805`4514607f 48896810        mov     qword ptr [rax+10h],rbp
+fffff805`45146083 48897020        mov     qword ptr [rax+20h],rsi
+fffff805`45146087 57              push    rdi
+fffff805`45146088 4883ec20        sub     rsp,20h
+fffff805`4514608c 33ed            xor     ebp,ebp
+fffff805`4514608e 488bda          mov     rbx,rdx
+7: kd> u
+mssecflt!DriverEntry+0x19:
+fffff805`45146091 8bfd            mov     edi,ebp
+fffff805`45146093 48896818        mov     qword ptr [rax+18h],rbp
+fffff805`45146097 488bf1          mov     rsi,rcx
+fffff805`4514609a e8a144ffff      call    mssecflt!TraceLoggingRegisterEx_EtwRegister_EtwSetInformation (fffff805`4513a540)
+fffff805`4514609f 488b0562e4fdff  mov     rax,qword ptr [mssecflt!InitSafeBootMode (fffff805`45124508)]
+fffff805`451460a6 3928            cmp     dword ptr [rax],ebp
+fffff805`451460a8 760a            jbe     mssecflt!DriverEntry+0x3c (fffff805`451460b4)
+fffff805`451460aa bb5f0300c0      mov     ebx,0C000035Fh
+7: kd> dd poi(mssecflt!InitSafeBootMode) L1
+fffff805`41e4e9cc  00000001
+7: kd> !error 0C000035Fh
+Error code: (NTSTATUS) 0xc000035f (3221226335) - The driver was not loaded because the system is booting into safe mode.
+7: kd> .frame /r c
+0c fffffe83`cee06f60 fffff805`45146030 mssecflt!DriverEntry+0xcd
+rax=fffff80541e4e9cc rbx=00000000c000035f rcx=0000000000000000
+rdx=fffff8054120aa70 rsi=ffffe1074148b960 rdi=0000000000000000
+rip=fffff80545146145 rsp=fffffe83cee06f60 rbp=0000000000000000
+ r8=ffffe10741413a10  r9=4000000000000a20 r10=0000000000000000
+r11=fffff8054120b930 r12=fffff80545110000 r13=fffff8053e1180e0
+r14=fffff8053e13f7e0 r15=0000000000000000
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+mssecflt!DriverEntry+0xcd:
+fffff805`45146145 e8723bffff      call    mssecflt!SecFreeGlobals (fffff805`45139cbc)
+
+So this is an issue in mssecflt – it should not attempt to clean up uninitialized global data (which can happen in early exit).
+Separately – if driver has global environment dependency, it should be tested in a variation of such environments.
+

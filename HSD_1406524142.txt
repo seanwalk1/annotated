@@ -1,0 +1,211 @@
+[BUG]:		https://hsdes.intel.com/resource/1406524142
+[AUTHOR]:	Mark Alward
+
+[ANALYSIS]:
+
+This is a bugcheck 9F caused by a deadlock in sdstor.
+
+7: kd> !analyze -v
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffb6087322e8d0, Physical Device Object of the stack
+Arg3: ffff87803048f7f0, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffb6087632b4f0, The blocked IRP
+
+Looking at the blocked Irp:
+
+7: kd> !irp ffffb6087632b4f0
+Irp is active with 6 stacks 4 is current (= 0xffffb6087632b698)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffb608732282a0 00000000 fffff8071f394570-00000000 Success Error Cancel pending
+	       \Driver\Disk	partmgr!PmPowerCompletion
+			Args: 00014400 00000001 00000004 00000002
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffb60873227040 00000000 fffff801c9ef10b0-ffffb6086dace7a0 Success Error Cancel pending
+	       \Driver\partmgr	nt!PopRequestCompletion
+			Args: 00014400 00000001 00000004 00000002
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffb6086dace7a0    
+
+			Args: 00000000 00000000 00000000 00000000
+			
+From the current stack location, this is an IRP_MN_SET_POWER for D3. The D3 is in response to the 
+system going to S3:
+			
+7: kd> dt nt!_IO_STACK_LOCATION 0xffffb6087632b698 Parameters.Power.State.
+   +0x008 Parameters              : 
+      +0x000 Power                   : 
+         +0x010 State                   : 
+            +0x000 SystemState             : 4 ( PowerSystemSleeping3 )
+            +0x000 DeviceState             : 4 ( PowerDeviceD3 )
+			
+To understand why the Irp is stalled in disk.sys, we have to look at the routine 
+ClasspPowerDownCompletion() in classpnp. This routine gets called after each stage of D3
+processing completes and executes the next stage. We can look in the classpnp device
+extension to see which stage is currently executing:
+
+7: kd> dt classpnp!_FUNCTIONAL_DEVICE_EXTENSION ffffb608732283f0 PowerContext.PowerChangeState.PowerDown3
+   +0x3f0 PowerContext                             : 
+      +0x000 PowerChangeState                         : 
+         +0x000 PowerDown3                               : 2 ( PowerDownDeviceQuiesced3 )
+
+This stage sends an SRB with opcode SCSIOP_SYNCHRONIZE_CACHE. The purpose is to flush any volatile 
+hardware cache on the LU before powering down. Looking at the Srb (in PowerContext.Srb):
+
+7: kd> !storagekd.storsrb (0xffffb608732287e0 + 0x30)
+    [EXECUTE SCSI] SRB: 0xffffb60873228810  OriginalRequest: 0xffffb60873d83650  DataBuffer/Length: 0x0000000000000000 / 0x00000000
+    PTL: (0, 0, 0)  CDB: 35 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  OpCode: SCSI/SYNC   CACHE
+    SRB Status: 0x00[Pending]  SCSI Status: 0x00  Sense Buffer/Length: 0xffffb608720cbc40 / 0x12
+
+OriginalRequest is the Irp associated with the SRB. We can look at that Irp to see which driver currently
+owns it:
+
+7: kd> !irp 0xffffb60873d83650
+Irp is active with 4 stacks 2 is current (= 0xffffb60873d83768)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_INTERNAL_DEVICE_CONTROL(f), N/A(0)]
+            0 e1 ffffb608723e11b0 00000000 fffff80721969490-ffffb608732f2cb0 Success Error Cancel pending
+	       \Driver\sdbus	sdstor!SdStorScsiIoCompletion
+			Args: 00000000 00000068 00043073 ffffb608732f2cb0
+ [IRP_MJ_INTERNAL_DEVICE_CONTROL(f), N/A(0)]
+            0 e0 ffffb6087322e8d0 00000000 fffff807203f75f0-ffffb608732287e0 Success Error Cancel 
+	       \Driver\sdstor	CLASSPNP!ClasspPowerDownCompletion
+			Args: ffffb60873228810 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+
+It's owned by sdbus, so we need to figure out what sdbus has done with this Irp. From digging around
+in the sdbus device extension, I found the Irp queued in WorkEngine->IoIrpQueue:
+
+7: kd> dt sdbus!_SD_SOCKET 0xffffb608722bd000 WorkEngine.IoIrpQueue
+   +0x2b0 WorkEngine            : 
+      +0x030 IoIrpQueue            : _LIST_ENTRY [ 0xffffb608`73d836f8 - 0xffffb608`73d836f8 ]
+
+7: kd> ? 0xffffb608`73d836f8 - 0xa8  // Subtract offset of Irp.Tail.Overlay.ListEntry
+Evaluate expression: -81327557167536 = ffffb608`73d83650 // This matches the Irp address above
+
+A couple of flags in the WorkEngine structure also suggest sdbus has halted its queue:
+7: kd> dx -r1 (*((sdbus!_SD_WORK_ENGINE *)0xffffb608722bd2b0)).@"Flags"
+(*((sdbus!_SD_WORK_ENGINE *)0xffffb608722bd2b0)).@"Flags"                 [Type: <unnamed-tag>]
+    [+0x000 ( 0: 0)] Enabled          : 0x0 [Type: unsigned long]
+    [+0x000 ( 1: 1)] PowerActivated   : 0x0 [Type: unsigned long]
+
+sdbus halts this queue when going into a low power Dx state, or in response to various Pnp 
+requests. Since there aren't any Pnp requests inflight (!pnptriage), I looked at the D-states
+of the various devnodes involved.
+
+Sidenote: In storage port drivers, an "Adapter" is a controller device that disks are attached to (
+ex, a SATA controller). A "Logical Unit" (LU) is a disk attached to the controller. In the device node
+tree, the adapter is the parent device to the LU's. I'll be using these terms here.
+
+Looking at the Adapter devnode, it is in D2:
+
+7: kd> !devnode ffffb6087322a480
+DevNode 0xffffb6087322a480 for PDO 0xffffb608723e11b0
+  Parent 0xffffb6086d14ed20   Sibling 0000000000   Child 0xffffb60873228d20   
+  InstancePath is "SD\VID_15&OID_0000&PID_CJNB4R&REV_0.7\4&be0834f&0&0"
+  ServiceName is "sdstor"
+
+7: kd> dt nt!_DEVICE_OBJECT 0xffffb608723e11b0 DeviceObjectExtension->PowerFlags
+   +0x138 DeviceObjectExtension             : 
+      +0x010 PowerFlags                        : 0x30 // 3 means D2
+
+Repeating these steps for the Logical Unit devnode shows it is in D0. So we have:
+
+	Adapter - D2
+	Logical Unit - D0
+	
+To recap what we know so far: The Logical Unit has a pending IRP_MN_SET_POWER to move it to D3.
+As part of D3 processing, a SCSIOP_SYNCHRONIZE_CACHE was sent to the logical unit. This request
+was queued in sdbus because the Adapter is in D2. So we have the immediate cause of the 9F bugcheck:
+
+	-> The logical unit is trying to go to D3, which requires sending commands to its
+     parent adapter. The parent adapter is already in D2, so these commands are queued and never
+	 complete.
+	 
+This leaves a couple of open questions:
+	1) Is this state where the adapter is in D2 and the LU is in D0 a valid state?
+	2) How did we get into this state?
+	3) Why doesn't the adapter power up when IO is submitted to it?
+	
+Question 1
+-----------
+
+	I would argue No based on the meaning of these D-states:
+	
+		LU D3 transition - Commands are issued to LU to flush cache and a START/STOP UNIT command
+			notifies the LU that it is about to be powered down.
+		Adapter D2 transition - For eMMC, a Sleep (CMD5) is issued to device. In particular, any cached
+			data is lost after CMD5.
+			
+		If the adapter is in D2 and the unit is in D0, it means the Sleep command has been issued but
+		the cache has not been flushed. So this combination of D-states means we may have lost cached 
+		data, making it a very bad state to be in.
+		
+Question 2
+-----------
+
+	I don't know what actually happened, but one possible sequence is this:
+	
+	1) The Adapter gets a IRP_MN_SET_POWER for system state S0. sdstor is the power-policy owner for 
+	   the Adapter, so it requests D0 for adapter.
+	2) Once the adapter is in D0, it becomes idle and sdstor requests D2 for the adapter(based on a PoFx 
+	   DevicePowerNotRequired callback).
+	3) The logical unit gets an IRP_MN_SET_POWER for system state S0. sdstor is the power-policy owner
+	   for the LU as well, so it requests D0 for the LU.
+			a) LU D0 transition doesn't require any hardware operations, so the adapter never becomes
+		       active and stays in D2.
+	4) The logical unit gets an IRP_MN_SET_POWER for system state S3. sdstor requests D3 for the unit. At this
+	   point we are in the bad (adapter D2, LU D0) state, so the D3 power irp deadlocks.
+	   
+	Basically, my theory is that a certain interleaving of runtime power management and Sx system 
+	power management operations led to the condition.
+	
+Question 3
+-----------
+
+	classpnp submits the SCSIOP_SYNCHRONIZE_CACHE and other D3 processing SRB's with two special flags:
+		SRB_FLAGS_D3_PROCESSING
+		SRB_FLAGS_BYPASS_LOCKED_QUEUE
+		
+	The first flag causes sdstor to not take an active reference - it doesn't call PoFxActivateComponent()
+	for the adapter, so the adapter will not go active in response to this IO.
+	
+	The second flag allows the IO to bypass the queue and be forwarded directly to the lower driver,
+	even though the queue is halted.
+	
+	The combination of these flags allows the IO to be forwarded to the adapter without first powering
+	it up.
+	
+
+	
+	  
+	   
+	
+
+
+

@@ -1,0 +1,116 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1405017405/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+From: Lin, Xinyue 
+Sent: Monday, May 9, 2016 2:45 AM
+To: Rouzanov, Ivan <ivan.rouzanov@intel.com>; Kong, Xiangan <xiangan.kong@intel.com>; Zhou, Hui Z <hui.z.zhou@intel.com>; Zhang, Lei L <lei.l.zhang@intel.com>; Zhang, Tommy <tommy.zhang@intel.com>; Liu, Jun Z <jun.z.liu@intel.com>; Li, Weir <weir.li@intel.com>; Guo, Donghai <donghai.guo@intel.com>; Hu, Liangsheng <liangsheng.hu@intel.com>
+Cc: Li, Bo <bo.li@intel.com>
+Subject: RE: [Urgent][Huawei-Hertz]0x9F BSOD during S4 Stress
+
+
+Hi Ivan,
+
+It looks like a binary semaphore deadlock issue here. Would you help to have a look into it?
+
+Some background as below.
+
+The camera driver separate S3/S4 control in a dedicated loop thread(HibernateLockThreadCallback).  PowerController::DispatchQueryPower and PowerController::DispatchSetPower sync themselves with the thread through binary semaphore.
+
+The work flow looks like below.  
+1)	S3/S4 query power routine
+2)	HibernateLockThreadCallback gets unblocked and set hibernate lock state. 
+3)	HibernateLockThreadCallback Signal the semaphore.
+4)	S3/S4 query power gets unblocked and quit. 
+Setpower for S3/S4 
+System sleep
+5)	System resumes and SetPower gets called.
+6)	HibernateLockThreadCallback gets unblocked and set hibernate unlock state. 
+7)	HibernateLockThreadCallback Signal the semaphore.
+8)	S3/S4 resume SetPower gets unblocked and quit. 
+
+When issue happens, step  2) in the while loop  captures and semaphore 7) signaled and step 8) in DispatchSetPower  gets  blocks forever. And finally a 9F bsod.
+
+
+
+
+This is caused by the lock leak:
+In this dump this call to release semaphore in HibernateLockThreadCallback is not present:
+
+    while (TRUE)
+    {
+2)	KeWaitForSingleObject(&m_HibernateWorkItemSemaphore, Executive, KernelMode, FALSE, NULL);
+        if (m_HibernateisInProgress == false)
+        {
+            DoTraceMessage(FLAG_LOG, "HibernateLockThreadCallback: break as m_HibernateisInProgress=false");
+            KeReleaseSemaphore(&m_HibernateWorkItemSemaphore, 0, 1, FALSE);
+            break;
+        }
+
+Here:
+  429 fffff801`00c7baaf ff15b3c90800    call    qword ptr [iacamera64!_imp_KeWaitForSingleObject (fffff801`00d08468)]
+  430 fffff801`00c7bab5 4180bd5803000000 cmp     byte ptr [r13+358h],0 ;        if (m_HibernateisInProgress == false)
+  430 fffff801`00c7babd 4c8d3dc4e51200  lea     r15,[iacamera64!WPP_GLOBAL_Control (fffff801`00daa088)]
+  430 fffff801`00c7bac4 bd01000000      mov     ebp,1
+  430 fffff801`00c7bac9 4c8d35e8cb0900  lea     r14,[iacamera64!WPP_a39a7189b07be38018315af8503e0619_Traceguids (fffff801`00d186b8)]
+  430 fffff801`00c7bad0 0f84da010000    je      iacamera64!PowerConfiguration::PowerController::HibernateLockThreadCallback+0x2b8 (fffff801`00c7bcb0)
+
+
+You can see that we just exit the function - there is no call to release semaphore:
+iacamera64!PowerConfiguration::PowerController::HibernateLockThreadCallback+0x2b8 [c:\camerachr\vieddrv-trunk\camerasw\source\camera\platform\skycam\iacamera\powercontroller.cpp @ 432]:
+  432 fffff801`00c7bcb0 488b0dd1e31200  mov     rcx,qword ptr [iacamera64!WPP_GLOBAL_Control (fffff801`00daa088)]
+  432 fffff801`00c7bcb7 493bcf          cmp     rcx,r15
+  432 fffff801`00c7bcba 7419            je      iacamera64!PowerConfiguration::PowerController::HibernateLockThreadCallback+0x2dd (fffff801`00c7bcd5)  Branch
+
+iacamera64!PowerConfiguration::PowerController::HibernateLockThreadCallback+0x2c4 [c:\camerachr\vieddrv-trunk\camerasw\source\camera\platform\skycam\iacamera\powercontroller.cpp @ 432]:
+  432 fffff801`00c7bcbc 8b412c          mov     eax,dword ptr [rcx+2Ch]
+  432 fffff801`00c7bcbf 4084c5          test    bpl,al
+  432 fffff801`00c7bcc2 7411            je      iacamera64!PowerConfiguration::PowerController::HibernateLockThreadCallback+0x2dd (fffff801`00c7bcd5)  Branch
+
+iacamera64!PowerConfiguration::PowerController::HibernateLockThreadCallback+0x2cc [c:\camerachr\vieddrv-trunk\camerasw\source\camera\platform\skycam\iacamera\powercontroller.cpp @ 432]:
+  432 fffff801`00c7bcc4 488b4918        mov     rcx,qword ptr [rcx+18h]
+  432 fffff801`00c7bcc8 ba15000000      mov     edx,15h
+  432 fffff801`00c7bccd 4d8bc6          mov     r8,r14
+  432 fffff801`00c7bcd0 e847a90000      call    iacamera64!WPP_SF_ (fffff801`00c8661c)
+
+iacamera64!PowerConfiguration::PowerController::HibernateLockThreadCallback+0x2dd [c:\camerachr\vieddrv-trunk\camerasw\source\camera\platform\skycam\iacamera\powercontroller.cpp @ 471]:
+  471 fffff801`00c7bcd5 488d4c2438      lea     rcx,[rsp+38h]
+  471 fffff801`00c7bcda e8c1a10000      call    iacamera64!CAutoTracer::~CAutoTracer (fffff801`00c85ea0)
+  471 fffff801`00c7bcdf 488b4c2440      mov     rcx,qword ptr [rsp+40h]
+  471 fffff801`00c7bce4 4833cc          xor     rcx,rsp
+  471 fffff801`00c7bce7 e874ed0200      call    iacamera64!__security_check_cookie (fffff801`00caaa60)
+  471 fffff801`00c7bcec 4c8d5c2450      lea     r11,[rsp+50h]
+  471 fffff801`00c7bcf1 498b5b38        mov     rbx,qword ptr [r11+38h]
+  471 fffff801`00c7bcf5 498b6b40        mov     rbp,qword ptr [r11+40h]
+  471 fffff801`00c7bcf9 498b7348        mov     rsi,qword ptr [r11+48h]
+  471 fffff801`00c7bcfd 498be3          mov     rsp,r11
+  471 fffff801`00c7bd00 415f            pop     r15
+  471 fffff801`00c7bd02 415e            pop     r14
+  471 fffff801`00c7bd04 415d            pop     r13
+  471 fffff801`00c7bd06 415c            pop     r12
+  471 fffff801`00c7bd08 5f              pop     rdi
+  471 fffff801`00c7bd09 c3              ret
+
+So next time we are trying to wait and DispatchPower waits too already:
+
+2989 [1]0004.1208::05/09/2016-17:08:25.862.308500 [iacamera]PowerConfiguration::PowerController::DispatchSetPower+
+2990 [2]0004.1208::05/09/2016-17:08:25.862.328800 [iacamera]Power state changes request during Wake up from 4 to 1!
+3000 [3]0004.0268::05/09/2016-17:08:25.862.338300 [iacamera]IRQL Before Releasing Lock 1
+3003 [3]0004.0268::05/09/2016-17:08:25.862.340300 [iacamera]IRQL After Releasing Lock 0
+3004 [3]0004.0268::05/09/2016-17:08:25.862.341000 [iacamera]HibernateLockThreadCallback: break as m_HibernateisInProgress=false
+3005 [3]0004.0268::05/09/2016-17:08:25.862.341000 [iacamera]PowerConfiguration::PowerController::HibernateLockThreadCallback-
+3006 [3]0004.0268::05/09/2016-17:08:25.862.342300 [iacamera]PowerConfiguration::PowerController::HibernateLockThreadCallback+
+
+So he is the sequence:
+DispatchPower comes in - calls ReleaseSemaphore at point 5 but does not yet start to wait at point 8 - it is about to, but not quite yet.
+This unblocks the HibernateLockThreadCallback at point 6. It does what it does, releases semaphore at point 7 and goes at the beginning of the loop.
+Now the HibernateLockThreadCallback acquires semaphore again, at point 2, observes HibernateInProgress as false and exits without releasing the semaphore - see 3004 & 3005 in the log.
+Now see 3006 in the log - the HibernateLockThreadCallback enters the loop again and starts to wait on the semaphore. At this point DispatchPower also starts to wait on the semaphore at point 8.
+
+So now you have deadlock - 2 threads waiting on the same semaphore because you had lock leak.
+You can see - in the source code you have 3 calls to ReleaseSemaphore, but only 2 in assembly. One is missing - that's the one I pointed to above and that's the leak.
+
+Let me know if you have any questions.
+Thanks,
+Ivan.

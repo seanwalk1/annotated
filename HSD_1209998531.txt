@@ -1,0 +1,208 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209998531
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is DRIVER_IRQL_NOT_LESS_OR_EQUAL – Bugcheck D1:
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If kernel debugger is available get stack backtrace.
+Arguments:
+Arg1: 0000000000000020, memory referenced
+Arg2: 0000000000000002, IRQL
+Arg3: 0000000000000001, value 0 = read operation, 1 = write operation
+Arg4: fffff80bf5d17f3a, address which referenced memory
+
+The System has crashed because of the Page Fault (#PF) exception while running at elevated IRQL:
+3: kd> !irql
+Debugger saved IRQL for processor 0x3 -- 2 (DISPATCH_LEVEL)
+3: kd> kV 
+ # Child-SP          RetAddr           : Args to Child                                                           : Call Site
+00 ffffdb81`9cabab28 fffff801`f32897b2 : 00000000`00000020 00000000`0000000a ffffdb81`9cabac90 fffff801`f3172470 : nt!DbgBreakPointWithStatus
+01 ffffdb81`9cabab30 fffff801`f3289062 : 00000000`00000003 ffffdb81`9cabac90 fffff801`f3208dd0 00000000`000000d1 : nt!KiBugCheckDebugBreak+0x12
+02 ffffdb81`9cabab90 fffff801`f31fb737 : 00000000`00000002 fffff80b`00000000 00007f79`9e9bef68 00000000`00000801 : nt!KeBugCheck2+0x922
+03 ffffdb81`9cabb2a0 fffff801`f32069a9 : 00000000`0000000a 00000000`00000020 00000000`00000002 00000000`00000001 : nt!KeBugCheckEx+0x107
+04 ffffdb81`9cabb2e0 fffff801`f3204f7d : 00000000`000000b0 00000000`00000200 ffff8086`61641090 fffff80b`f5d49e18 : nt!KiBugCheckDispatch+0x69
+05 ffffdb81`9cabb420 fffff80b`f5d17f3a : 00000000`00000002 ffff8086`604ba1c0 ffff8086`5d3b6770 ffff8086`6059a090 : nt!KiPageFault+0x23d (TrapFrame @ ffffdb81`9cabb420)
+06 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxObject::_ToHandle+0x4 (Inline Function @ fffff80b`f5d17f3a)
+07 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxObject::GetObjectHandleUnchecked+0xb (Inline Function @ fffff80b`f5d17f3a)
+08 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxObject::GetObjectHandle+0xb (Inline Function @ fffff80b`f5d17f3a)
+09 ffffdb81`9cabb5b0 fffff80b`f9730ac3 : 00000000`00000002 ffff8086`5d3b6090 ffffdb81`9cabb6f9 00000000`c0000001 : Wdf01000!imp_WdfIoQueueCreate+0x15a
+0a (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : UDE!WdfIoQueueCreate+0x25 (Inline Function @ fffff80b`f9730ac3)
+0b ffffdb81`9cabb640 fffff80b`f9730f39 : ffff8086`6507a5c0 ffff8086`65085610 ffffdb81`9cabb8d0 ffff8086`6507a5c0 : UDE!SetupUsbEndpoint+0x38f
+0c ffffdb81`9cabb760 fffff80b`f97774e4 : ffffdb81`00000200 00000000`00000060 00000000`00000060 ffff8086`000003ec : UDE!UsbDeviceEvtEndpointAdd+0x115
+0d ffffdb81`9cabb7d0 fffff80b`f977706d : 00007f79`a2c49f68 00007f79`9af85ae8 00007f79`95c21ce8 ffff8086`699f0ca8 : udecx+0x74e4
+0e ffffdb81`9cabb970 fffff80b`f979be78 : ffff8086`699f0ca8 fffff80b`f8c61a70 ffff8086`654381b8 00000000`00000000 : udecx+0x706d
+0f ffffdb81`9cabb9b0 fffff80b`f8c5fbb4 : ffff8086`654380d0 ffff8086`61f51300 00000000`00000000 fffff80b`f8c48e03 : ucx01000!Endpoint_Create+0x128
+10 ffffdb81`9cabbab0 fffff80b`f8c5ca10 : ffff8086`60a8fb20 ffff8086`60a23150 00000000`00000fdd fffff80b`f8c493e1 : UsbHub3!HUBUCX_CreateEndpointsInUCX+0xd8
+11 ffffdb81`9cabbb30 fffff80b`f8c4953f : 00000000`00000fed 00000000`65467cc0 00000000`00000000 ffff8086`654380d0 : UsbHub3!HUBDSM_CreatingNewEndpoints+0x10
+12 ffffdb81`9cabbb60 fffff80b`f8c4a664 : 00000000`00000001 ffff8086`00000fdd fffff80b`f8c9bb10 00000000`00000fdd : UsbHub3!HUBSM_ExecuteEntryFunctionsAndPushPopStateMachinesForCurrentState+0x4b
+13 ffffdb81`9cabbbf0 fffff80b`f8c4a03b : 00001f80`00000fa0 0053002b`00001f00 00000000`00000fbf fffff801`f31ce800 : UsbHub3!HUBSM_RunStateMachine+0x5fc
+14 ffffdb81`9cabbc80 fffff80b`f8c51c6e : 00000000`00000fbf 00007f79`9af79100 ffff8086`6505aca0 ffff8086`65086e60 : UsbHub3!HUBSM_AddEvent+0x3f3
+15 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : UsbHub3!HUBSM_AddDsmEvent+0x12 (Inline Function @ fffff80b`f8c51c6e)
+16 ffffdb81`9cabbcd0 fffff80b`f5ceeac7 : 00000000`00000000 fffff801`00001f80 ffff8086`65086e60 00000000`00000000 : UsbHub3!HUBPDO_EvtIoInternalDeviceControl+0x34e
+17 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxIoQueueIoInternalDeviceControl::Invoke+0x40 (Inline Function @ fffff80b`f5ceeac7)
+18 ffffdb81`9cabbd60 fffff80b`f5cedc8f : ffff8086`62d8c9f0 ffff8086`6a4d6200 00000000`00000001 fffff801`f30bcdfb : Wdf01000!FxIoQueue::DispatchRequestToDriver+0x297
+19 ffffdb81`9cabbe10 fffff80b`f5d152cf : ffff8086`62d8c9f0 00000000`00000000 00000000`00000000 fffff801`00000436 : Wdf01000!FxIoQueue::DispatchEvents+0x3bf
+1a (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxIoQueue::QueueRequest+0x87 (Inline Function @ fffff80b`f5d152cf)
+1b (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgIo::DispatchStep2+0x4b6 (Inline Function @ fffff80b`f5d152cf)
+1c ffffdb81`9cabbef0 fffff80b`f8c54a4c : 00007f79`9afa5648 ffff8086`65086e60 00000000`00220003 ffffed8d`90966f28 : Wdf01000!imp_WdfDeviceWdmDispatchIrpToIoQueue+0x62f
+1d (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : UsbHub3!WdfDeviceWdmDispatchIrpToIoQueue+0x2f (Inline Function @ fffff80b`f8c54a4c)
+1e ffffdb81`9cabbfd0 fffff80b`f5ce70a9 : ffff8086`650af4b0 00000000`00000000 ffff8086`6505a9b0 00000000`0000000f : UsbHub3!HUBPDO_EvtDeviceWdmIrpPreprocess+0xe3c
+1f (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!PreprocessIrp+0x34 (Inline Function @ fffff80b`f5ce70a9)
+20 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!DispatchWorker+0x5b3 (Inline Function @ fffff80b`f5ce70a9)
+21 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxDevice::Dispatch+0x5bf (Inline Function @ fffff80b`f5ce70a9)
+22 ffffdb81`9cabc090 fffff801`f31c0f3a : ffff8086`650af4b0 fffff801`f37ef4a0 ffffed8d`00000001 ffffed8d`00000000 : Wdf01000!FxDevice::DispatchWithLock+0x629
+23 ffffdb81`9cabc180 fffff801`f37e3d4d : ffffed8d`90966bd0 ffff8086`650af4b0 00000000`1004bf0a ffff8086`6538c620 : nt!IopfCallDriver+0x56
+24 ffffdb81`9cabc1c0 fffff801`f3232277 : ffff8086`683f15b0 00000000`00000001 00000000`1004bf01 ffff8086`650c6980 : nt!IovCallDriver+0x245
+25 ffffdb81`9cabc200 fffff80b`fa9f4da2 : ffff8086`683f15b0 00000000`00000001 ffffed8d`90966bd0 00000000`00000070 : nt!IofCallDriver+0x124627
+26 (Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : usbccgp!CallDriverSync+0x3f (Inline Function @ fffff80b`fa9f4da2)
+27 ffffdb81`9cabc240 fffff80b`fa9d7339 : 00000000`1004bf0a ffff8086`6538c620 00000000`00000000 ffff8086`683f1708 : usbccgp!CallNextDriverSync+0x62
+28 ffffdb81`9cabc2b0 fffff80b`fa9f4e5a : 00000000`00000002 ffff8086`6a4a4980 ffff8086`6a4a4980 ffff8086`65449100 : usbccgp!SubmitUrb+0x79
+29 ffffdb81`9cabc2e0 fffff80b`fa9f3b65 : 00000000`00000000 00000000`00000000 00000000`00000000 ffff8086`683f1708 : usbccgp!ParentSelectConfiguration+0x4a
+2a ffffdb81`9cabc350 fffff80b`fa9f184c : 00000000`00000008 ffffdb81`9cabc4a0 ffff8086`683f1708 ffffdb81`9cabc4a8 : usbccgp!StartParentFdo+0x335
+2b ffffdb81`9cabc410 fffff80b`fa9f11ae : ffffed8d`909e0b80 ffff8086`683f1700 ffffed8d`909e0b80 ffff8086`683f1708 : usbccgp!DispatchFdoPnp+0x19c
+2c ffffdb81`9cabc470 fffff80b`fa9d121e : 00000000`00000000 00000000`00000028 ffffed8d`43627355 fffff801`00000324 : usbccgp!USBC_PnP+0xfe
+2d ffffdb81`9cabc4d0 fffff801`f31c0f3a : ffff8086`683f15b0 fffff801`f37ef401 ffffed8d`00000000 ffffed8d`909e0b80 : usbccgp!USBC_Dispatch+0x15e
+2e ffffdb81`9cabc590 fffff801`f37e3d4d : ffffed8d`909e0b80 ffff8086`683f15b0 ffff8086`683f12f0 fffff801`f37ef99d : nt!IopfCallDriver+0x56
+2f ffffdb81`9cabc5d0 fffff801`f3232277 : ffffed8d`909e0b80 ffffdb81`9cabc730 ffff8086`650af4b0 ffff8086`687d63f0 : nt!IovCallDriver+0x245
+30 ffffdb81`9cabc610 fffff801`f34b6232 : ffff8086`650af4b0 ffff8086`683f12f0 ffff8086`6022f040 fffff801`f33bf308 : nt!IofCallDriver+0x124627
+31 ffffdb81`9cabc650 fffff801`f30911c0 : ffff8086`650af4b0 00000000`00000000 ffff8086`683f12f0 fffff801`00000000 : nt!PnpAsynchronousCall+0xea
+32 ffffdb81`9cabc690 fffff801`f319ee14 : 00000000`00000000 ffff8086`650af4b0 fffff801`f3092330 fffff801`f3092330 : nt!PnpSendIrp+0x54
+33 ffffdb81`9cabc700 fffff801`f34b9493 : ffff8086`6505a3f0 ffff8086`683f12f0 00000000`00000000 00000000`00000500 : nt!PnpStartDevice+0x88
+34 ffffdb81`9cabc790 fffff801`f35c7d73 : ffff8086`6505a3f0 ffffdb81`9cabc960 00000000`00000000 00000000`00010282 : nt!PnpStartDeviceNode+0xdb
+35 ffffdb81`9cabc820 fffff801`f34d3b14 : ffff8086`6505a3f0 00000000`00000001 00000000`00000002 ffff8086`60ccf2a0 : nt!PipProcessStartPhase1+0x53
+36 ffffdb81`9cabc860 fffff801`f358f673 : ffff8086`654072a0 ffffdb81`9cabcb99 00000000`00000010 fffff801`f358f5c8 : nt!PipProcessDevNodeTree+0x428
+37 ffffdb81`9cabcae0 fffff801`f316ff43 : ffff8001`00000003 00000000`00000000 ffff8086`654072a0 ffff8086`654072a0 : nt!PiProcessReenumeration+0xab
+38 ffffdb81`9cabcb30 fffff801`f311c148 : ffff8086`6022f040 fffff801`f33d9a60 fffff801`f346e380 ffff8086`6002b858 : nt!PnpDeviceActionWorker+0x1b3
+39 ffffdb81`9cabcc00 fffff801`f30b4017 : ffffdb81`9bf95180 00000000`00000080 ffff8086`5c072500 ffff8086`6022f040 : nt!ExpWorkerThread+0xd8
+3a ffffdb81`9cabcc90 fffff801`f3200b06 : ffffdb81`9bf95180 ffff8086`6022f040 fffff801`f30b3fd0 00000000`00000000 : nt!PspSystemThreadStartup+0x47
+3b ffffdb81`9cabcce0 00000000`00000000 : ffffdb81`9cabd000 ffffdb81`9cab7000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16
+
+The #PF exception is caused by an attempt to dereference invalid pointer:
+3: kd> .trap ffffdb81`9cabb420
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=0000000000000000 rbx=0000000000000000 rcx=ffff80865d3b6648
+rdx=ffff808660598202 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff80bf5d17f3a rsp=ffffdb819cabb5b0 rbp=ffffdb819cabb6e0
+ r8=ffff80865d3b66d0  r9=ffff808660598220 r10=ffff80866022f040
+r11=ffffdb819cabb468 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+Wdf01000!imp_WdfIoQueueCreate+0x15a:
+fffff80b`f5d17f3a 49891f          mov     qword ptr [r15],rbx ds:00000000`00000000=????????????????
+3: kd> r cr2
+Last set context:
+cr2=0000000000000020
+
+The invalid pointer in this case is Queue parameter UDE!SetupUsbEndpoint has passed to WDF WdfIoQueueCreate API:
+3: kd> ub fffff80b`f9730ac3
+UDE!SetupUsbEndpoint+0x364:
+fffff80b`f9730a98 0f8439010000    je      UDE!SetupUsbEndpoint+0x4a3 (fffff80b`f9730bd7)
+fffff80b`f9730a9e 488b05eb220300  mov     rax,qword ptr [UDE!WdfFunctions_01015 (fffff80b`f9762d90)]
+fffff80b`f9730aa5 4c8d4de7        lea     r9,[rbp-19h]
+fffff80b`f9730aa9 498b5540        mov     rdx,qword ptr [r13+40h]
+fffff80b`f9730aad 4c8d4587        lea     r8,[rbp-79h]
+fffff80b`f9730ab1 488b0dd0220300  mov     rcx,qword ptr [UDE!WdfDriverGlobals (fffff80b`f9762d88)]
+fffff80b`f9730ab8 4c89642420      mov     qword ptr [rsp+20h],r12
+fffff80b`f9730abd ff90c0040000    call    qword ptr [rax+4C0h]
+3: kd> .frame /r 2
+02 ffffdb81`9cabb640 fffff80b`f9730f39 UDE!SetupUsbEndpoint+0x38f
+rax=0000000000000000 rbx=0000000000000002 rcx=ffff80865d3b6648
+rdx=ffff808660598202 rsi=00000000c0000001 rdi=0000000000000000
+rip=fffff80bf9730ac3 rsp=ffffdb819cabb640 rbp=ffffdb819cabb6f9
+ r8=ffff80865d3b66d0  r9=ffff808660598220 r10=ffff80866022f040
+r11=ffffdb819cabb468 r12=0000000000000020 r13=ffff80866507a5c0
+r14=ffff8086699f0ca8 r15=0000000000000048
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=0000  es=0000  fs=0000  gs=0000             efl=00010202
+UDE!SetupUsbEndpoint+0x38f:
+fffff80b`f9730ac3 8bf0            mov     esi,eax
+
+Even though Queue parameter of the WDF WdfIoQueueCreate API is optional (https://msdn.microsoft.com/en-us/library/windows/hardware/ff547401(v=vs.85).aspx),
+still it must be either NULL or a valid pointer. In this case the value is 0x20 which is not valid of course:
+3: kd> !pte 0000000000000020 
+                                           VA 0000000000000020
+PXE at FFFFFB7DBEDF6000    PPE at FFFFFB7DBEC00000    PDE at FFFFFB7D80000000    PTE at FFFFFB0000000000
+contains 0A000001415F3867  contains 0000000000000000
+pfn 1415f3    ---DA--UWEV  not valid
+
+The reason invalid pointer is passed to WDF WdfIoQueueCreate API is because endpointQueue is used as location inside UsbFnContext and GetFunctionContextByEndpointAddress() have returned NULL for UsbFnContext:
+3: kd> .frame /r 2
+02 ffffdb81`9cabb640 fffff80b`f9730f39 UDE!SetupUsbEndpoint+0x38f
+rax=0000000000000000 rbx=0000000000000002 rcx=ffff80865d3b6648
+rdx=ffff808660598202 rsi=00000000c0000001 rdi=0000000000000000
+rip=fffff80bf9730ac3 rsp=ffffdb819cabb640 rbp=ffffdb819cabb6f9
+ r8=ffff80865d3b66d0  r9=ffff808660598220 r10=ffff80866022f040
+r11=ffffdb819cabb468 r12=0000000000000020 r13=ffff80866507a5c0
+r14=ffff8086699f0ca8 r15=0000000000000048
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=0000  es=0000  fs=0000  gs=0000             efl=00010202
+UDE!SetupUsbEndpoint+0x38f:
+fffff80b`f9730ac3 8bf0            mov     esi,eax
+3: kd> dv /v
+@r13               UdeUsbDeviceContext = 0xffff8086`6507a5c0
+ffffdb81`9cabb670    pUdeUsbDeviceInit = 0xffffdb81`9cabb780
+@r14                EndpointDescriptor = 0xffff8086`699f0ca8
+ffffdb81`9cabb6e0      queueAttributes = struct _WDF_OBJECT_ATTRIBUTES
+@r15                         pEndpoint = 0x00000000`00000048
+ffffdb81`9cabb678              Context = 0x00000000`00000000
+@rdi                      UsbFnContext = 0x00000000`00000000
+<unavailable>     endpointQueueContext = <value unavailable>
+@esi                            status = 0n-1073741823
+@r12                     endpointQueue = 0x00000000`00000020
+ffffdb81`9cabb680          queueConfig = struct _WDF_IO_QUEUE_CONFIG
+<unavailable>                     type = <value unavailable>
+<unavailable>       WPP_GLOBAL_Control = <value unavailable>
+
+We can confirm that USB function context is NULL:
+3: kd> dt   UdeUsbDeviceContext Device
+Local var @ r13 Type _UDE_USB_DEVICE*
+   +0x050 Device : 0xffffed8d`907d0ea0 Descriptor::UsbDevice
+3: kd> dt 0xffffed8d`907d0ea0 Descriptor::UsbDevice FunctContext.
+UDE!Descriptor::UsbDevice
+   +0x138 FunctContext  : 
+      +0x000 __VFN_table : 
+      +0x008 Values        : 0xffffed8d`90928ff0  -> (null) 
+      +0x010 Count         : 1
+3: kd> dq 0xffffed8d`90928ff0 L1
+ffffed8d`90928ff0  00000000`00000000
+
+endpointQueue gets its invalid value as a consequence of the UsbFnContext being NULL because InterruptUrbQueue field offset in UsbFnContext is 0x20:
+
+      endpointQueue = &UsbFnContext->InterruptUrbQueue; 
+
+3: kd> dt UsbFnContext InterruptUrbQueue
+Local var @ rdi Type _USB_FN_CONTEXT*
+   +0x020 InterruptUrbQueue : Ptr64 WDFQUEUE__
+
+So endpointQueue is just NULL+0x20:
+3: kd> u fffff80b`f97308de L1
+UDE!SetupUsbEndpoint+0x1aa:
+fffff80b`f97308de 4c8d6720        lea     r12,[rdi+20h]
+
+And after it has been setup, it is simple passed to the WDF WdfIoQueueCreate API:
+3: kd> u fffff80b`f9730a9e L7
+UDE!WdfIoQueueCreate [inlined in UDE!SetupUsbEndpoint+0x36a]:
+fffff80b`f9730a9e 488b05eb220300  mov     rax,qword ptr [UDE!WdfFunctions_01015 (fffff80b`f9762d90)]
+fffff80b`f9730aa5 4c8d4de7        lea     r9,[rbp-19h]
+fffff80b`f9730aa9 498b5540        mov     rdx,qword ptr [r13+40h]
+fffff80b`f9730aad 4c8d4587        lea     r8,[rbp-79h]
+fffff80b`f9730ab1 488b0dd0220300  mov     rcx,qword ptr [UDE!WdfDriverGlobals (fffff80b`f9762d88)]
+fffff80b`f9730ab8 4c89642420      mov     qword ptr [rsp+20h],r12
+fffff80b`f9730abd ff90c0040000    call    qword ptr [rax+4C0h]
+3: kd> u poi(poi(fffff80b`f9762d90)+4c0) L1
+Wdf01000!imp_WdfIoQueueCreate:
+fffff80b`f5d17de0 48895c2408      mov     qword ptr [rsp+8],rbx
+
+So this is an issue if UDE.SYS driver – perhaps it has to check if UsbFnConext is NULL or not.

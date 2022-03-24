@@ -1,0 +1,155 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220231170
+[AUTHOR]:	Mark Alward
+
+[ANALYSYS]:	This is an issue with SD cards not detecting after S4.
+[BUGCHECK]:	Debug
+
+
+This is an issue with SD cards not detecting after S4. I expected it to be a GPIO
+issue based on prior issues of this type.
+
+I used !idt to find the secondary interrupt vector for the SD card detect interrupt,
+then went through all GPIO controllers using !gpiokd.clientlist to find which controller
+contained the GPIO pin configured to use this interrupt vector. It turns out 
+\Device\GPIO_4 owns the pin.
+
+!gpiokd shows the configuration of all GPIO pins on the \Device\GPIO_4 GPIO controller:
+
+1: kd> !gpiokd.gpioext 0xffffac8f0cf58310 1
+
+msgpioclx!_DEVICE_EXTENSION 0xffffac8f0cf58310 - [ \_SB.GPO3 ] [ \Device\GPIO_4 ]
+  WDFDevice: 0x00005370f30a7fd8    State: 8
+  Client Extn: 0xffffac8f0cf58710    msgpioclx!_GPIO_CLIENT_REGISTRATION_PACKET 0xffffac8f0cf58628
+  Total Pins: 0x1f    PinsPerBank: 0x1f
+  Flags: 0x61
+    MemoryMapped-DIRQL    IoRequests: PinDirect    IntAutoClear: No
+    EmulateDebouncing: Yes    EmulateActiveBoth: Yes
+    D3IdlePwrMgmt: No    FxPwrMgmt: No    DxTimeout: 0
+  Bank [0x0]: 0xffffac8f0d9fda60  Pins: [0x0, 0x1e]
+
+  --- Bank [0x0] ---
+  msgpioclx!_GPIO_BANK_ENTRY 0xffffac8f0d9fda60 - Bank ID: 0x0
+    GPIO Extension: 0xffffac8f0cf58310
+    Pins: [0x0, 0x1e]    Pin Count: 0x1f
+    Pin Table: 0xffffac8f0c61a7b0
+    Active: Yes    FState: FStateF0    Max FState: FStateF0
+    F1StateParameters:
+      TransitionLatency   : 0.0us
+      ResidencyRequirement: 0.0us
+      NominalPower        : 0uW
+    Gsiv: 0xe, Level, UnknownPolarity    Irql: 0x9    SyncIrql: 0x9
+
+      --- Pin [0x15] - Absolute Pin [0x15] ---
+      msgpioclx!_GPIO_PIN_INFORMATION_ENTRY 0xffffac8f0bb0e8b0
+        Mode: Interrupt 
+          Gsiv: 0x40b, Mode: Latched, Pol: ActiveBoth
+          Debounce: 0, Pull Config: 3
+          MaskCnt: 0, ClbkCxt: 0xffffac8f0bf2b000
+        Mode: Input
+          Debounce: 0, Pull Config: 3
+          Enable Count = 2
+
+      --- Pin [0x1b] - Absolute Pin [0x1b] ---
+      msgpioclx!_GPIO_PIN_INFORMATION_ENTRY 0xffffac8f0c61a690
+        Mode: Output
+          Drive Strength: 0, Pull Config: 0
+          Enable Count = 1
+
+This controller has 1 bank (banks are just groupings of pins on the controller).
+In this bank, pin 0x15 is used for SD card detect. It's configured for interrupt
+and input:
+
+-Interrupt: The pin generates an interrupt when its level changes. This
+ interrupt is forwarded to the sdbus driver.
+-Input: The pin level can be read by software. This allows sdbus to 
+ determine if a card is present (low level) or gone (high level).
+ 
+ 
+Dumping the GPIO_CLIENT_REGISTRATION_PACKET structure shows the callbacks that 
+the Intel GPIO miniport has registered with the GPIO class driver:
+ 
+1: kd> dt msgpioclx!_GPIO_CLIENT_REGISTRATION_PACKET 0xffffac8f0cf58628
+   +0x000 Version          : 3
+   +0x002 Size             : 0xd8
+   +0x004 Flags            : 0
+   +0x008 ControllerContextSize : 0x38
+   +0x010 Reserved         : 0
+   +0x018 CLIENT_PrepareController : 0xfffff80f`8a272e10
+   +0x020 CLIENT_ReleaseController : 0xfffff80f`8a2739c0     long  +0
+   +0x028 CLIENT_StartController : 0xfffff80f`8a273ba0     long  +0
+   +0x030 CLIENT_StopController : 0xfffff80f`8a273c40     long  +0
+   +0x038 CLIENT_QueryControllerBasicInformation : 0xfffff80f`8a2737b0     long  +0
+   +0x040 CLIENT_QuerySetControllerInformation : (null) 
+   +0x048 CLIENT_EnableInterrupt : 0xfffff80f`8a272d10     long  +0
+   +0x050 CLIENT_DisableInterrupt : 0xfffff80f`8a272c10     long  +0
+   +0x058 CLIENT_UnmaskInterrupt : 0xfffff80f`8a273cd0     long  +0
+   +0x060 CLIENT_MaskInterrupts : 0xfffff80f`8a272d90     long  +0
+   +0x068 CLIENT_QueryActiveInterrupts : 0xfffff80f`8a273730     long  +0
+   +0x070 CLIENT_ClearActiveInterrupts : 0xfffff80f`8a272a20     long  +0
+   +0x078 CLIENT_ConnectIoPins : 0xfffff80f`8a272aa0     long  +0
+   +0x080 CLIENT_DisconnectIoPins : 0xfffff80f`8a272c90     long  +0
+   +0x088 CLIENT_ReadGpioPins : 0xfffff80f`8a2738b0     long  +0
+   +0x088 CLIENT_ReadGpioPinsUsingMask : 0xfffff80f`8a2738b0     long  +0
+   +0x090 CLIENT_WriteGpioPins : 0xfffff80f`8a273d50     long  +0
+   +0x090 CLIENT_WriteGpioPinsUsingMask : 0xfffff80f`8a273d50     long  +0
+   +0x098 CLIENT_SaveBankHardwareContext : 0xfffff80f`8a273b10     void  +0
+   +0x0a0 CLIENT_RestoreBankHardwareContext : 0xfffff80f`8a273a80     void  +0
+   +0x0a8 CLIENT_PreProcessControllerInterrupt : (null) 
+   +0x0b0 CLIENT_ControllerSpecificFunction : 0xfffff80f`8a272b20     long  +0
+   +0x0b8 CLIENT_ReconfigureInterrupt : 0xfffff80f`8a273940     long  +0
+   +0x0c0 CLIENT_QueryEnabledInterrupts : 0xfffff80f`8a273830     long  +0
+   +0x0c8 CLIENT_ConnectFunctionConfigPins : (null) 
+   +0x0d0 CLIENT_DisconnectFunctionConfigPins : (null) 
+
+
+I set breakpoints on several of these routines:
+
+	CLIENT_MaskInterrupts
+	CLIENT_UnmaskInterrupt
+	CLIENT_EnableInterrupt
+	CLIENT_DisableInterrupt
+	CLIENT_StartController
+	CLIENT_StopController
+	
+As the system goes to S4, the interrupt pin I'm interested in (pin 0x15) is
+not masked or disabled (we don't hit either breakpoint). sdbus doesn't 
+explicitly disconnect the interrupt during S4, so this makes sense.
+
+CLIENT_StopController is called on the way down, and CLIENT_StartController is
+called on the way up. CLIENT_StopController has a "SaveContext" arg that was
+set to TRUE, so the driver should have left our interrupt enabled.
+
+However, once we get back to S0 sdbus no longer gets the GPIO interrupt
+on card insert:
+
+bp sdbus!SdbusGpioInterrupt
+g
+<breakpoint not hit>
+
+Next I found the location of the GPIO controller MMIO space and got the
+GPIO HAS from "\\ntssl1\users$\Abhishek\GPIO\BXT GPIO HAS r1.0.pdf":
+
+3: kd> !DevNode ffffd78f0a1a2010 2
+...
+CmResourceList at 0xffffe7831988d910  Version 1.1  Interface 0xf  Bus #0
+    Entry 0 - Memory (0x3) Device Exclusive (0x1)
+      Flags (0000) - READ_WRITE 
+      Range starts at 0x00000000d0c00000 for 0x4f8 bytes
+
+
+The GPIO controller has interrupt enable bits at offset 0x110. They are all
+0 right now:
+
+1: kd> !db (0x00000000d0c00000 + 0x100 + 0x10) L4
+#d0c00110 00 00 00 00 ................
+
+
+Comparing the same bits when the GPIO card detect pin was working before S4:
+
+3: kd> !db (0x00000000d0c00000 + 0x100 + 0x10) L4
+#d0c00110 00 00 20 00 .. ......l......
+
+The 21'st bit is set (0x15), corresponding to the SD card detect pin #.
+
+So the issue is that the Intel GPIO miniport did not save/restore controller
+context during S4.

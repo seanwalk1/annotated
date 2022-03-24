@@ -1,0 +1,226 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220194247
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	Unhandled exception - SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+[BUGCHECK]:	0x7E
+
+This is unhandled exception - SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e), see attached dump:
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: ffffffffc0000005, The exception code that was not handled
+Arg2: fffff803d97e5163, The address that the exception occurred at
+Arg3: ffffb580613a1c18, Exception Record Address
+Arg4: ffffb580613a1450, Context Record Address
+…
+
+The exception was caused by stornvme!NVMeCompleteSubmissionQueueRequests attempting to dereference a NULL-pointer:
+2: kd> .cxr ffffb580613a1450
+rax=0000000000000000 rbx=0000000000000000 rcx=ffffc780df719010
+rdx=ffffc780df719100 rsi=ffffc780df719010 rdi=0000000000000000
+rip=fffff803d97e5163 rsp=ffffb580613a1e50 rbp=0000000000000100
+ r8=0000000000000100  r9=0000000000000000 r10=ffffb580612c9760
+r11=ffffc780d5ea2040 r12=0000000000200008 r13=fffff80cd6e74000
+r14=0000000000000000 r15=ffffc780df719100
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+stornvme!NVMeCompleteSubmissionQueueRequests+0x3b:
+fffff803`d97e5163 48871c07        xchg    rbx,qword ptr [rdi+rax] ds:002b:00000000`00000000=????????????????
+2: kd> r cr2
+Last set context:
+cr2=0000000000000000
+
+The NULL-pointer in this case is pointer to array of submitted commands:
+2: kd> ub
+stornvme!NVMeCompleteSubmissionQueueRequests+0x1f:
+fffff803`d97e5147 448aa42480000000 mov     r12b,byte ptr [rsp+80h]
+fffff803`d97e514f 458bf1          mov     r14d,r9d
+fffff803`d97e5152 4c8bfa          mov     r15,rdx
+fffff803`d97e5155 418be8          mov     ebp,r8d
+fffff803`d97e5158 488bf1          mov     rsi,rcx
+fffff803`d97e515b 33ff            xor     edi,edi
+fffff803`d97e515d 498b4720        mov     rax,qword ptr [r15+20h]
+fffff803`d97e5161 33db            xor     ebx,ebx
+
+2: kd> dt SubmissionQueue CmdId
+Local var @ r15 Type _NVME_SUBMISSION_QUEUE*
+   +0x020 CmdId : (null)
+
+The device is being surprise removed:
+2: kd> k
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffb580`613a1e50 fffff803`d97e2052 stornvme!NVMeCompleteSubmissionQueueRequests+0x3b
+01 (Inline Function) --------`-------- stornvme!NVMeLunCompleteAllIORequests+0x7e
+02 ffffb580`613a1ea0 fffff80c`d6e36606 stornvme!NVMeHwUnitControl+0x102
+03 ffffb580`613a1ef0 fffff80c`d6e86d4d storport!RaCallMiniportUnitControl+0x32
+04 ffffb580`613a1f20 fffff80c`d6e41048 storport!RaUnitSurpriseRemovalIrp+0xad
+05 ffffb580`613a1f70 fffff80c`d6e24956 storport!RaUnitPnpIrp+0x1c6a8
+06 ffffb580`613a2000 fffff803`c4c6c349 storport!RaDriverPnpIrp+0x56
+07 (Inline Function) --------`-------- nt!IopfCallDriver+0x44
+08 ffffb580`613a2040 fffff80c`d51e975b nt!IofCallDriver+0x59
+09 (Inline Function) --------`-------- Wdf01000!FxIrp::CallDriver+0x10
+0a (Inline Function) --------`-------- Wdf01000!FxPkgFdo::_PnpPassDown+0x3d
+0b ffffb580`613a2080 fffff80c`d5217551 Wdf01000!FxPkgFdo::FireAndForgetIrp+0x5b
+0c (Inline Function) --------`-------- Wdf01000!FxPostProcessInfo::Evaluate+0x33caa
+0d ffffb580`613a20b0 fffff80c`d525a1b5 Wdf01000!FxPkgPnp::PnpProcessEvent+0x33df1
+0e ffffb580`613a2150 fffff80c`d525b739 Wdf01000!FxPkgPnp::PnpSurpriseRemoval+0x25
+0f ffffb580`613a2180 fffff80c`d51c78f2 Wdf01000!FxPkgFdo::_PnpSurpriseRemoval+0x9
+10 ffffb580`613a21b0 fffff80c`d51c805d Wdf01000!FxPkgPnp::Dispatch+0xc2
+11 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x510
+12 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0x51c
+13 ffffb580`613a2220 fffff803`c4c6c349 Wdf01000!FxDevice::DispatchWithLock+0x55d
+14 (Inline Function) --------`-------- nt!IopfCallDriver+0x44
+15 ffffb580`613a2300 fffff80c`d591b85e nt!IofCallDriver+0x59
+16 ffffb580`613a2340 fffff80c`d58d3d24 CLASSPNP!ClassDispatchPnp+0x684e
+17 ffffb580`613a24c0 fffff803`c4c6c349 CLASSPNP!ClassGlobalDispatch+0x24
+18 (Inline Function) --------`-------- nt!IopfCallDriver+0x44
+19 ffffb580`613a24f0 fffff803`c4d24961 nt!IofCallDriver+0x59
+1a ffffb580`613a2530 fffff803`c515ee11 nt!IoSynchronousCallDriver+0x51
+1b ffffb580`613a2590 fffff80c`d5ac25f8 nt!IoForwardIrpSynchronously+0x41
+1c ffffb580`613a25c0 fffff80c`d5ac0681 partmgr!PmSurpriseRemoval+0x20
+1d ffffb580`613a25f0 fffff80c`d5aa2cc3 partmgr!PmPnp+0x6f21
+1e ffffb580`613a2640 fffff803`c4c6c349 partmgr!PmGlobalDispatch+0x63
+1f (Inline Function) --------`-------- nt!IopfCallDriver+0x44
+20 ffffb580`613a26d0 fffff803`c504f30d nt!IofCallDriver+0x59
+21 ffffb580`613a2710 fffff803`c5190bf7 nt!IopSynchronousCall+0xe5
+22 ffffb580`613a2780 fffff803`c51857b2 nt!IopRemoveDevice+0xdf
+23 ffffb580`613a2840 fffff803`c519490b nt!PnpSurpriseRemoveLockedDeviceNode+0xba
+24 ffffb580`613a28a0 fffff803`c51945ea nt!PnpDeleteLockedDeviceNode+0xaf
+25 ffffb580`613a28e0 fffff803`c519359c nt!PnpDeleteLockedDeviceNodes+0xbe
+26 ffffb580`613a2950 fffff803`c518d58e nt!PnpProcessQueryRemoveAndEject+0x380
+27 ffffb580`613a2a40 fffff803`c506a677 nt!PnpProcessTargetDeviceEvent+0xf2
+28 ffffb580`613a2a70 fffff803`c4ccad98 nt!PnpDeviceEventWorker+0x287
+29 ffffb580`613a2b00 fffff803`c4cefcf7 nt!ExpWorkerThread+0xd8
+2a ffffb580`613a2b90 fffff803`c4da26f6 nt!PspSystemThreadStartup+0x47
+2b ffffb580`613a2be0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+The device node was stopped before surprise removal IRP was sent:
+2: kd> .frame /r 22
+22 ffffb580`613a2780 fffff803`c51857b2 nt!IopRemoveDevice+0xdf
+rax=0000000000000000 rbx=0000000000000017 rcx=ffffc780df719010
+rdx=ffffc780df719100 rsi=ffffc780d6c8c010 rdi=ffffc780ddbb93c0
+rip=fffff803c5190bf7 rsp=ffffb580613a2780 rbp=ffffb580613a27d9
+ r8=0000000000000100  r9=0000000000000000 r10=ffffb580612c9760
+r11=ffffc780d5ea2040 r12=0000000000000001 r13=ffffc780ddbb93c0
+r14=0000000000000000 r15=ffffc780ddbb93c0
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+nt!IopRemoveDevice+0xdf:
+fffff803`c5190bf7 448bf8          mov     r15d,eax
+2: kd> !devnode ffffc780d6c8c010
+DevNode 0xffffc780d6c8c010 for PDO 0xffffc780ddbb93c0
+  Parent 0xffffc780dadf3010   Sibling 0000000000   Child 0000000000   
+  InstancePath is "SCSI\Disk&Ven_NVMe&Prod_Intel_Fultondale\11&202f2b36&0&000000"
+  ServiceName is "disk"
+  State = DeviceNodeStopped (0x30a)
+  Previous State = DeviceNodeStopped (0x30a)
+  StateHistory[13] = DeviceNodeAwaitingQueuedDeletion (0x30e)
+  StateHistory[12] = DeviceNodeStopped (0x30a)
+  StateHistory[11] = DeviceNodeQueryStopped (0x309)
+  StateHistory[10] = DeviceNodeStarted (0x308)
+  StateHistory[09] = DeviceNodeEnumerateCompletion (0x30d)
+  StateHistory[08] = DeviceNodeEnumeratePending (0x30c)
+  StateHistory[07] = DeviceNodeStarted (0x308)
+  StateHistory[06] = DeviceNodeStartPostWork (0x307)
+  StateHistory[05] = DeviceNodeStartCompletion (0x306)
+  StateHistory[04] = DeviceNodeStartPending (0x305)
+  StateHistory[03] = DeviceNodeResourcesAssigned (0x304)
+  StateHistory[02] = DeviceNodeDriversAdded (0x303)
+  StateHistory[01] = DeviceNodeInitialized (0x302)
+  StateHistory[00] = DeviceNodeUninitialized (0x301)
+  StateHistory[19] = Unknown State (0x0)
+  StateHistory[18] = Unknown State (0x0)
+  StateHistory[17] = Unknown State (0x0)
+  StateHistory[16] = Unknown State (0x0)
+  StateHistory[15] = Unknown State (0x0)
+  StateHistory[14] = Unknown State (0x0)
+  Flags (0x24000130)  DNF_ENUMERATED, DNF_IDS_QUERIED, 
+                      DNF_NO_RESOURCE_REQUIRED, DNF_NO_LOWER_DEVICE_FILTERS, 
+                      DNF_NO_UPPER_DEVICE_FILTERS
+  CapabilityFlags (0x00000180)  SilentInstall, RawDeviceOK
+
+The stopped status is reflected in the controller state:
+2: kd> dt   ControllerExtension States.Stopped
+Local var @ rsi Type _NVME_CONTROLLER_EXTENSION*
+   +0x014 States         : 
+      +0x000 Stopped        : 0y1
+
+We can see the submission queue in this case was Admin queue:
+2: kd> .frame /r 0
+00 ffffb580`613a1e50 fffff803`d97e2052 stornvme!NVMeCompleteSubmissionQueueRequests+0x3b
+rax=0000000000000000 rbx=0000000000000000 rcx=ffffc780df719010
+rdx=ffffc780df719100 rsi=ffffc780df719010 rdi=0000000000000000
+rip=fffff803d97e5163 rsp=ffffb580613a1e50 rbp=0000000000000100
+ r8=0000000000000100  r9=0000000000000000 r10=ffffb580612c9760
+r11=ffffc780d5ea2040 r12=0000000000200008 r13=fffff80cd6e74000
+r14=0000000000000000 r15=ffffc780df719100
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+stornvme!NVMeCompleteSubmissionQueueRequests+0x3b:
+fffff803`d97e5163 48871c07        xchg    rbx,qword ptr [rdi+rax] ds:002b:00000000`00000000=????????????????
+2: kd> ub fffff803`d97e2052
+stornvme!NVMeLunCompleteAllIORequests+0x56 [inlined in stornvme!NVMeHwUnitControl+0xda]:
+fffff803`d97e202a 440fb787e4000000 movzx   r8d,word ptr [rdi+0E4h]
+fffff803`d97e2032 488d97f0000000  lea     rdx,[rdi+0F0h]
+fffff803`d97e2039 c644243008      mov     byte ptr [rsp+30h],8
+fffff803`d97e203e 448bcd          mov     r9d,ebp
+fffff803`d97e2041 885c2428        mov     byte ptr [rsp+28h],bl
+fffff803`d97e2045 488bcf          mov     rcx,rdi
+fffff803`d97e2048 4488742420      mov     byte ptr [rsp+20h],r14b
+fffff803`d97e204d e8d6300000      call    stornvme!NVMeCompleteSubmissionQueueRequests (fffff803`d97e5128)
+2: kd> dv /V
+@rsi              @rsi              ControllerExtension = 0xffffc780`df719010
+@r15              @r15                  SubmissionQueue = 0xffffc780`df719100
+…
+2: kd> ?   SubmissionQueue  -   ControllerExtension 
+Evaluate expression: 240 = 00000000`000000f0
+2: kd> dt   ControllerExtension NvmeQueues.AdminSubmissionQueue
+Local var @ rsi Type _NVME_CONTROLLER_EXTENSION*
+   +0x0e0 NvmeQueues                      : 
+      +0x010 AdminSubmissionQueue            : _NVME_SUBMISSION_QUEUE
+2: kd> ? e0+10
+Evaluate expression: 240 = 00000000`000000f0
+
+When stronvme.sys processes Stop Device IRP it frees the submission queues, including Admin queue:
+2: kd> uf stornvme!NVMeControllerStop
+stornvme!NVMeControllerStop:
+…
+fffff803`d97e4dca 488bcb          mov     rcx,rbx
+fffff803`d97e4dcd e846dfffff      call    stornvme!AdminQueuesFreeResources (fffff803`d97e2d18)
+…
+
+And this is the reason Command array is NULL:
+2: kd> uf  stornvme!AdminQueuesFreeResources 
+stornvme!AdminQueuesFreeResources:
+…
+fffff803`d97e2d51 4c8b8310010000  mov     r8,qword ptr [rbx+110h]
+fffff803`d97e2d58 4d85c0          test    r8,r8
+fffff803`d97e2d5b 740e            je      stornvme!AdminQueuesFreeResources+0x53 (fffff803`d97e2d6b)  Branch
+
+stornvme!AdminQueuesFreeResources+0x45:
+fffff803`d97e2d5d 488bd3          mov     rdx,rbx
+fffff803`d97e2d60 b901000000      mov     ecx,1
+fffff803`d97e2d65 ff15c5620100    call    qword ptr [stornvme!_imp_StorPortExtendedFunction (fffff803`d97f9030)]
+
+stornvme!AdminQueuesFreeResources+0x53:
+fffff803`d97e2d6b 4883a31001000000 and     qword ptr [rbx+110h],0
+…
+
+2: kd> dt stornvme!_NVME_CONTROLLER_EXTENSION NvmeQueues.AdminSubmissionQueue.CmdId
+   +0x0e0 NvmeQueues                            : 
+      +0x010 AdminSubmissionQueue                  : 
+         +0x020 CmdId                                 : Ptr64 _COMMAND_ID_CONTEXT
+2: kd> ? e0+10+20
+Evaluate expression: 272 = 00000000`00000110
+
+So stornvme.sys has to accommodate possibility of being removed/surprise removed when queues are not initialized – (for instance in Stopped state) and in such case there is no need to complete any commands.

@@ -1,0 +1,155 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22010150317
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 9F - DRIVER_POWER_STATE_FAILURE (9f).
+The power IRP timed out:
+4: kd> !analyze -show
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffff9d0eb46eecd0, Physical Device Object of the stack
+Arg3: ffffc28afd85f120, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffff9d0eb4e6e010, The blocked IRP
+
+From the IRP, it is pended by the ACPI driver:
+4: kd> !irp ffff9d0eb4e6e010
+Irp is active with 12 stacks 10 is current (= 0xffff9d0eb4e6e368)
+…
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff9d0eb5045e10 00000000 00000000-00000000    pending
+	       \Driver\ACPI
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff9d0eb4ed1de0 00000000 fffff80547d2b550-ffff9d0eb4e701e8 Success Error Cancel pending
+	       \Driver\USBHUB3	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000001 00000000
+…
+
+This is D0 IRP:
+4: kd> dt nt!_POP_IRP_DATA ffff9d0eb4e701e8 PowerStateType PowerState.DeviceState
+   +0x0bc PowerStateType         : 1 ( DevicePowerState )
+   +0x0c0 PowerState             : 
+      +0x000 DeviceState            : 1 ( PowerDeviceD0 )
+
+From device stack, this is USB hub under XHCI controller:
+4: kd> !devstack ffff9d0eb5045e10
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffff9d0eb4ed1de0  \Driver\USBHUB3    ffff9d0eb4d6b310  
+> ffff9d0eb5045e10  \Driver\ACPI       ffff9d0eaa8b3a20  
+  ffff9d0eb46eecd0  \Driver\USBXHCI    ffff9d0eaa879da0  USBPDO-1
+!DevNode ffff9d0eb4f99380 :
+  DeviceInst is "USB\ROOT_HUB30\4&1c077de1&0&0"
+  ServiceName is "USBHUB3"
+4: kd> dt nt!_DEVICE_NODE ffff9d0eb4f99380 UniqueId
+   +0x080 UniqueId : _UNICODE_STRING "\_SB.PC00.XHCI.RHUB"
+
+ACPI will need to run _PS0 to power it up:
+4: kd> !amli dns \_SB.PC00.XHCI.RHUB._PS0
+
+ACPI Name Space: \_SB.PC00.XHCI.RHUB._PS0 (ffff9d0eb26b2b48)
+Method(_PS0:Flags=0x8,CodeBuff=ffff9d0eb26b2cba,Len=84)
+
+4: kd> !list -t acpi!_ACPI_POWER_REQUEST.ListEntry.Flink -x "dt" -a "acpi!_ACPI_POWER_REQUEST RequestType Context" poi(ACPI!AcpiPowerPhase5List)
+   +0x030 RequestType : 0 ( AcpiPowerRequestDevice )
+   +0x0c8 Context     : 0xffff9d0e`b4e6e010 Void
+
+   +0x030 RequestType : 0 ( AcpiPowerRequestDevice )
+   +0x0c8 Context     : 0xffff9d0e`b4d698a0 Void
+
+And this is the currently executed context AML interpreter runs:
+4: kd> !amli lc
+ Ctxt=ffff9d0ebc153760, ThID=ffff9d0eaa877040, Flgs=A--CR----, pbOp=ffff9d0eb26a4816, Obj=\_SB.PC00.XHCI.RHUB._PS0
+AMLI_DBGERR: SIG_CTXT does not match (bb721020)
+
+\_SB.PC00.XHCI.RHUB._PS0 invokes \_SB.CSD0:
+4: kd> !amli u _SB.PC00.XHCI.RHUB._PS0
+ffff9d0eb26b2cba:[\_SB.PC00.XHCI.RHUB._PS0]
+ffff9d0eb26b2cba : ADBG("XHCI RHUB PS0")
+ffff9d0eb26b2ccc : Zero
+ffff9d0eb26b2ccd : If(LEqual(DVID, 0xffff))
+ffff9d0eb26b2cd7 : {
+ffff9d0eb26b2cd7 : | Return(Zero)
+ffff9d0eb26b2cd9 : }
+ffff9d0eb26b2cd9 : If(CondRefOf(\_SB_.PC00.XHCI.RHUB.PS0X, ))
+ffff9d0eb26b2cf5 : {
+ffff9d0eb26b2cf5 : | ADBG("XHCI CSD0")
+ffff9d0eb26b2d03 : | Zero
+ffff9d0eb26b2d04 : | CSD0
+ffff9d0eb26b2d08 : | 0x16
+ffff9d0eb26b2d0a : | PS0X
+ffff9d0eb26b2d0e : }
+
+And this is where the interpreter currently is:
+4: kd> !amli ln ffff9d0eb26a4816
+ffff9d0eb26a4816:[\_SB.CSD0+0x74]
+
+But \_SB.CSD0 is in the loop:
+4: kd> !amli u \_SB.CSD0
+ffff9d0eb26a47a2:[\_SB.CSD0]
+ffff9d0eb26a47a2 : Name(_T_0, Zero)
+ffff9d0eb26a47a8 : If(LOr(LEqual(SIME, One), LNot(IMPS())))
+ffff9d0eb26a47b6 : {
+ffff9d0eb26a47b6 : | Return(Zero)
+ffff9d0eb26a47b8 : }
+ffff9d0eb26a47b8 : While(One)
+ffff9d0eb26a47bc : {
+ffff9d0eb26a47bc : | Store(ToInteger(Arg0, ), _T_0)
+ffff9d0eb26a47c4 : | If(LEqual(_T_0, 0x14))
+ffff9d0eb26a47cd : | {
+ffff9d0eb26a47cd : | | Store(Zero, RSAT)
+ffff9d0eb26a47d3 : | | While(LEqual(ASAT, One))
+ffff9d0eb26a47db : | | {
+ffff9d0eb26a47db : | | | Stall(0xa)
+ffff9d0eb26a47df : | | }
+ffff9d0eb26a47df : | }
+ffff9d0eb26a47df : | Else
+ffff9d0eb26a47e2 : | {
+ffff9d0eb26a47e2 : | | If(LEqual(_T_0, 0x15))
+ffff9d0eb26a47eb : | | {
+ffff9d0eb26a47eb : | | | Store(Zero, RGBE)
+ffff9d0eb26a47f1 : | | | While(LEqual(AGBE, One))
+ffff9d0eb26a47f9 : | | | {
+ffff9d0eb26a47f9 : | | | | Stall(0xa)
+ffff9d0eb26a47fd : | | | }
+ffff9d0eb26a47fd : | | }
+ffff9d0eb26a47fd : | | Else
+ffff9d0eb26a4800 : | | {
+ffff9d0eb26a4800 : | | | If(LEqual(_T_0, 0x16))
+ffff9d0eb26a4809 : | | | {
+ffff9d0eb26a4809 : | | | | Store(Zero, RXHC)
+ffff9d0eb26a480f : | | | | While(LEqual(AXHC, One))
+ffff9d0eb26a4817 : | | | | {
+ffff9d0eb26a4817 : | | | | | Stall(0xa)
+ffff9d0eb26a481b : | | | | }
+ffff9d0eb26a481b : | | | }
+ffff9d0eb26a481b : | | | Else
+ffff9d0eb26a481d : | | | {
+ffff9d0eb26a481d : | | | | If(LEqual(_T_0, 0x17))
+ffff9d0eb26a4826 : | | | | {
+ffff9d0eb26a4826 : | | | | | Store(Zero, RXDC)
+ffff9d0eb26a482c : | | | | | While(LEqual(AXDC, One))
+ffff9d0eb26a4834 : | | | | | {
+ffff9d0eb26a4834 : | | | | | | Stall(0xa)
+ffff9d0eb26a4838 : | | | | | }
+ffff9d0eb26a4838 : | | | | }
+ffff9d0eb26a4838 : | | | | Else
+ffff9d0eb26a483a : | | | | {
+ffff9d0eb26a483a : | | | | | If(LEqual(_T_0, 0x18))
+ffff9d0eb26a4843 : | | | | | {
+ffff9d0eb26a4843 : | | | | | | Store(Zero, RUFS)
+ffff9d0eb26a4849 : | | | | | | While(LEqual(AUFS, One))
+ffff9d0eb26a4851 : | | | | | | {
+ffff9d0eb26a4851 : | | | | | | | Stall(0xa)
+ffff9d0eb26a4855 : | | | | | | }
+ffff9d0eb26a4855 : | | | | | }
+ffff9d0eb26a4855 : | | | | }
+ffff9d0eb26a4855 : | | | }
+ffff9d0eb26a4855 : | | }
+ffff9d0eb26a4855 : | }
+ffff9d0eb26a4855 : | Break
+ffff9d0eb26a4856 : }
+
+Therefore, based on observed evidence, the power IRP timeout reported here is caused by the ACPI BIOS continuously looping inside\_SB.CSD0 method.
+This issue should be dispatched to the BIOS owners for further analysis – why the lop is not resolved. In addition, this kind of unbounded loop in AML is an unsafe design as it can cause timeouts and System crashes – similar to the one observed here.

@@ -1,0 +1,387 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1606926981
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck 18 - REFERENCE_BY_POINTER (18) (see memory dump)
+3 kd !analyze -v
+
+                                                                             
+                        Bugcheck Analysis                                    
+                                                                             
+
+
+REFERENCE_BY_POINTER (18)
+Arguments
+Arg1 0000000000000000, Object type of the object whose reference count is being lowered
+Arg2 ffff9101301d0200, Object whose reference count is being lowered
+Arg3 0000000000000010, Reserved                                                         
+Arg4 0000000000000001, Reserved
+	The reference count of an object is illegal for the current state of the object.
+	Each time a driver uses a pointer to an object the driver calls a kernel routine
+	to increment the reference count of the object. When the driver is done with the
+	pointer the driver calls another kernel routine to decrement the reference count.
+	Drivers must match calls to the increment and decrement routines. This bugcheck
+	can occur because an object's reference count goes to zero while there are still
+	open handles to the object, in which case the fourth parameter indicates the number
+	of opened handles. It may also occur when the object's reference count drops below zero
+	whether or not there are open handles to the object, and in that case the fourth parameter
+	contains the actual value of the pointer references count.
+…
+
+The address referenced appears to be not a valid object
+3 kd !object ffff9101301d0200
+ffff9101301d0200 Not a valid object (ObjectType invalid)
+
+Looking at the callstack, we can see that ACPI.SYS is trying to get access to the device registry key as part of PnP IRP processing,
+and that in turn requires lock acquire which then leads to a priority boost to the current lock owner
+(httpsdocs.microsoft.comen-uswindows-hardwaredriversddicontentwdmnf-wdm-exsetresourceownerpointerex)
+3 kd kn 10
+ # Child-SP          RetAddr           Call Site
+00 ffff830b`fe589848 fffff801`344db614 nt!KeBugCheckEx
+01 (Inline Function) --------`-------- nt!ObpIncrPointerCount+0x1742ab
+02 (Inline Function) --------`-------- nt!ObfReferenceObjectWithTag+0x1742b8
+03 (Inline Function) --------`-------- nt!ObfReferenceObject+0x1742b8
+04 ffff830b`fe589850 fffff801`342ece6d nt!ExpApplyPriorityBoost+0x174484
+05 ffff830b`fe5898f0 fffff801`34387d13 nt!ExpApplyPrewaitBoost+0x69
+06 (Inline Function) --------`-------- nt!ExpAcquireResourceExclusiveLite+0x129
+07 ffff830b`fe589920 fffff801`3489e576 nt!ExAcquireResourceExclusiveLite+0x173
+08 ffff830b`fe5899b0 fffff80d`d8200874 nt!IoOpenDeviceRegistryKey+0x86
+09 ffff830b`fe589a00 fffff80d`d827b55e ACPI!ACPIGetD3Policy+0x4c
+0a ffff830b`fe589ac0 fffff80d`d826f785 ACPI!ACPIBusAndFilterIrpQueryCapabilities+0x9e
+0b ffff830b`fe589bd0 fffff80d`d81ee357 ACPI!ACPIIrpCompletionRoutineWorker+0x55
+0c ffff830b`fe589c10 fffff801`3433611d ACPI!ACPIIrpGenericFilterCompletionHandler+0x27
+0d ffff830b`fe589c40 fffff801`34335f37 nt!IopfCompleteRequest+0x1cd
+0e ffff830b`fe589d50 fffff80d`d83841bf nt!IofCompleteRequest+0x17
+0f ffff830b`fe589d80 fffff801`3432c959 pci!PciDispatchPnpPower+0xef
+
+Switching to the IoOpenDeviceRegistryKey frame
+3 kd .frame r 8
+08 ffff830b`fe5899b0 fffff80d`d8200874 nt!IoOpenDeviceRegistryKey+0x86
+rax=0000000000000001 rbx=0000000000000001 rcx=0000000000000018
+rdx=0000000000000000 rsi=0000000000000011 rdi=ffffb58cb40d30a0
+rip=fffff8013489e576 rsp=ffff830bfe5899b0 rbp=ffff830bfe589a30
+ r8=ffff9101301d0200  r9=0000000000000010 r10=fffff801346e5f20
+r11=ffffb58caa2f9040 r12=ffffb58caa3e82a0 r13=fffff80dd824e27a
+r14=00000000000f003f r15=0000000000000009
+iopl=0         nv up di pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000046
+nt!IoOpenDeviceRegistryKey+0x86
+fffff801`3489e576 488b8738010000  mov     rax,qword ptr [rdi+138h] ds002bffffb58c`b40d31d8=ffffb58cb40d3920
+
+We can determine address of the lock
+3 kd ub
+nt!IoOpenDeviceRegistryKey+0x5a
+fffff801`3489e54a f6c302          test    bl,2
+fffff801`3489e54d 0f84a8000000    je      nt!IoOpenDeviceRegistryKey+0x10b (fffff801`3489e5fb)
+fffff801`3489e553 be12000000      mov     esi,12h
+fffff801`3489e558 65488b042588010000 mov   rax,qword ptr gs[188h]
+fffff801`3489e561 66ff88e4010000  dec     word ptr [rax+1E4h]
+fffff801`3489e568 b201            mov     dl,1
+fffff801`3489e56a 488d0daf79e4ff  lea     rcx,[nt!PnpRegistryDeviceResource (fffff801`346e5f20)]
+fffff801`3489e571 e82a96aeff      call    nt!ExAcquireResourceExclusiveLite (fffff801`34387ba0)
+
+Examining the lock, we can see its current owner
+3 kd !locks nt!PnpRegistryDeviceResource
+
+Resource @ nt!PnpRegistryDeviceResource (0xfffff801346e5f20)    Exclusively owned
+    Contention Count = 32
+    NumberOfExclusiveWaiters = 1
+     Threads ffff9101301d0200-01 
+
+     Threads Waiting On Exclusive Access
+1 total locks
+
+The current owner is the same address that was referenced by the priority boost.
+Examining it, we can see that it is the Idle thread running on the processor 6
+3 kd !thread ffff9101301d0200
+THREAD ffff9101301d0200  Cid 0000.0000  Teb 0000000000000000 Win32Thread 0000000000000000 RUNNING on processor 6
+Not impersonating
+DeviceMap                 ffffc901324137e0
+Owning Process            fffff8013480d9c0       Image         Idle
+Attached Process          ffffb58caa26b040       Image         System
+Wait Start TickCount      536            Ticks 0
+Context Switch Count      2458           IdealProcessor 6             
+UserTime                  000000.000
+KernelTime                000006.125
+Win32 Start Address nt!KiIdleLoop (0xfffff80134464af0)
+Stack Init ffff830bfe47fc10 Current ffff830bfe47fba0
+Base ffff830bfe480000 Limit ffff830bfe479000 Call 0000000000000000
+Priority 0 BasePriority 0 PriorityDecrement 0 IoPriority 0 PagePriority 0
+Child-SP          RetAddr            Args to Child                                                            Call Site
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  nt!ReadNoFence64 (Inline Function @ fffff801`34369e20)
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  nt!ReadPointerNoFence (Inline Function @ fffff801`34369e20)
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  nt!KzWaitForLockOwnerShip+0x46 (Inline Function @ fffff801`34369e20)
+ffff830b`fe47f610 fffff801`34386ba6  fffff801`346e5f20 fffff801`346e5f80 4196aa42`db9199a4 79e6a1c3`46475c9a  nt!KxWaitForLockOwnerShipWithIrql+0x50
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  nt!KzAcquireQueuedSpinLock+0x82 (Inline Function @ fffff801`34386ba6)
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  nt!KeFastAcquireInStackQueuedSpinLockAndRaise+0xce (Inline Function @ fffff801`34386ba6)
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  nt!ExpLockResource+0xce (Inline Function @ fffff801`34386ba6)
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  nt!ExpReleaseResourceForThreadLite+0xce (Inline Function @ fffff801`34386ba6)
+ffff830b`fe47f640 fffff801`349a4d6a  ffffb58c`b8d34100 ffffc901`363bdc02 ffffc901`363bdc00 00000000`00000000  nt!ExReleaseResourceLite+0x106
+ffff830b`fe47f6a0 fffff80d`d806fad5  ffffb58c`b8d34020 00000000`00000000 ffffb58c`ba722310 fffff801`349b3fab  nt!IoSetDeviceInterfaceState+0x4a
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  Wdf01000!MxMxSetDeviceInterfaceState+0x7 (Inline Function @ fffff80d`d806fad5)
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  Wdf01000!FxDeviceInterfaceSetState+0x18 (Inline Function @ fffff80d`d806fad5)
+ffff830b`fe47f6d0 fffff801`366b5f7d  ffffb58c`ba722020 ffffb58c`ba722310 00000000`00000000 fffff801`366bc028  Wdf01000!imp_WdfDeviceSetDeviceInterfaceState+0x145
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  WiMan!WdfDeviceSetDeviceInterfaceState+0x27 (Inline Function @ fffff801`366b5f7d)
+ffff830b`fe47f720 fffff801`366af379  00004a73`44a01b08 ffffb58c`b8115010 00000000`00000000 ffffb58c`bb5fe4c0  WiMan!WiDrIfManageUnRegisterWiFiExtAndHideOwn+0xad
+ffff830b`fe47f760 fffff80d`d8012e0e  00004a73`44a01b38 ffffb58c`bb5fe608 ffffb58c`bb5fe5f8 00000000`00000301  WiMan!hAmtSapHandleManageabilityStateNotif+0x185
+(Inline Function) --------`--------  --------`-------- --------`-------- --------`-------- --------`--------  Wdf01000!FxTimerTimerHandler+0x8c (Inline Function @ fffff80d`d8012e0e)
+ffff830b`fe47f790 fffff801`343a1c30  00000000`00000000 fffff80d`d8012d50 fffff80d`d8012d50 ffff830b`fe47faa0  Wdf01000!FxTimer_FxTimerExtCallbackThunk+0xbe
+ffff830b`fe47f7e0 fffff801`343a15dc  ffff830b`fe47f948 ffffb58c`b892b948 00000000`00000002 fffff801`346d2e98  nt!KiExpireTimer2+0x340
+ffff830b`fe47f910 fffff801`3432d00d  00000000`00000018 00000000`00989680 ffff9101`301d0200 00000000`00000140  nt!KiTimer2Expiration+0x14c
+ffff830b`fe47f9d0 fffff801`34464b4a  00000000`00000000 ffff9101`301c0180 00000000`00000000 ffff9101`301d0200  nt!KiRetireDpcList+0x68d
+ffff830b`fe47fbe0 00000000`00000000  ffff830b`fe480000 ffff830b`fe479000 00000000`00000000 00000000`00000000  nt!KiIdleLoop+0x5a
+
+PRCB of the processor 6 confirms that
+3 kd !prcb 6
+PRCB for Processor 6 at ffff9101301c0180
+Current IRQL -- 0
+Threads--  Current ffff9101301d0200 Next 0000000000000000 Idle ffff9101301d0200
+Processor Index 6 Number (0, 6) GroupSetMember 0000000000000040
+Interrupt Count -- 000014bd
+Times -- Dpc    00000002 Interrupt 00000000 
+         Kernel 000001f1 User      00000000
+
+Since Idle threads are not real Processor Manager threads, they are not objects and cannot be referenced, which explains the Bugcheck.
+The problem, however, is that the thread does own the lock and this is problematic, because ERESOURCE is a PASSIVE_LEVEL lock and Idle
+threads don’t run PASSIVE_LEVEL code.
+
+Switching to the thread and looking at the callstack, we can see that it is in the process of releasing a lock
+3 kd ~6
+6 kd kn
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!ReadNoFence64
+01 (Inline Function) --------`-------- nt!ReadPointerNoFence
+02 (Inline Function) --------`-------- nt!KzWaitForLockOwnerShip+0x46
+03 ffff830b`fe47f610 fffff801`34386ba6 nt!KxWaitForLockOwnerShipWithIrql+0x50
+04 (Inline Function) --------`-------- nt!KzAcquireQueuedSpinLock+0x82
+05 (Inline Function) --------`-------- nt!KeFastAcquireInStackQueuedSpinLockAndRaise+0xce
+06 (Inline Function) --------`-------- nt!ExpLockResource+0xce
+07 (Inline Function) --------`-------- nt!ExpReleaseResourceForThreadLite+0xce
+08 ffff830b`fe47f640 fffff801`349a4d6a nt!ExReleaseResourceLite+0x106
+09 ffff830b`fe47f6a0 fffff80d`d806fad5 nt!IoSetDeviceInterfaceState+0x4a
+0a (Inline Function) --------`-------- Wdf01000!MxMxSetDeviceInterfaceState+0x7
+0b (Inline Function) --------`-------- Wdf01000!FxDeviceInterfaceSetState+0x18
+0c ffff830b`fe47f6d0 fffff801`366b5f7d Wdf01000!imp_WdfDeviceSetDeviceInterfaceState+0x145
+0d (Inline Function) --------`-------- WiMan!WdfDeviceSetDeviceInterfaceState+0x27
+0e ffff830b`fe47f720 fffff801`366af379 WiMan!WiDrIfManageUnRegisterWiFiExtAndHideOwn+0xad
+0f ffff830b`fe47f760 fffff80d`d8012e0e WiMan!hAmtSapHandleManageabilityStateNotif+0x185
+10 (Inline Function) --------`-------- Wdf01000!FxTimerTimerHandler+0x8c
+11 ffff830b`fe47f790 fffff801`343a1c30 Wdf01000!FxTimer_FxTimerExtCallbackThunk+0xbe
+12 ffff830b`fe47f7e0 fffff801`343a15dc nt!KiExpireTimer2+0x340
+13 ffff830b`fe47f910 fffff801`3432d00d nt!KiTimer2Expiration+0x14c
+14 ffff830b`fe47f9d0 fffff801`34464b4a nt!KiRetireDpcList+0x68d
+15 ffff830b`fe47fbe0 00000000`00000000 nt!KiIdleLoop+0x5a
+
+Switching to the IoSetDeviceInterfaceState frame
+6 kd .frame r 9
+09 ffff830b`fe47f6a0 fffff80d`d806fad5 nt!IoSetDeviceInterfaceState+0x4a
+rax=fffff801346e5f81 rbx=0000000000000000 rcx=0000000000000002
+rdx=0000000000000002 rsi=0000000000000000 rdi=ffffc901363bdc00
+rip=fffff801349a4d6a rsp=ffff830bfe47f6a0 rbp=ffffb58cb8d34100
+ r8=ffff830bfe47f6a8  r9=ffffc901362c303c r10=00000000ffffffff
+r11=ffff830bfe47f670 r12=0000000000000000 r13=ffff9101301d0200
+r14=fffff801366ba200 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=0000  es=0000  fs=0000  gs=0000             efl=00000202
+nt!IoSetDeviceInterfaceState+0x4a
+fffff801`349a4d6a 65488b0c2588010000 mov   rcx,qword ptr gs[188h] gs00000000`00000188=
+
+We can confirm that this is the same nt!PnpRegistryDeviceResource lock that bugchecking thread was trying to acquire
+6 kd ub
+nt!IoSetDeviceInterfaceState+0x29
+fffff801`349a4d49 e8522e9eff      call    nt!ExAcquireResourceExclusiveLite (fffff801`34387ba0)
+fffff801`349a4d4e 41b001          mov     r8b,1
+fffff801`349a4d51 408ad7          mov     dl,dil
+fffff801`349a4d54 488bcb          mov     rcx,rbx
+fffff801`349a4d57 e83c000000      call    nt!IopProcessSetInterfaceState (fffff801`349a4d98)
+fffff801`349a4d5c 488d0dbd11d4ff  lea     rcx,[nt!PnpRegistryDeviceResource (fffff801`346e5f20)]
+fffff801`349a4d63 8bd8            mov     ebx,eax
+fffff801`349a4d65 e8361d9eff      call    nt!ExReleaseResourceLite (fffff801`34386aa0)
+
+The problem here is that WiMan!WiDrIfManageUnRegisterWiFiExtAndHideOwn called WdfDeviceSetDeviceInterfaceState function,
+which is a PASSIVE_LEVEL IRQL API - httpsdocs.microsoft.comen-uswindows-hardwaredriversddicontentwdfdevicenf-wdfdevice-wdfdevicesetdeviceinterfacestate
+but WiMan!WiDrIfManageUnRegisterWiFiExtAndHideOwn is invoked from a timer callback routine, which runs at DISPATCH_LEVEL IRQL. So WiMan.sys has violated the
+API rules – invoked a PASSIVE_LEVEL IRQL API while running at DISPATCH_LEVEL. This caused PASSIVE_LEVEL lock acquisition which would have caused instant IRQL_NOT_LESS_OR_EQUAL
+Bugcheck A if the lock would have been taken already and wait would have been required. But as it is – the lock was acquired while on DISPATCH_LEVEL and since timer expiration was
+done by the Idle thread, the Idle thread became the lock owner. As a result of the lock contention, another thread was trying to acquire the same lock and applied priority boost to the current owner in order to avoid starvationpriority inversion issues. But since the Idle thread is not an object, this caused the Bugcheck.
+
+So the root cause of the bug is that WiMan’s timer routine is calling PASSIVE_LEVEL IRQL API while running at DISPATCH_LEVEL.
+The only remaining piece is to see why WiMan’s timer routine is executing at DISPATCH_LEVEL IRQL.
+
+Switching to the timer callback frame, we can determine the address of the timer object
+6 kd .frame r 11
+11 ffff830b`fe47f790 fffff801`343a1c30 Wdf01000!FxTimer_FxTimerExtCallbackThunk+0xbe
+rax=fffff801346e5f81 rbx=00004a7344a01b38 rcx=0000000000000002
+rdx=0000000000000002 rsi=ffffb58cbb5fe608 rdi=ffffb58cbb5fe5f8
+rip=fffff80dd8012e0e rsp=ffff830bfe47f790 rbp=0000000000000000
+ r8=ffff830bfe47f6a8  r9=ffffc901362c303c r10=00000000ffffffff
+r11=ffff830bfe47f670 r12=0000000000000000 r13=ffff9101301d0200
+r14=ffffb58cbb5fe4ca r15=ffffb58cbb5fe5e8
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=0000  es=0000  fs=0000  gs=0000             efl=00000202
+Wdf01000!FxTimer_FxTimerExtCallbackThunk+0xbe
+fffff80d`d8012e0e 4c8b7c2430      mov     r15,qword ptr [rsp+30h] ss0018ffff830b`fe47f7c0=ffff9101301c0180
+
+6 kd !wdfkd.wdfhandle 00004a7344a01b38 
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00004a7344a01b38
+=============================
+Handle type is WDFTIMER
+Refcount 2
+Contexts
+    no associated contexts or attribute callbacks
+
+Parent !wdfhandle 0x00004a73458ddfd8, type is WDFDEVICE
+Owning device !wdfdevice 0x00004a73458ddfd8
+
+!wdfobject 0xffffb58cbb5fe4c0
+
+Looking at the WDF timer object itself, we can see that no System workitem was created (confirming that this is DISPATCH_LEVEL execution timer) and we can see the timer callback routine - WiMan!hSapManageabilityTimeoutHandler
+6 kd !wdfobject 0xffffb58cbb5fe4c0
+
+The type for object 0xffffb58cbb5fe4c0 is FxTimer
+State FxObjectStateCreated (0x1)
+!wdfhandle 0x00004a7344a01b38
+
+dt Wdf01000!FxTimer 0xffffb58cbb5fe4c0
+
+Contexts
+    no associated contexts or attribute callbacks
+
+Parent !wdfobject  0xffffb58cba722020, !wdfhandle 0x00004a73458ddfd8, type is WDFDEVICE
+Owning device !wdfdevice 0x00004a73458ddfd8
+6 kd dt Wdf01000!FxTimer 0xffffb58cbb5fe4c0
+   +0x000 __VFN_table  0xfffff80d`d80a5110 
+   +0x008 m_Type            0x1028
+   +0x00a m_ObjectSize      0x160
+   +0x00c m_Refcnt          0n2
+   +0x010 m_Globals         0xffffb58c`b844adb0 _FX_DRIVER_GLOBALS
+   +0x018 m_ObjectFlags     0x818
+   +0x018 m_ObjectFlagsByName  FxObjectunnamed-tagunnamed-type-m_ObjectFlagsByName
+   +0x01a m_ObjectState     1
+   +0x020 m_ChildListHead   _LIST_ENTRY [ 0xffffb58c`bb5fe4e0 - 0xffffb58c`bb5fe4e0 ]
+   +0x030 m_SpinLock        MxLock
+   +0x040 m_ParentObject    0xffffb58c`ba722020 FxObject
+   +0x048 m_ChildEntry      _LIST_ENTRY [ 0xffffb58c`bb5fb0b8 - 0xffffb58c`bb5fd5d8 ]
+   +0x058 m_DisposeSingleEntry  _SINGLE_LIST_ENTRY
+   +0x060 m_DeviceBase      0xffffb58c`ba722020 FxDeviceBase
+   +0x060 m_Device          0xffffb58c`ba722020 FxDevice
+   +0x068 m_NPLock          MxLock
+   +0x078 m_Timer           MxTimer
+   +0x110 m_Object          0xffffb58c`ba722020 FxObject
+   +0x118 m_Period          0
+   +0x11c m_TolerableDelay  0
+   +0x120 m_UseHighResolutionTimer  0 ''
+   +0x128 m_CallbackLock    (null) 
+   +0x130 m_CallbackLockObject  (null) 
+   +0x138 m_Callback        0xfffff801`366a918c     void  WiMan!hSapManageabilityTimeoutHandler+0
+   +0x140 m_SystemWorkItem  (null) 
+   +0x148 m_CallbackThread  0xffff9101`301d0200 _KTHREAD
+   +0x150 m_StopThread      (null) 
+   +0x158 m_StopAgain       0 ''
+   +0x159 m_StartAborted    0 ''
+   +0x15a m_RunningDown     0 ''
+
+Now we can disassemble the driver
+6 kd !!link -dump -headers -disasmnobytes DDumpsww041606926981WiMan.sys  DDumpsww041606926981BugCheck_18_SUT10WiMan.asm
+…
+
+and find where the timer callback was referenced
+6 kd !!findstr c[hSapManageabilityTimeoutHandler] DDumpsww041606926981BugCheck_18_SUT10WiMan.asm
+.shell waiting 1 second(s) for process
+  000000014000C706 lea         rax,[hSapManageabilityTimeoutHandler]
+…
+
+as well as base address of the image
+6 kd !!findstr cimage base DDumpsww041606926981BugCheck_18_SUT10WiMan.asm
+.shell waiting 1 second(s) for process
+       140000000 image base (0000000140000000 to 0000000140023FFF)
+…
+
+This gives us offset of the initialization code that was creating the timer
+6 kd  000000014000C706-140000000 
+Evaluate expression 50950 = 00000000`0000c706
+
+Using the offset we can find the actual routine
+6 kd u WiMan+0000c706
+WiMan!WDF_TIMER_CONFIG_INIT+0x17 [inlined in WiMan!hAmtSapInit+0x4e6]
+fffff801`366ac706 488d057fcaffff  lea     rax,[WiMan!hSapManageabilityTimeoutHandler (fffff801`366a918c)]
+fffff801`366ac70d 488b0dacfc0000  mov     rcx,qword ptr [WiMan!WdfDriverGlobals (fffff801`366bc3c0)]
+fffff801`366ac714 4c8d450f        lea     r8,[rbp+0Fh]
+fffff801`366ac718 8365f700        and     dword ptr [rbp-9],0
+fffff801`366ac71c 488d55e7        lea     rdx,[rbp-19h]
+fffff801`366ac720 8365ff00        and     dword ptr [rbp-1],0
+fffff801`366ac724 488945ef        mov     qword ptr [rbp-11h],rax
+fffff801`366ac728 4d8d8d58010000  lea     r9,[r13+158h]
+
+and looking at its code, we can see that timer’s execution level was set as WdfExecutionLevelInheritFromParent (1)
+6 kd u WiMan!hAmtSapInit+0xc4
+WiMan!WDF_OBJECT_ATTRIBUTES_INIT [inlined in WiMan!hAmtSapInit+0xc4]
+fffff801`366ac2e4 bf38000000      mov     edi,38h
+fffff801`366ac2e9 488d4d0f        lea     rcx,[rbp+0Fh]
+fffff801`366ac2ed 448bc7          mov     r8d,edi
+fffff801`366ac2f0 33d2            xor     edx,edx
+fffff801`366ac2f2 e889c10000      call    WiMan!memset (fffff801`366b8480)
+fffff801`366ac2f7 8d47c9          lea     eax,[rdi-37h]
+fffff801`366ac2fa 897d0f          mov     dword ptr [rbp+0Fh],edi
+fffff801`366ac2fd 894527          mov     dword ptr [rbp+27h],eax
+6 kd  sizeof(_WDF_OBJECT_ATTRIBUTES)
+unsigned int64 0x38
+6 kd dt WDF_EXECUTION_LEVEL 
+WiMan!WDF_EXECUTION_LEVEL
+   WdfExecutionLevelInvalid = 0n0
+   WdfExecutionLevelInheritFromParent = 0n1
+   WdfExecutionLevelPassive = 0n2
+   WdfExecutionLevelDispatch = 0n3
+
+Going back to the WDF timer handle, we can get the handle to the parent device
+6 kd  !wdfkd.wdfhandle 00004a7344a01b38 
+…
+Handle type is WDFTIMER
+…
+Parent !wdfhandle 0x00004a73458ddfd8, type is WDFDEVICE
+…
+
+and using the handle to the parent device, we can get the actual device structure
+6 kd !wdfhandle 0x00004a73458ddfd8
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00004a73458ddfd8
+=============================
+Handle type is WDFDEVICE
+Refcount 7
+Contexts
+    context  dt 0xffffb58cba722310 WiMan!MAIN_DEVICE_CONTEXT (size is 0x1b0 bytes)
+    EvtCleanupCallback fffff801366a10b4 WiMan!prvWimanDeviceCleanup
+
+Parent !wdfhandle 0x00004a7344f8c748, type is WDFDRIVER
+Owning device !wdfdevice 0x00004a73458ddfd8
+
+!wdfobject 0xffffb58cba722020
+6 kd !wdfobject 0xffffb58cba722020
+
+The type for object 0xffffb58cba722020 is FxDevice
+State FxObjectStateCreated (0x1)
+!wdfhandle 0x00004a73458ddfd8
+
+dt Wdf01000!FxDevice 0xffffb58cba722020
+…
+
+and this finally allows us to determine parent device execution level – WdfExecutionLevelDispatch, which is also the execution level of the timer since, during initialization,
+WiMan!hAmtSapInit set it up as WdfExecutionLevelInheritFromParent
+6 kd  dt Wdf01000!FxDevice 0xffffb58cba722020 m_ExecutionLevel
+   +0x0b8 m_ExecutionLevel  3 ( WdfExecutionLevelDispatch )
+
+This completes the root cause analysis the problem here is that WiMan!WiDrIfManageUnRegisterWiFiExtAndHideOwn called WdfDeviceSetDeviceInterfaceState function,
+which is a PASSIVE_LEVEL IRQL API - httpsdocs.microsoft.comen-uswindows-hardwaredriversddicontentwdfdevicenf-wdfdevice-wdfdevicesetdeviceinterfacestate
+but WiMan!WiDrIfManageUnRegisterWiFiExtAndHideOwn is invoked from a timer callback routine, which runs at DISPATCH_LEVEL IRQL. So WiMan.sys has violated the
+API rules – invoked a PASSIVE_LEVEL IRQL API while running at DISPATCH_LEVEL. This caused PASSIVE_LEVEL lock acquisition which would have caused instant IRQL_NOT_LESS_OR_EQUAL
+Bugcheck A if the lock would have been taken already and wait would have been required. But as it is – the lock was acquired while on DISPATCH_LEVEL and since timer expiration was
+done by the Idle thread, the Idle thread became the lock owner. As a result of the lock contention, another thread was trying to acquire the same lock and applied priority boost to the current owner in order to avoid starvationpriority inversion issues. But since the Idle thread is not an object, this caused the Bugcheck.
+
+So the root cause of the bug is that WiMan’s timer was created with WdfExecutionLevelDispatch  which makes its callback routine to run at DISPATCH_LEVEL which then leads to calling PASSIVE_LEVEL IRQL API while running at DISPATCH_LEVEL.
+
+
+

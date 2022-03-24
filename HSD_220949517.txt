@@ -1,0 +1,203 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220949517
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	IRP timeout - DRIVER_POWER_STATE_FAILURE (9f)
+[BUGCHECK]:	0x9F
+
+
+This is power IRP timeout - DRIVER_POWER_STATE_FAILURE (9f) – see attached memory dump:
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffba87089d1060, Physical Device Object of the stack
+Arg3: fffff800cb86c870, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffba870a292890, The blocked IRP
+…
+
+Here is the timed out IRP, currently owned by the I2C driver:
+0: kd> !irp ffffba870a292890
+Irp is active with 7 stacks 6 is current (= 0xffffba870a292ac8)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+                Args: 00000000 00000000 00000000 00000000
+[IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffba87089d1060 00000000 00000000-00000000    
+            \Driver\pci
+                Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffba87091d4730 00000000 fffff800c97c2eb0-ffffba870a28f130 Success Error Cancel pending
+            \Driver\iaLPSS2_I2C nt!PopRequestCompletion
+                Args: 00000000 00000001 00000001 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffba870a28f130    
+
+It is D0 IRP:
+0: kd> dt nt!_POP_IRP_DATA ffffba870a28f130 PowerStatetype PowerState.DeviceState
+   +0x0bc PowerStateType         : 1 ( DevicePowerState )
+   +0x0c0 PowerState             : 
+      +0x000 DeviceState            : 1 ( PowerDeviceD0 )
+
+The PCI bus driver already completed the IRP and placed device in D0:
+0: kd> !devstack ffffba87091d4730 
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffba87091d4730  \Driver\iaLPSS2_I2Cffffba87091d5a40  0000003e
+  ffffba87089d3a40  \Driver\ACPI       ffffba87077d4bb0  
+  ffffba87089d1060  \Driver\pci        ffffba87089d11b0  NTPNP_PCI0006
+!DevNode ffffba87089d9d30 :
+  DeviceInst is "PCI\VEN_8086&DEV_9D61&SUBSYS_17011D72&REV_21\3&11583659&0&A9"
+  ServiceName is "iaLPSS2_I2C"
+0: kd> !devext ffffba87089d11b0
+PDO Extension, Bus 0x0, Device 15, Function 1.
+  DevObj 0xffffba87089d1060  Parent FDO DevExt 0xffffba8708894190
+  Device State = PciStarted
+  Vendor ID 8086 (INTEL)  Device ID 9D61
+  Subsystem Vendor ID 1d72, Subsystem ID 1701
+  Header Type 0, Class Base/Sub 11/80  (Unknown Base Class/Unknown Sub Class)
+  Programming Interface: 00, Revision: 21, IntPin: 02, RawLine 11
+  Possible Decodes ((cmd & 7) = 7): BMI
+  Capabilities: Ptr=80, power 
+  Logical Device Power State: D0
+
+PCI driver has called PoSetPowerState:
+0: kd> ?? ((nt!_DEVICE_OBJECT*) 0xffffba87089d1060)->DeviceObjectExtension->PowerFlags >> 4
+unsigned int 1
+
+Looking at the WDF Log:
+0: kd> !wdflogdump iaLPSS2_I2C.sys -f
+Trace searchpath is: 
+
+Trace format prefix is: %7!u!: %!FUNC! - 
+Trying to extract TMF information from - e:\symcache\Wdf01000.pdb\11E877268FAE7196F0AA5A416B1A36E01\Wdf01000.pdb
+Gather log: Please wait, this may take a moment (reading 4024 bytes).
+% read so far ... 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+There are 77 log entries
+--- start of log ---
+…
+1025: FxPkgPnp::PowerPolicyEnterNewState - WDFDEVICE 0x00004578F6E2A8A8 !devobj 0xFFFFBA87091D4730 entering power policy state WdfDevStatePwrPolS0NoWakePowerUp from WdfDevStatePwrPolWaitingUnarmed
+1026: FxPkgPnp::Dispatch - WDFDEVICE 0x00004578F6E2A8A8 !devobj 0xFFFFBA87091D4730 IRP_MJ_POWER, 0x00000002(IRP_MN_SET_POWER) IRP 0xFFFFBA870A292890 for PowerDeviceD0
+---- end of log ----
+
+We can see that last entry was Dispatch routine. Wdf01000!FxPkgFdo::RaiseDevicePower() sets completion routine and sends the IRP down.
+We can find FxDevice:
+0: kd> !wdfhandle 0x00004578F6E2A8A8 
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00004578f6e2a8a8
+=============================
+Handle type is WDFDEVICE
+Refcount: 5
+Contexts:
+    context:  dt 0xffffba87091d5a40 iaLPSS2_I2C!PBC_DEVICE (size is 0x158 bytes)
+    <no associated attribute callbacks>
+
+    context:  dt 0xffffba87091d1e60 SpbCx!CScxController (size is 0x1a0 bytes)
+    EvtDestroyCallback fffff809c3035da0 SpbCx!CFxObject<WDFDEVICE__ * __ptr64,CScxController,&GetControllerFromFxDevice,0>::_OnDestroy
+
+Parent: !wdfhandle 0x00004578f915b918, type is WDFDRIVER
+Owning device: !wdfdevice 0x00004578f6e2a8a8
+
+!wdfobject 0xffffba87091d5750
+0: kd> !wdfobject 0xffffba87091d5750
+
+The type for object 0xffffba87091d5750 is FxDevice
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x00004578f6e2a8a8
+
+dt FxDevice 0xffffba87091d5750
+
+Contexts:
+    context:  dt 0xffffba87091d5a40 iaLPSS2_I2C!PBC_DEVICE (size is 0x158 bytes)
+    <no associated attribute callbacks>
+
+    context:  dt 0xffffba87091d1e60 SpbCx!CScxController (size is 0x1a0 bytes)
+    EvtDestroyCallback fffff809c3035da0 SpbCx!CFxObject<WDFDEVICE__ * __ptr64,CScxController,&GetControllerFromFxDevice,0>::_OnDestroy
+
+
+ Parent: !wdfobject  0xffffba8706ea46e0, !wdfhandle 0x00004578f915b918, type is WDFDRIVER
+Owning device: !wdfdevice 0x00004578f6e2a8a8
+
+And we can see that the IRP has been re-acquired again:
+0: kd> dt FxDevice 0xffffba87091d5750  m_PkgPnp      
+Wdf01000!FxDevice
+   +0x288 m_PkgPnp : 0xffffba87`091d4020 FxPkgPnp
+0: kd> dt 0xffffba87`091d4020 FxPkgPnp  m_PendingDevicePowerIrp 
+Wdf01000!FxPkgPnp
+   +0x4e0 m_PendingDevicePowerIrp : 0xffffba87`0a292890 _IRP
+
+And we can see PowerD0 event is queued:
+0: kd> dt 0xffffba87`091d4020 FxPkgPnp  m_PowerMachine.m_Queue.Events[6]
+Wdf01000!FxPkgPnp
+   +0x1d8 m_PowerMachine                   : 
+      +0x090 m_Queue                          : 
+         +0x000 Events                           : [6] 1
+0: kd> dt FxPowerEvent PowerD0
+Wdf01000!FxPowerEvent
+   PowerD0 = 0n1
+
+The workitem is queued:
+0: kd> dt 0xffffba87`091d4020 FxPkgPnp  m_PowerMachine.m_WorkItem.
+Wdf01000!FxPkgPnp
+   +0x1d8 m_PowerMachine             : 
+      +0x058 m_WorkItemFinished         : 
+      +0x061 m_WorkItemRunningCount     : 0 ''
+      +0x068 m_WorkItem                 : 
+         +0x000 m_WorkItem                 : 0xffffba87`090dea30 _IO_WORKITEM
+0: kd> dt 0xffffba87`0a2a8610 _IO_WORKITEM WorkItem.List
+nt!_IO_WORKITEM
+   +0x000 WorkItem      : 
+      +0x000 List          : _LIST_ENTRY [ 0xffffba87`090dea30 - 0xffffba87`0ad2b660 ]
+
+But all worker threads are tied up:
+0: kd> !stacks 2 IopProcessWorkItem
+Proc.Thread  .Thread  Ticks   ThreadState Blocker
+                            [fffff800c9a869c0 Idle]
+                            [ffffba8702a78500 System]
+   4.0000e8  ffffba870888d040 ffee3420 Blocked    nt!KiSwapContext+0x76
+                                        nt!KiSwapThread+0x16a
+                                        nt!KiCommitThreadWait+0x101
+                                        nt!KeWaitForSingleObject+0x2b8
+                                        watchdog!SMgrGdiCalloutInternal+0x72
+                                        watchdog!SMgrGdiCallout+0x5f
+                                        dxgkrnl!DpiGdiSyncDisplayCallout+0x3d
+                                        dxgkrnl!DpiGdiHandleAsyncDisplayCallout+0xe
+                                        nt!IopProcessWorkItem+0x87
+                                        nt!ExpWorkerThread+0xd8
+                                        nt!PspSystemThreadStartup+0x47
+                                        nt!KiStartSystemThread+0x16
+…
+
+
+Threads Processed: 5250
+0: kd> .logclose
+Closing open log file D:\temp\log.txt
+0: kd> !!find "IopProcessWorkItem" /c < d:\temp\log.txt
+<.shell waiting 1 second(s) for process>
+4118
+
+Dxgkrnl has queued 4118 DpiGdiHandleAsyncDisplayCallout  workitems and tied up all worker threads.
+This number seems excessive and appears to be “runaway” and in this case prevents power IRP from completion.
+
+So this looks like OS issue, perhaps fixed post-RS2.

@@ -1,0 +1,106 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604308861/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a bug in GNA.SYS driver – see debug analysis provided. Please dispatch this to the driver owners.
+
+This is bugcheck 10d - WDF_VIOLATION (10d):
+
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+WDF_VIOLATION (10d)
+The Kernel-Mode Driver Framework was notified that Windows detected an error
+in a framework-based driver. In general, the dump file will yield additional
+information about the driver that caused this bug check.
+Arguments:
+Arg1: 0000000000000005, A framework object handle of the incorrect type was passed to
+	a framework object method.
+Arg2: 0000000000000000, The handle value passed in.
+Arg3: 0000000000001024, Reserved.
+Arg4: ffffc78c5fd41460, Reserved.
+…
+
+The GNA.SYS (IntelGNA) driver have passed an invalid WDF handle to WdfSpinLockAcquire API:
+1: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffaa01`88ecee38 fffff80d`0205c6f6 nt!KeBugCheckEx
+01 (Inline Function) --------`-------- Wdf01000!Mx::MxBugCheckEx+0x13
+02 ffffaa01`88ecee40 fffff80d`0203b769 Wdf01000!FxVerifierBugCheckWorker+0x1e
+03 (Inline Function) --------`-------- Wdf01000!FxObjectHandleGetPtr+0x4bae0
+04 (Inline Function) --------`-------- Wdf01000!FxObjectHandleGetPtrAndGlobals+0x4bae0
+05 ffffaa01`88ecee80 fffff80d`0987436d Wdf01000!imp_WdfSpinLockAcquire+0x4bae9
+06 (Inline Function) --------`-------- gna!WdfSpinLockAcquire+0x18
+07 ffffaa01`88eceec0 fffff80d`098711c9 gna!ScoreComplete+0x71
+08 ffffaa01`88eceef0 fffff80d`0201373e gna!DeviceD0ExitEvnt+0xdd
+09 ffffaa01`88ecef70 fffff80d`020135ee Wdf01000!FxPnpDeviceD0Exit::InvokeClient+0x2e
+0a ffffaa01`88ecefd0 fffff80d`020057ab Wdf01000!FxPrePostCallback::InvokeStateless+0x36
+0b (Inline Function) --------`-------- Wdf01000!FxPnpDeviceD0Exit::Invoke+0xc
+0c ffffaa01`88ecf000 fffff80d`02017eb9 Wdf01000!FxPkgPnp::PowerGotoDxIoStopped+0xfb
+0d ffffaa01`88ecf090 fffff80d`02005b51 Wdf01000!FxPkgPnp::PowerGotoDNotZeroIoStopped+0x9
+0e (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PowerEnterNewState+0x123
+0f ffffaa01`88ecf0c0 fffff80d`020045ba Wdf01000!FxPkgPnp::PowerProcessEventInner+0x231
+10 ffffaa01`88ecf230 fffff80d`0200a5e1 Wdf01000!FxPkgPnp::PowerProcessEvent+0x16a
+11 (Inline Function) --------`-------- Wdf01000!FxPkgFdo::LowerDevicePower+0x11
+12 ffffaa01`88ecf2d0 fffff80d`01fe3e7f Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x65
+13 ffffaa01`88ecf320 fffff80d`01fe34f5 Wdf01000!FxPkgPnp::Dispatch+0xef
+14 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0xdf
+15 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0xeb
+16 ffffaa01`88ecf3c0 fffff801`3231c1c2 Wdf01000!FxDevice::DispatchWithLock+0x155
+17 ffffaa01`88ecf4b0 fffff801`32204729 nt!PopIrpWorker+0x1de
+18 ffffaa01`88ecf550 fffff801`32351bb6 nt!PspSystemThreadStartup+0x41
+19 ffffaa01`88ecf5a0 00000000`00000000 nt!KiStartSystemThread+0x16
+
+This is the driver for PCI Device ID 5A11:
+1: kd> !devstack ffffc78c5fd0ac60
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffc78c5fd0ac60  \Driver\IntelGNA   ffffc78c5fd2c310  
+  ffffc78c5cc18060  \Driver\pci        ffffc78c5cc181b0  NTPNP_PCI0002
+!DevNode ffffc78c5cd7ba50 :
+  DeviceInst is "PCI\VEN_8086&DEV_5A11&SUBSYS_72708086&REV_00\3&11583659&0&40"
+  ServiceName is "IntelGNA"
+
+The handle value is NULL:
+1: kd> .frame /r 7
+07 ffffaa01`88eceec0 fffff80d`098711c9 gna!ScoreComplete+0x71
+rax=fffff80d02093138 rbx=ffffc78c5fd2c310 rcx=000000000000010d
+rdx=0000000000000005 rsi=fffff80d09878001 rdi=0000000000000000
+rip=fffff80d0987436d rsp=ffffaa0188eceec0 rbp=00000000c0000120
+ r8=0000000000000000  r9=0000000000001024 r10=ffffc78c5fd41460
+r11=ffffaa0188ecefe0 r12=fffff80d09878000 r13=0000000000000010
+r14=0000000000000000 r15=0000000000000001
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000282
+gna!ScoreComplete+0x71:
+fffff80d`0987436d 488b442450      mov     rax,qword ptr [rsp+50h] ss:0018:ffffaa01`88ecef10=0000000000000000
+1: kd> dt devCtx app.
+Local var @ rbx Type _DEV_CTX*
+   +0x020 app  : 
+      +0x000 app  : (null) 
+      +0x008 appLock : (null) 
+
+That was the value passed to WDF:
+1: kd> ub fffff80d`0987436d
+gna!ScoreComplete+0x44:
+fffff80d`09874340 488b4918        mov     rcx,qword ptr [rcx+18h]
+fffff80d`09874344 4c8d0595300000  lea     r8,[gna!WPP_42def2a4fb95518d9343af8a2e5491d1_Traceguids (fffff80d`098773e0)]
+fffff80d`0987434b ba10000000      mov     edx,10h
+fffff80d`09874350 e8d3d3ffff      call    gna!WPP_SF_ (fffff80d`09871728)
+fffff80d`09874355 488b05443e0000  mov     rax,qword ptr [gna!WdfFunctions_01015 (fffff80d`098781a0)]
+fffff80d`0987435c 488b5328        mov     rdx,qword ptr [rbx+28h]
+fffff80d`09874360 488b0d313e0000  mov     rcx,qword ptr [gna!WdfDriverGlobals (fffff80d`09878198)]
+fffff80d`09874367 ff90e0090000    call    qword ptr [rax+9E0h]
+1: kd> dq ffffc78c5fd2c310+28 l1
+ffffc78c`5fd2c338  00000000`00000000
+
+As MSDN documents, bugcheck is by design when invalid spinlock handle value is passed:
+“A bug check occurs if the driver supplies an invalid object handle.”
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff550040(v=vs.85).aspx
+
+So this is an issue in GNA.SYS. Without driver binary or source code I cannot efficiently narrow it down more than that, but this is not an OS issue, this is an issue in the driver, so I recommend to dispatch it to the driver owners.
+

@@ -1,0 +1,187 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604292507/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is WDF_VIOLATION (10d) – see attached dump:
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+WDF_VIOLATION (10d)
+The Kernel-Mode Driver Framework was notified that Windows detected an error
+in a framework-based driver. In general, the dump file will yield additional
+information about the driver that caused this bug check.
+Arguments:
+Arg1: 0000000000000005, A framework object handle of the incorrect type was passed to
+	a framework object method.
+Arg2: 0000000000000000, The handle value passed in.
+Arg3: 0000000000001008, Reserved.
+Arg4: ffff858195be0850, Reserved.
+…
+
+The problem is that NULL-handle was passed to WdfRequestCancelSentRequest from bthhfenum!Microsoft::Bluetooth::Foundation::SentRequestCollection::Stop:
+1: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffc500`4fbc8118 fffff803`ddca556a nt!KeBugCheckEx
+01 (Inline Function) --------`-------- Wdf01000!Mx::MxBugCheckEx+0x13
+02 ffffc500`4fbc8120 fffff803`ddc7c23c Wdf01000!FxVerifierBugCheckWorker+0x1e
+03 ffffc500`4fbc8160 fffff803`ddc519d0 Wdf01000!FxObjectHandleGetPtr+0x4726c
+04 (Inline Function) --------`-------- Wdf01000!FxObjectHandleGetPtrAndGlobals+0x1a
+05 ffffc500`4fbc81d0 fffff803`e3b4922b Wdf01000!imp_WdfRequestCancelSentRequest+0x20
+06 (Inline Function) --------`-------- bthhfenum!WdfRequestCancelSentRequest+0x21
+07 ffffc500`4fbc8210 fffff803`e3b47595 bthhfenum!Microsoft::Bluetooth::Foundation::SentRequestCollection::Stop+0x10b
+08 ffffc500`4fbc8250 fffff803`e3b452ff bthhfenum!ScoCleanup+0x101
+09 ffffc500`4fbc8290 fffff803`ddcbd674 bthhfenum!BthHwUnInitialize+0x117
+0a ffffc500`4fbc82d0 fffff803`ddc49efa Wdf01000!FxPnpDeviceReleaseHardware::InvokeClient+0x24
+0b ffffc500`4fbc8320 fffff803`ddcbcea0 Wdf01000!FxPrePostCallback::InvokeStateless+0x36
+0c (Inline Function) --------`-------- Wdf01000!FxPnpDeviceReleaseHardware::Invoke+0x11
+0d ffffc500`4fbc8350 fffff803`ddcbbcd9 Wdf01000!FxPkgPnp::PnpReleaseHardware+0x58
+0e ffffc500`4fbc8390 fffff803`ddc55749 Wdf01000!FxPkgPnp::PnpEventFailedOwnHardware+0x9
+0f (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PnpEnterNewState+0xc9
+10 ffffc500`4fbc83c0 fffff803`ddc52a3f Wdf01000!FxPkgPnp::PnpProcessEventInner+0x1a9
+11 ffffc500`4fbc8470 fffff803`ddcc0ea5 Wdf01000!FxPkgPnp::PnpProcessEvent+0x12f
+12 ffffc500`4fbc8510 fffff803`ddc3faaf Wdf01000!FxPkgPnp::PnpSurpriseRemoval+0x25
+13 ffffc500`4fbc8540 fffff803`ddc3e3f5 Wdf01000!FxPkgPnp::Dispatch+0xef
+14 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0xb08
+15 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0xb24
+16 ffffc500`4fbc85e0 fffff801`c409c4e1 Wdf01000!FxDevice::DispatchWithLock+0xc85
+17 ffffc500`4fbc86d0 fffff801`c408c2e3 nt!IopSynchronousCall+0xe5
+18 ffffc500`4fbc8740 fffff801`c408b34a nt!IopRemoveDevice+0xdf
+19 ffffc500`4fbc8800 fffff801`c408e5bb nt!PnpSurpriseRemoveLockedDeviceNode+0xba
+1a ffffc500`4fbc8860 fffff801`c408e2ce nt!PnpDeleteLockedDeviceNode+0x87
+1b ffffc500`4fbc88a0 fffff801`c408cc03 nt!PnpDeleteLockedDeviceNodes+0xbe
+1c ffffc500`4fbc8910 fffff801`c409627a nt!PnpProcessQueryRemoveAndEject+0x1f3
+1d ffffc500`4fbc8a40 fffff801`c40bd41f nt!PnpProcessTargetDeviceEvent+0xf2
+1e ffffc500`4fbc8a70 fffff801`c3ceb500 nt!PnpDeviceEventWorker+0x28f
+1f ffffc500`4fbc8b00 fffff801`c3d1bc18 nt!ExpWorkerThread+0x140
+20 ffffc500`4fbc8b90 fffff801`c3e079d6 nt!PspSystemThreadStartup+0x48
+21 ffffc500`4fbc8be0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+Looking at the request, we can see that it is indeed was 0:
+1: kd> .frame /r 5
+05 ffffc500`4fbc81d0 fffff803`e3b4922b Wdf01000!imp_WdfRequestCancelSentRequest+0x20
+rax=fffff803ddc519b0 rbx=0000000000000000 rcx=000000000000010d
+rdx=0000000000000005 rsi=fffff803e3b4fac0 rdi=ffff8581968da320
+rip=fffff803ddc519d0 rsp=ffffc5004fbc81d0 rbp=00007a7e67197518
+ r8=0000000000000000  r9=0000000000001008 r10=0000000000000072
+r11=0000000000000000 r12=fffff803ddccd190 r13=fffff803ddccf480
+r14=0000000000000002 r15=ffffc5004fbc84c0
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000282
+Wdf01000!imp_WdfRequestCancelSentRequest+0x20:
+fffff803`ddc519d0 488b4c2440      mov     rcx,qword ptr [rsp+40h] ss:0018:ffffc500`4fbc8210=00007a7e67197502
+1: kd> dv /V
+<unavailable>     <unavailable>        DriverGlobals = <value unavailable>
+@rbx              @rbx                       Request = 0x00000000`00000000
+ffffc500`4fbc8210 @rsp+0x0040               pRequest = 0x00007a7e`67197502
+<unavailable>     <unavailable>     pFxDriverGlobals = <value unavailable>
+<unavailable>     <unavailable>               result = <value unavailable>
+
+Disassembling bthhfenum!Microsoft::Bluetooth::Foundation::SentRequestCollection::Stop shows this basic block as the body of the collection cleanup loop:
+1: kd> uf bthhfenum!Microsoft::Bluetooth::Foundation::SentRequestCollection::Stop
+…
+bthhfenum!Microsoft::Bluetooth::Foundation::SentRequestCollection::Stop+0x5b:
+fffff803`e3b4917b 488b05ae930000  mov     rax,qword ptr [bthhfenum!WdfFunctions_01015 (fffff803`e3b52530)]
+fffff803`e3b49182 488b5708        mov     rdx,qword ptr [rdi+8]
+fffff803`e3b49186 488b0d9b930000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff803`e3b52528)]
+fffff803`e3b4918d 488b8098000000  mov     rax,qword ptr [rax+98h]
+fffff803`e3b49194 ff15d6af0000    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff803`e3b54170)]
+fffff803`e3b4919a 488b0d8f930000  mov     rcx,qword ptr [bthhfenum!WdfFunctions_01015 (fffff803`e3b52530)]
+fffff803`e3b491a1 488bd8          mov     rbx,rax
+fffff803`e3b491a4 488b5708        mov     rdx,qword ptr [rdi+8]
+fffff803`e3b491a8 4c8bc3          mov     r8,rbx
+fffff803`e3b491ab 488b8180000000  mov     rax,qword ptr [rcx+80h]
+fffff803`e3b491b2 488b0d6f930000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff803`e3b52528)]
+fffff803`e3b491b9 ff15b1af0000    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff803`e3b54170)]
+fffff803`e3b491bf 488b0d6a930000  mov     rcx,qword ptr [bthhfenum!WdfFunctions_01015 (fffff803`e3b52530)]
+fffff803`e3b491c6 41b972000000    mov     r9d,72h
+fffff803`e3b491cc 4533c0          xor     r8d,r8d
+fffff803`e3b491cf 4889742420      mov     qword ptr [rsp+20h],rsi
+fffff803`e3b491d4 488bd3          mov     rdx,rbx
+fffff803`e3b491d7 488b8168060000  mov     rax,qword ptr [rcx+668h]
+fffff803`e3b491de 488b0d43930000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff803`e3b52528)]
+fffff803`e3b491e5 ff1585af0000    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff803`e3b54170)]
+fffff803`e3b491eb 488b053e930000  mov     rax,qword ptr [bthhfenum!WdfFunctions_01015 (fffff803`e3b52530)]
+fffff803`e3b491f2 488b5708        mov     rdx,qword ptr [rdi+8]
+fffff803`e3b491f6 488b0d2b930000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff803`e3b52528)]
+fffff803`e3b491fd 488b8098000000  mov     rax,qword ptr [rax+98h]
+fffff803`e3b49204 ff1566af0000    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff803`e3b54170)]
+fffff803`e3b4920a 488b0d1f930000  mov     rcx,qword ptr [bthhfenum!WdfFunctions_01015 (fffff803`e3b52530)]
+fffff803`e3b49211 488bd0          mov     rdx,rax
+fffff803`e3b49214 4c8b8110080000  mov     r8,qword ptr [rcx+810h]
+fffff803`e3b4921b 488b0d06930000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff803`e3b52528)]
+fffff803`e3b49222 498bc0          mov     rax,r8
+fffff803`e3b49225 ff1545af0000    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff803`e3b54170)]
+fffff803`e3b4922b 488b05fe920000  mov     rax,qword ptr [bthhfenum!WdfFunctions_01015 (fffff803`e3b52530)]
+fffff803`e3b49232 41b974000000    mov     r9d,74h
+fffff803`e3b49238 488b0de9920000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff803`e3b52528)]
+fffff803`e3b4923f 4533c0          xor     r8d,r8d
+fffff803`e3b49242 488bd3          mov     rdx,rbx
+fffff803`e3b49245 4889742420      mov     qword ptr [rsp+20h],rsi
+fffff803`e3b4924a 488b8070060000  mov     rax,qword ptr [rax+670h]
+fffff803`e3b49251 ff1519af0000    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff803`e3b54170)]
+fffff803`e3b49257 488b05d2920000  mov     rax,qword ptr [bthhfenum!WdfFunctions_01015 (fffff803`e3b52530)]
+fffff803`e3b4925e 488b5708        mov     rdx,qword ptr [rdi+8]
+fffff803`e3b49262 488b0dbf920000  mov     rcx,qword ptr [bthhfenum!WdfDriverGlobals (fffff803`e3b52528)]
+fffff803`e3b49269 488b4070        mov     rax,qword ptr [rax+70h]
+fffff803`e3b4926d ff15fdae0000    call    qword ptr [bthhfenum!__guard_dispatch_icall_fptr (fffff803`e3b54170)]
+fffff803`e3b49273 85c0            test    eax,eax
+fffff803`e3b49275 0f8500ffffff    jne     bthhfenum!Microsoft::Bluetooth::Foundation::SentRequestCollection::Stop+0x5b (fffff803`e3b4917b)  Branch
+…
+
+This clearly shows 2 calls to WdfCollectionGetFirstItem
+1: kd> u poi(poi(bthhfenum!WdfFunctions_01015)+0x98) L1
+Wdf01000!imp_WdfCollectionGetFirstItem:
+fffff803`ddca9a40 48895c2410      mov     qword ptr [rsp+10h],rbx
+
+Before and after WdfCollectionRemove:
+1: kd> u poi(poi(bthhfenum!WdfFunctions_01015)+0x80) L1
+Wdf01000!imp_WdfCollectionRemove:
+fffff803`ddc70510 48895c2410      mov     qword ptr [rsp+10h],rbx
+
+So the bthhfenum!Microsoft::Bluetooth::Foundation::SentRequestCollection::Stop basically loops over and on every iteration:
+1.	Checks that collection is not empty
+2.	Gets first request from the collection
+3.	Removes the request from the collection
+4.	References the request removed
+5.	Calls cancel request on the first request from the collection – this is the bug, the collection at this point might not have any requests
+6.	Dereferences request obtained at step 2
+
+WdfCollectionGetFirstItem returns NULL if collection is empty - https://msdn.microsoft.com/en-us/library/windows/hardware/ff545763(v=vs.85).aspx
+“Return value
+WdfCollectionGetFirstItem returns a handle to the object that is currently at the front of the specified collection's list of objects, or NULL if the list is empty.”
+
+
+And WdfRequestCancelSentRequest defined as:
+BOOLEAN WdfRequestCancelSentRequest(
+  [in] WDFREQUEST Request
+);
+
+“A bug check occurs if the driver supplies an invalid object handle.”
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff549941(v=vs.85).aspx
+
+Therefore passing NULL as a handle value is not allowed.
+
+[WOS SLA]:
+Actual code:
+onecore\drivers\bluetooth\foundation\lib\SentRequestCollection.h 
+    _IRQL_requires_max_(DISPATCH_LEVEL)
+    void Stop()
+    {
+        WdfSpinLockAcquire(m_lock);
+        while (WdfCollectionGetCount(m_collection) > 0)
+        {
+            auto request = static_cast<WDFREQUEST>(WdfCollectionGetFirstItem(m_collection));
+            WdfCollectionRemove(m_collection, request);
+            WdfObjectReference(request);
+            WdfRequestCancelSentRequest(static_cast<WDFREQUEST>(WdfCollectionGetFirstItem(m_collection)));
+            WdfObjectDereference(request);
+        }
+        m_stopped = true;
+        WdfSpinLockRelease(m_lock);
+    }
+

@@ -1,0 +1,164 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604448490
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:
+
+This is Bugcheck - DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5) – see attached memory dump:
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5)
+Memory was referenced after it was freed.
+This cannot be protected by try-except.
+When possible, the guilty driver's name (Unicode string) is printed on
+the bugcheck screen and saved in KiBugCheckDriver.
+Arguments:
+Arg1: ffffc942479f8f58, memory referenced
+Arg2: 0000000000000000, value 0 = read operation, 1 = write operation
+Arg3: ffffc91df7d2c270, if non-zero, the address which referenced memory.
+Arg4: 0000000000000000, (reserved)
+…
+
+win32kfull!CRotationMgr::GetActivePpiPreference attempted to access freed up memory:
+3: kd> r cr2
+cr2=ffffc942479f8f58
+3: kd> !pte ffffc942479f8f58-368
+                                           VA ffffc942479f8bf0
+PXE at FFFF8B45A2D16C90    PPE at FFFF8B45A2D92848    PDE at FFFF8B45B25091E0    PTE at FFFF8B64A123CFC0
+contains 0A000000018A3863  contains 0A0000000170D863  contains 0A00000100CE0863  contains 0042470D80000000
+pfn 18a3      ---DA--KWEV  pfn 170d      ---DA--KWEV  pfn 100ce0    ---DA--KWEV  not valid
+                                                                                  Page has been freed
+
+The memory is current process information rotation:
+3: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffff8a09`465aec78 fffff803`9f0d267f nt!KeBugCheckEx
+01 ffff8a09`465aec80 fffff803`9f0c79ad nt!MiSystemFault+0x188f
+02 ffff8a09`465aed20 fffff803`9f1a6972 nt!MmAccessFault+0xa3d
+03 ffff8a09`465aeef0 ffffc91d`f7d2c270 nt!KiPageFault+0x132
+04 ffff8a09`465af080 ffffc91d`f7d43f71 win32kfull!CRotationMgr::GetActivePpiPreference+0x34
+05 ffff8a09`465af0b0 ffffc91d`f7c3e021 win32kfull!CLegacyRotationMgr::xxxApplyOrientationPreference+0x1061a5
+06 ffff8a09`465af0e0 ffffc91d`f7c3dc28 win32kfull!CLegacyRotationMgr::xxxRefreshDisplayOrientation+0x91
+07 ffff8a09`465af160 ffffc91d`f767b5f7 win32kfull!xxxRefreshDisplayOrientation+0x18
+08 ffff8a09`465af190 ffffc91d`f767b125 win32kbase!PowerOnMonitor+0x2e7
+09 ffff8a09`465af210 ffffc91d`f767a685 win32kbase!xxxUserPowerEventCalloutWorker+0x975
+0a ffff8a09`465af330 ffffc91d`f7c12b38 win32kbase!xxxUserPowerCalloutWorker+0xa5
+0b ffff8a09`465af390 fffff803`9f1a8253 win32kfull!NtUserCallNoParam+0x58
+0c ffff8a09`465af3c0 00007ff8`efa31124 nt!KiSystemServiceCopyEnd+0x13
+0d 00000023`e283fac8 00007ff8`ef382a8a win32u!ZwUserCallNoParam+0x14
+0e (Inline Function) --------`-------- winsrvext!HandlePowerCallout+0xb
+0f 00000023`e283fad0 00007ff8`f30ffedf winsrvext!PowerNotificationThread+0x5a
+10 00000023`e283fb00 00000000`00000000 ntdll!RtlUserThreadStart+0x2f
+3: kd> u win32kfull!CRotationMgr::GetActivePpiPreference win32kfull!CRotationMgr::GetActivePpiPreference+0x34
+win32kfull!CRotationMgr::GetActivePpiPreference:
+ffffc91d`f7d2c23c 4053            push    rbx
+ffffc91d`f7d2c23e 4883ec20        sub     rsp,20h
+ffffc91d`f7d2c242 488b159f952200  mov     rdx,qword ptr [win32kfull!__imp_gRotationProcessLock (ffffc91d`f7f557e8)]
+ffffc91d`f7d2c249 488d4c2430      lea     rcx,[rsp+30h]
+ffffc91d`f7d2c24e e861b4f0ff      call    win32kfull!PUSHLOCKEX::PUSHLOCKEX (ffffc91d`f7c376b4)
+ffffc91d`f7d2c253 488b053e9c2200  mov     rax,qword ptr [win32kfull!__imp_grpdeskRitInput (ffffc91d`f7f55e98)]
+ffffc91d`f7d2c25a 33db            xor     ebx,ebx
+ffffc91d`f7d2c25c 488b00          mov     rax,qword ptr [rax]
+ffffc91d`f7d2c25f 4885c0          test    rax,rax
+ffffc91d`f7d2c262 7412            je      win32kfull!CRotationMgr::GetActivePpiPreference+0x3a (ffffc91d`f7d2c276)
+ffffc91d`f7d2c264 488b8000010000  mov     rax,qword ptr [rax+100h]
+ffffc91d`f7d2c26b 4885c0          test    rax,rax
+ffffc91d`f7d2c26e 7406            je      win32kfull!CRotationMgr::GetActivePpiPreference+0x3a (ffffc91d`f7d2c276)
+ffffc91d`f7d2c270 8b9868030000    mov     ebx,dword ptr [rax+368h]
+3: kd> dq poi(poi(ffffc91d`f7f55e98))+100 L1
+ffffdf82`69e4cec0  ffffc942`479f8bf0
+3: kd> ? @cr2-368
+Evaluate expression: -60188470047760 = ffffc942`479f8bf0
+
+The memory was freed because the process is terminated:
+3: kd> !verifier 80 ffffc942479f8f58-368
+
+Log of recent kernel pool Allocate and Free operations:
+
+There are up to 0x10000 entries in the log.
+
+Parsing 0x0000000000010000 log entries, searching for address 0xffffc942479f8bf0.
+
+
+======================================================================
+Pool block ffffc942479f8bf0, Size 0000000000000410, Thread ffffdf8268730080
+fffff8039f7c963f nt!VfFreePoolNotification+0x5b
+fffff8039f291f15 nt!ExpFreePoolChecks+0x81
+fffff8039f2bd91f nt!ExFreePoolWithTag+0x156f
+fffff80b32e3a8d0 VerifierExt!ExFreePoolWithTag_wrapper+0x10
+fffff8039f7b84ea nt!VerifierExFreePoolWithTag+0x4a
+ffffc91df7ccb6fc win32kfull!Win32FreePoolImpl+0x4c
+ffffc91df7641b0c win32kbase!Win32FreePool+0x1c
+ffffc91df763df85 win32kbase!UserDeleteW32Process+0x55
+ffffc91df7cdc66c win32kfull!DereferenceW32Process+0x1c
+ffffc91df7cdc551 win32kfull!W32pProcessCallout+0x101
+ffffc91df7638aeb win32kbase!W32CalloutDispatch+0x2eb
+ffffc91df745103a win32k!W32CalloutDispatchThunk+0xa
+fffff8039f527e5d nt!ExCallCallBack+0x3d
+…
+
+
+3: kd> !thread ffffdf8268730080
+THREAD ffffdf8268730080  Cid 1a18.02dc  Teb: 0000000000000000 Win32Thread: 0000000000000000 TERMINATED
+Not impersonating
+DeviceMap                 ffff9280915f8a70
+Owning Process            ffffdf826b481080       Image:         Rtc.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      8160           Ticks: 2 (0:00:00:00.031)
+Context Switch Count      53             IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address 0x000000000139fcb2
+Stack Init 0000000000000000 Current ffff8a0946866f80
+Base ffff8a0946868000 Limit ffff8a0946861000 Call 0000000000000000
+Priority 8 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffff8a09`46866fc0 fffff803`9f0de187 : ffffdf82`00000000 00000000`00000000 ffffdf82`53687dd0 fffff803`9f0d5d34 : nt!KiSwapContext+0x76
+ffff8a09`46867100 fffff803`9f09e075 : ffffdf82`68730080 ffffdf82`68730378 ffffdf82`68730080 ffffdf82`68730080 : nt!KiSwapThread+0x267
+ffff8a09`468671c0 fffff803`9f506c87 : ffff9280`9383b060 00000000`00000000 ffff8a09`46867440 00000000`00000000 : nt!KeTerminateThread+0x175
+ffff8a09`46867250 fffff803`9f590c5f : 00000000`00000000 ffff8a09`46867401 00000000`01194000 ffffdf82`68730080 : nt!PspExitThread+0x343
+ffff8a09`46867350 fffff803`9f1a8253 : ffffdf82`00001a18 ffffdf82`68730080 ffffdf82`6b481080 00000000`00000000 : nt!NtTerminateProcess+0xeb
+ffff8a09`468673c0 00000000`6d8c1e5c : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffff8a09`468673c0)
+00000000`00fcec18 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x6d8c1e5c
+
+3: kd> !process ffffdf826b481080
+PROCESS ffffdf826b481080
+    SessionId: 1  Cid: 1a18    Peb: 01192000  ParentCid: 0fd8
+    DirBase: 11dda0000  ObjectTable: 00000000  HandleCount:   0.
+    Image: Rtc.exe
+    VadRoot 0000000000000000 Vads 0 Clone 0 Private 10. Modified 5. Locked 0.
+    DeviceMap ffff9280915f8a70
+    Token                             ffff92809383b060
+    ElapsedTime                       00:00:00.299
+    UserTime                          00:00:00.000
+    KernelTime                        00:00:00.000
+    QuotaPoolUsage[PagedPool]         288
+    QuotaPoolUsage[NonPagedPool]      0
+    Working Set Sizes (now,min,max)  (11, 50, 345) (44KB, 200KB, 1380KB)
+    PeakWorkingSetSize                668
+    VirtualSize                       0 Mb
+    PeakVirtualSize                   44 Mb
+    PageFaultCount                    718
+    MemoryPriority                    BACKGROUND
+    BasePriority                      8
+    CommitCharge                      14
+
+No active threads
+
+So this issue is nearly identical to the 3735 which is marked as resolved:
+===== Comments Moved by Partner Bug Service 08/16/2017 06:05 PM UTC =====
+The fix for this is now checked into RS_ONECORE_SIGMA_GRFX_DEV and RS3_RELEASE_SIGMA_DEV please pick this up and test
+===============================================================
+But even though the code has changed, very similar bug still present in this build:
+3: kd> vertarget
+Windows 10 Kernel Version 16270 MP (4 procs) Free x64
+Product: WinNt, suite: TerminalServer SingleUserTS
+Built by: 16270.1000.amd64fre.rs3_release_sigma.170816-2008
+Machine Name:
+Kernel base = 0xfffff803`9f015000 PsLoadedModuleList = 0xfffff803`9f37aef0
+Debug session time: Wed Aug 30 07:41:26.781 2017 (UTC - 7:00)
+System Uptime: 0 days 0:02:07.542

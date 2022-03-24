@@ -1,0 +1,143 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604321341
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is DRIVER_POWER_STATE_FAILURE – Bugcheck 9F – power IRP timeout:
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffc685a2dfb060, Physical Device Object of the stack
+Arg3: ffff9701103b9870, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffc685acfc9650, The blocked IRP
+
+Debugging Details:
+------------------
+
+Implicit thread is now ffffc685`ae3c9040
+   This is a bugcheck caused by a WDF driver timing out. 
+   Followup driver name:MEIx64  
+   Reason: waiting for all inflight requests to be acknowledged on WDFQUEUE 
+   !wdfkd.wdfqueue 0x397a52b85858
+…
+
+The timed out IRP is owned by the TXEI driver:
+3: kd> !irp ffffc685acfc9650
+Irp is active with 6 stacks 5 is current (= 0xffffc685acfc9840)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffc685ad47bba0 00000000 fffff8020fd43760-ffffc685acfc7908 Success Error Cancel pending
+	      *** ERROR: Module load completed but symbols could not be loaded for TeeDriverW8x64.sys
+ \Driver\MEIx64	nt!PopRequestCompletion
+			Args: 00015500 00000001 00000004 00000003
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffc685acfc7908    
+
+			Args: 00000000 00000000 00000000 00000000
+3: kd> !devstack ffffc685ad47bba0
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffc685ad47bba0  \Driver\MEIx64     ffffc685ad47d310  
+  ffffc685a2dfaa40  \Driver\ACPI       ffffc685a2c807a0  
+  ffffc685a2dfb060  \Driver\pci        ffffc685a2dfb1b0  NTPNP_PCI0007
+!DevNode ffffc685a3619a50 :
+  DeviceInst is "PCI\VEN_8086&DEV_A2BA&SUBSYS_19998086&REV_00\3&11583659&0&B0"
+  ServiceName is "MEIx64"
+
+The driver owns I/O and must complete or fail it to allow its queue to shutdown and let KMDF proceed with D0 exit:
+3: kd> !wdfkd.wdfqueue 0x397a52b85858 
+Treating handle as a KMDF handle!
+
+Dumping WDFQUEUE 0x0000397a52b85858
+=========================
+Sequential, Power-managed, PowerStoppingDriverNotified, Can accept, Can dispatch, ExecutionLevelDispatch, SynchronizationScopeNone
+    Number of driver owned requests: 1
+    Power transition in progress
+    Number of waiting requests: 10
+!wdfrequest 0x0000397a5303ddb8  !irp 0xffffc685af697940
+!wdfrequest 0x0000397a52159dd8  !irp 0xffffc685ad326390
+!wdfrequest 0x0000397a52778fd8  !irp 0xffffc685afaec010
+!wdfrequest 0x0000397a525a55b8  !irp 0xffffc685aec86580
+!wdfrequest 0x0000397a501a8748  !irp 0xffffc685afea3010
+!wdfrequest 0x0000397a5da3b1b8  !irp 0xffffc685af5b6c80
+!wdfrequest 0x0000397a5016e1b8  !irp 0xffffc685afe60b30
+!wdfrequest 0x0000397a5303d788  !irp 0xffffc685a25915a0
+!wdfrequest 0x0000397a521fa698  !irp 0xffffc685afecf2b0
+!wdfrequest 0x0000397a50b99958  !irp 0xffffc685af5ce250
+
+    Number of requests notified about power change: 1
+    !wdfrequest 0x0000397a501476f8  !irp 0xffffc685af0de010
+
+    EvtIoWrite: (0xfffff80aaf6ad140) TeeDriverW8x64
+    EvtIoDeviceControl: (0xfffff80aaf6ab25c) TeeDriverW8x64
+    EvtIoInternalDeviceControl: (0xfffff80aaf6abff4) TeeDriverW8x64
+    EvtIoCanceledOnQueue: (0xfffff80aaf6aa68c) TeeDriverW8x64
+
+3: kd> !irp 0xffffc685af0de010
+Irp is active with 3 stacks 3 is current (= 0xffffc685af0de170)
+ No Mdl: System buffer=ffffc685ad924dc0: Thread ffffc685aee4e080:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_WRITE(4), N/A(0)]
+            0  1 ffffc685ad47bba0 ffffc685ade2e3f0 00000000-00000000    pending
+	       \Driver\MEIx64
+			Args: 000001fc 00000000 00000000 00000000
+3: kd> !thread ffffc685aee4e080
+THREAD ffffc685aee4e080  Cid 1f84.03d8  Teb: 0000000000b5f000 Win32Thread: 0000000000000000 WAIT: (UserRequest) UserMode Non-Alertable
+    ffffc685ae5392f0  SynchronizationEvent
+IRP List:
+    ffffc685aec86580: (0006,01f0) Flags: 00060070  Mdl: 00000000
+    ffffc685af0de010: (0006,01f0) Flags: 00060a30  Mdl: 00000000
+Not impersonating
+DeviceMap                 ffffd78025016bb0
+Owning Process            ffffc685afad1080       Image:         LMS.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      71799          Ticks: 22625 (0:00:05:53.515)
+Context Switch Count      4430           IdealProcessor: 2             
+UserTime                  00:00:00.140
+KernelTime                00:00:00.234
+Win32 Start Address 0x000000006eeec724
+Stack Init ffff970115977c10 Current ffff970115977670
+Base ffff970115978000 Limit ffff970115971000 Call 0000000000000000
+Priority 10 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffff9701`159776b0 fffff802`0fc24d3a : 00000000`00000001 00000000`00000000 ffffc685`aec86728 00000000`00000000 : nt!KiSwapContext+0x76
+ffff9701`159777f0 fffff802`0fc24701 : 00000000`00000000 fffff802`10073182 00000005`00000500 00000000`00000010 : nt!KiSwapThread+0x16a
+ffff9701`159778a0 fffff802`0fc24018 : 00000000`00000050 ffff9701`00000000 ffffdf21`9a0a6000 ffffc685`ae5392f0 : nt!KiCommitThreadWait+0x101
+ffff9701`15977940 fffff802`1005fde8 : ffffc685`ae5392f0 00000000`00000006 00000000`00000001 00000000`00000000 : nt!KeWaitForSingleObject+0x2b8
+ffff9701`15977a10 fffff802`0fd86c13 : ffffc685`aee4e080 00000000`00000000 00000000`00000000 ffffc685`ae5392f0 : nt!NtWaitForSingleObject+0xf8
+ffff9701`15977a80 00000000`5a7d21cc : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffff9701`15977a80)
+00000000`024cebc8 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x5a7d21cc
+
+So this is likely caused by the SEC device FW not completing the operation.

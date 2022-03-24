@@ -1,0 +1,101 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/2206770974
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is an unhandled exception – Bugcheck 7E (see memory dump):
+7: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: ffffffff80000003, The exception code that was not handled
+Arg2: fffff80139470080, The address that the exception occurred at
+Arg3: ffff9781f559e818, Exception Record Address
+Arg4: ffff9781f559e060, Context Record Address
+…
+
+The exception is caused by an unhandled programmatic debug break point.
+From the callstack, iaLPSS2_UART2 is trying to acquire WDF Interrupt lock:
+7: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffff9781`f559d7f8 fffff801`394816b0 nt!KeBugCheckEx
+01 ffff9781`f559d800 fffff801`39444399 nt!PspSystemThreadStartup$filt$0+0x44
+02 ffff9781`f559d840 fffff801`3947102f nt!_C_specific_handler+0xa9
+03 ffff9781`f559d8b0 fffff801`392b6890 nt!RtlpExecuteHandlerForException+0xf
+04 ffff9781`f559d8e0 fffff801`392d0eda nt!RtlDispatchException+0x490
+05 ffff9781`f559e030 fffff801`3947a19d nt!KiDispatchException+0x16a
+06 ffff9781`f559e6e0 fffff801`39473bd2 nt!KiExceptionDispatch+0x11d
+07 ffff9781`f559e8c0 fffff801`39470081 nt!KiBreakpointTrap+0x312
+08 ffff9781`f559ea58 fffff801`3a4e01db nt!DbgBreakPoint+0x1
+09 (Inline Function) --------`-------- Wdf01000!Mx::MxDbgBreakPoint+0x7
+0a ffff9781`f559ea60 fffff801`3a4b2a01 Wdf01000!FxVerifierDbgBreakPoint+0x4b
+0b (Inline Function) --------`-------- Wdf01000!FxInterrupt::AcquireLock+0x58
+0c ffff9781`f559eaa0 fffff801`541af31a Wdf01000!imp_WdfInterruptAcquireLock+0xd1
+0d (Inline Function) --------`-------- iaLPSS2_UART2!WdfInterruptAcquireLock+0x28
+0e ffff9781`f559eae0 fffff801`541ad149 iaLPSS2_UART2!_UART_IO_MANAGER_SECONDGEN::DestroyDma+0x14a
+0f ffff9781`f559eb20 fffff801`541964b5 iaLPSS2_UART2!_UART_IO_MANAGER::DestroyConfiguration+0x99
+10 ffff9781`f559eb50 fffff801`3a530654 iaLPSS2_UART2!UartEvtReleaseHardware+0x105
+11 ffff9781`f559eb90 fffff801`3a4de79d Wdf01000!FxPnpDeviceReleaseHardware::InvokeClient+0x24
+12 ffff9781`f559ebe0 fffff801`3a52fc30 Wdf01000!FxPrePostCallback::InvokeStateless+0x15925
+13 (Inline Function) --------`-------- Wdf01000!FxPnpDeviceReleaseHardware::Invoke+0x11
+14 ffff9781`f559ec10 fffff801`3a52ebde Wdf01000!FxPkgPnp::PnpReleaseHardware+0x58
+15 ffff9781`f559ec50 fffff801`3a52dde8 Wdf01000!FxPkgPnp::PnpEventRemovingDisableInterfaces+0xe
+16 ffff9781`f559ec80 fffff801`3a52fb5e Wdf01000!FxPkgPnp::PnpEnterNewState+0x178
+17 ffff9781`f559ed10 fffff801`3a52f90e Wdf01000!FxPkgPnp::PnpProcessEventInner+0x1e6
+18 ffff9781`f559ed90 fffff801`3a537796 Wdf01000!FxPkgPnp::PnpProcessEvent+0x19a
+19 ffff9781`f559ee20 fffff801`3a4b4104 Wdf01000!FxPkgPnp::_PnpRemoveDevice+0xa6
+1a ffff9781`f559ee90 fffff801`3a4bb9a3 Wdf01000!FxPkgPnp::Dispatch+0xb4
+1b (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x9e
+1c (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0xbc
+1d ffff9781`f559ef00 fffff801`39420f1b Wdf01000!FxDevice::DispatchWithLock+0x113
+1e ffff9781`f559ef60 fffff801`39c010a9 nt!IopfCallDriver+0x57
+1f ffff9781`f559efa0 fffff801`394bf53d nt!IovCallDriver+0x275
+20 ffff9781`f559efe0 fffff801`39933dc8 nt!IofCallDriver+0x18d3cd
+21 ffff9781`f559f020 fffff801`399c38e5 nt!IopSynchronousCall+0xf8
+22 ffff9781`f559f0a0 fffff801`3941823c nt!IopRemoveDevice+0x105
+23 ffff9781`f559f160 fffff801`399c355f nt!PnpRemoveLockedDeviceNode+0x1ac
+24 ffff9781`f559f1c0 fffff801`399c31fa nt!PnpDeleteLockedDeviceNode+0x8b
+25 ffff9781`f559f200 fffff801`39a9bbdb nt!PnpDeleteLockedDeviceNodes+0x76
+26 ffff9781`f559f280 fffff801`3999556a nt!PnpProcessQueryRemoveAndEject+0xd9f47
+27 ffff9781`f559f370 fffff801`39925408 nt!PnpProcessTargetDeviceEvent+0xea
+28 ffff9781`f559f3a0 fffff801`393218ec nt!PnpDeviceEventWorker+0x2d8
+29 ffff9781`f559f430 fffff801`393d9aa6 nt!ExpWorkerThread+0x18c
+2a ffff9781`f559f4d0 fffff801`3946f87a nt!PspSystemThreadStartup+0x56
+2b ffff9781`f559f520 00000000`00000000 nt!KiStartSystemThread+0x2a
+
+But the interrupt is disconnected:
+7: kd> .frame /r b
+0b (Inline Function) --------`-------- Wdf01000!FxInterrupt::AcquireLock+0x58
+rax=ffffa48f8be24e10 rbx=ffffa48f9dc98dc0 rcx=fffff8013a54f720
+rdx=ffffa48f8be24fd0 rsi=0000000000000000 rdi=fffff8013a4b2930
+rip=fffff8013a4b2a01 rsp=ffff9781f559eaa0 rbp=ffffa48f8bebefa0
+ r8=ffff9781f559eaa0  r9=ffffa48f8be24fd0 r10=7efefefefefeff31
+r11=8101010101010100 r12=0000000000000000 r13=fffff801541c5078
+r14=00005b707598f2f8 r15=fffff801541c5078
+iopl=0         nv up ei ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040286
+Wdf01000!FxInterrupt::AcquireLock+0x58 [inlined in Wdf01000!imp_WdfInterruptAcquireLock+0xd1]:
+fffff801`3a4b2a01 440f20c0        mov     rax,cr8
+7: kd> dt this m_Interrupt
+Local var @ rbx Type FxInterrupt*
+   +0x080 m_Interrupt : (null) 
+
+WDF logs the error:
+7: kd> !wdflogdump iaLPSS2_UART2.sys -f
+…
+697: FxInterrupt::AcquireLock - Can't synchronize when WDFINTERRUPT 0x00005B7062367238 isn't connected
+---- end of log ----
+
+This is an enforcement of the WDF rule:
+“Your driver cannot call WdfInterruptAcquireLock before the framework has called the driver's EvtInterruptEnable callback function or after the framework has called the driver's EvtInterruptDisable callback function.”
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff547340%28v=vs.85%29.aspx?f=255&MSPPError=-2147217396
+
+In this case device is being removed and interrupt is disconnected, therefore, acquiring Interrupt lock is illegal.
+

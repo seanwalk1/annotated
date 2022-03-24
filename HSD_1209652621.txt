@@ -1,0 +1,110 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209652621/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	Issue caused by hpdskflt.sys – HP Disk Filter driver.
+[BUGCHECK]:	0x9F
+
+This issue was not caused by iastora.sys. It is caused by hpdskflt.sys – HP Disk Filter driver.
+
+Here we have DRIVER_POWER_STATE_FAILURE (9f):
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffb0883544c060, Physical Device Object of the stack
+Arg3: ffffd200a5b1b960, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffb088355e0280, The blocked IRP
+…
+
+The timed-out power IRP is held at CLASSPNP level:
+2: kd> !irp ffffb088355e0280
+Irp is active with 8 stacks 6 is current (= 0xffffb088355e04b8)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffb08834649060 00000000 fffff80605bb3b40-00000000 Success Error Cancel pending
+	       \Driver\disk	partmgr!PmPowerCompletion
+			Args: 00000000 00000001 00000004 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffb08834649ae0 00000000 fffff801f75956c0-ffffb088355e0870 Success Error Cancel pending
+	       \Driver\partmgr	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000004 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffb088355e0870    
+
+			Args: 00000000 00000000 00000000 00000000
+
+Since CLASSPNP pends original power IRP and sends down its private IOCTL IRP, the private IRP has to complete for original IRP to complete.
+So we can see the private IRP from CLASSPNP FDO extension:
+2: kd> dt nt!_device_object ffffb08834649060 DeviceExtension
+   +0x040 DeviceExtension : 0xffffb088`346491b0 Void
+2: kd> dt classpnp!_FUNCTIONAL_DEVICE_EXTENSION 0xffffb088`346491b0 PrivateFdoData
+   +0x478 PrivateFdoData : 0xffffb088`355e1010 _CLASS_PRIVATE_FDO_DATA
+2: kd> dt 0xffffb088`355e1010 _CLASS_PRIVATE_FDO_DATA PowerProcessIrp
+CLASSPNP!_CLASS_PRIVATE_FDO_DATA
+   +0xcd0 PowerProcessIrp : 0xffffb088`355e4e10 _IRP
+
+The private IRP is held by HP Disk Filter:
+2: kd> !irp 0xffffb088`355e4e10
+Irp is active with 4 stacks 3 is current (= 0xffffb088355e4f70)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_INTERNAL_DEVICE_CONTROL(f), N/A(0)]
+            0  0 ffffb0883544c060 00000000 fffff806069c2444-ffffb0883543ec60    
+	       \Driver\iaStorA	hpdskflt
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_INTERNAL_DEVICE_CONTROL(f), N/A(0)]
+            0 e1 ffffb0883543eb10 00000000 fffff80606b17180-ffffb088346495a0 Success Error Cancel pending
+	       \Driver\hpdskflt	CLASSPNP!ClasspPowerDownCompletion
+			Args: ffffb088346495d0 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+
+Since this is 3rd party driver, we don’t have symbols or sources for, our recommendation would be to dispatch this to the driver vendor.
+The driver seems pretty old – possible there might be updated version available:
+2: kd> lmvi mhpdskflt
+Browse full module list
+start             end                 module name
+fffff806`069c0000 fffff806`069cb000   hpdskflt   (no symbols)           
+    Symbol file: hpdskflt.sys
+    Image path: \SystemRoot\system32\DRIVERS\hpdskflt.sys
+    Image name: hpdskflt.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Fri Jun  5 10:59:15 2015 (5571E373)
+    CheckSum:         00011C38
+    ImageSize:        0000B000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4
+

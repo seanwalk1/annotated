@@ -1,0 +1,317 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209952737
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is SYSTEM_THREAD_EXCEPTION_NOT_HANDLED – Bugcheck 7E – see attached memory dump:
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: ffffffffc0000005, The exception code that was not handled
+Arg2: fffff802f44a839f, The address that the exception occurred at
+Arg3: ffffdf011fa96828, Exception Record Address
+Arg4: ffffdf011fa96060, Context Record Address
+…
+
+Switching to context, we can see this is a #PF pagefault trap caused by IntelBatteryManagement.sys trying to access NULL pointer:
+2: kd> .cxr ffffdf011fa96060
+rax=0000000000000000 rbx=ffffc58a687cecb0 rcx=ffffdf011fa96a9c
+rdx=0000000000000070 rsi=0000000000000000 rdi=ffffdf011fa96af8
+rip=fffff802f44a839f rsp=ffffdf011fa96a60 rbp=ffffc58a6a369040
+ r8=0000000000000004  r9=ffffdf011fa96a94 r10=0000000000000000
+r11=00000000ffffffff r12=0000000000000700 r13=0000000000000000
+r14=0000000000000000 r15=fffff802eddff200
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+IntelBatteryManagement!Detect_CC+0xb7:
+fffff802`f44a839f 488b4808        mov     rcx,qword ptr [rax+8] ds:002b:00000000`00000008=????????????????
+2: kd> rcr2
+Last set context:
+cr2=0000000000000008
+
+The reason IntelBatteryManagement!Detect_CC was trying to access NULL pointer is because global interface with PMIC is not initialized:
+2: kd> ub fffff802`f44a839f L1
+IntelBatteryManagement!Detect_CC+0xb0:
+fffff802`f44a8398 488b0561060100  mov     rax,qword ptr [IntelBatteryManagement!m_pBMIntf (fffff802`f44b8a00)]
+2: kd> dq IntelBatteryManagement!m_pBMIntf L1
+fffff802`f44b8a00  00000000`00000000
+
+The Interface with PMIC is established in BMDrvPnpNotificationHandler:
+NTSTATUS __fastcall BMDrvPnpNotificationHandler(DEVICE_INTERFACE_CHANGE_NOTIFICATION *p_pnpNotificationHeader, _DEVICE_CONTEXT *p_context)
+{
+..
+      memset(&p_context->QueryInterface.PMICInterface, 0, sizeof(_DRV_INTERFACE_STANDARD));
+      p_context->QueryInterface.PMICInterface.Interface.Size = sizeof(_DRV_INTERFACE_STANDARD);
+      p_context->QueryInterface.PMICInterface.Interface.Version = 2;
+      status = WdfIoTargetCreate(p_context->FxDevice, 0i64, &IoTarget);
+      if (NT_SUCCESS(status))
+      {
+        WDF_IO_TARGET_OPEN_PARAMS_INIT_OPEN_BY_NAME(&Params, p_pnpNotificationHeader->SymbolicLinkName, STANDARD_RIGHTS_ALL);
+        Params.EvtIoTargetQueryRemove = BMDrv_EvtIoTargetQueryRemove;
+        Params.EvtIoTargetRemoveCanceled = BMDrv_EvtIoTargetRemoveCanceled;
+        Params.EvtIoTargetRemoveComplete = BMDrv_EvtIoTargetRemoveComplete;
+        status = WdfIoTargetOpen(IoTarget, &Params);
+        if (NT_SUCCESS(status))
+        {
+          status = WdfIoTargetQueryForInterface(
+                     IoTarget,
+                     &GUID_DEVINTERFACE_V1,
+                     &p_context->QueryInterface.PMICInterface.Interface,
+                     sizeof(_DRV_INTERFACE_STANDARD),
+                     2u,
+                     NULL);
+          if (NT_SUCCESS(status) )
+          {
+            if ( p_context->QueryInterface.PMICInterface.Interface.Context
+              && p_context->QueryInterface.PMICInterface.Interface.InterfaceReference
+              && p_context->QueryInterface.PMICInterface.Interface.InterfaceDereference )
+            {
+              p_context->QueryInterface.PMICInterfaceAcquired = 1;
+              m_pBMIntf = &p_context->QueryInterface.PMICInterface;
+…
+
+The BMDrvPnpNotificationHandler will be called by the PnP Manager when PMIC will register for the device interface, but not until IntelBatteryManagement.sys registers the PnP notification which happens in BatteryManagemenSelfManagedIoInit:
+NTSTATUS __fastcall BatteryManagemenSelfManagedIoInit(WDFDEVICE__ *p_wdfDevice)
+{
+…
+      status = IoRegisterPlugPlayNotification(
+                 EventCategoryDeviceInterfaceChange,
+                 PNPNOTIFY_DEVICE_INTERFACE_INCLUDE_EXISTING_INTERFACES,
+                 &GUID_DEVINTERFACE_V1,
+                 DriverObject,
+                 (PDRIVER_NOTIFICATION_CALLBACK_ROUTINE)BMDrvPnpNotificationHandler,
+                 DeviceContext,
+                 &DeviceContext->QueryInterface.NotificationHandle);
+…
+
+BatteryManagemenSelfManagedIoInit is driver’s KMDF EvtDeviceSelfManagedIoInit event callback registered during AddDevice:
+NTSTATUS __fastcall BatteryManagementEvtDeviceAdd(WDFDRIVER__ *Driver, WDFDEVICE_INIT *DeviceInit)
+{
+…
+  WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&Callbacks);
+  Callbacks.EvtDevicePrepareHardware = BatteryManagementPrepareHardware;
+  Callbacks.EvtDeviceReleaseHardware = BatteryManagementReleaseHardware;
+  Callbacks.EvtDeviceD0Entry = BatteryManagementD0Entry;
+  Callbacks.EvtDeviceD0Exit = BatteryManagementD0Exit;
+  Callbacks.EvtDeviceSelfManagedIoInit = BatteryManagemenSelfManagedIoInit;
+  Callbacks.EvtDeviceSelfManagedIoCleanup = BatteryManagemenSelfManagedIoCleanup;
+  WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInita, &Callbacks)
+…
+
+KMDF calls EvtDeviceSelfManagedIoInit once per device after D0Entry:
+“
+If the driver has registered an EvtDeviceSelfManagedIoInit callback function, the framework calls it once for each device, after the framework has called the driver's EvtDeviceD0Entry callback function for the first time. 
+”
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff540902(v=vs.85).aspx
+
+Therefore the BatteryManagemenSelfManagedIoInit is called after KMDF calls driver’s D0Entry routine and thus the interface with PMIC is not initialized until then.
+The D0Entry however is not yet returned as driver have not finished processing PnP start Device IRP:
+2: kd> !wdfdriverinfo IntelBatteryManagement
+----------------------------------
+Default driver image name: IntelBatteryManagement
+WDF library image name: Wdf01000
+ FxDriverGlobals  0xffffc58a6b2594e0
+ WdfBindInfo      0xfffff802f44b80b0
+   Version        v1.15
+ Library module   0xffffc58a64c421e0
+   ServiceName    \Registry\Machine\System\CurrentControlSet\Services\Wdf01000
+   ImageName      Wdf01000
+----------------------------------
+WDFDRIVER: 0x00003a7595c98f68
+Driver logs: Not available 
+Framework logs: !wdflogdump IntelBatteryManagement.sys -f
+
+    !wdfdevice 0x00003a75960edd28 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpHardwareAvailable, WdfDevStatePowerD0StartingConnectInterrupt, WdfDevStatePwrPolStarting
+        context:  dt 0xffffc58a69f125c0 IntelBatteryManagement!DEVICE_CONTEXT (size is 0x7c0 bytes)
+        <no associated attribute callbacks>
+        !wdfdevicequeues 0x00003a75960edd28
+
+----------------------------------
+
+WDF Verifier settings for IntelBatteryManagement.sys is ON
+  Enhanced verifier is OFF
+  Pool tracking is ON
+  Handle verification is ON
+  IO verification is ON
+  Lock verification is ON
+  Power reference tracking is OFF (stack capture is OFF)
+  Handle reference tracking is OFF
+----------------------------------
+2: kd> !wdfdevice 0x00003a75960edd28 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x00003a75960edd28
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffffc58a6a369040, attached ffffc58a6907a480, pdo ffffc58a673f8c20
+
+Pnp state:  108 ( WdfDevStatePnpHardwareAvailable )
+Power state:  310 ( WdfDevStatePowerD0StartingConnectInterrupt )
+Power Pol state:  501 ( WdfDevStatePwrPolStarting )
+
+Default WDFIOTARGET: 00003a7597b8a4d8
+
+Device is the power policy owner for the stack
+No pended power, wait-wake irps
+Pended pnp(IRP_MN_START_DEVICE) !irp 0xfffff884fad3cd80
+
+owning thread:  ffffc58a69235040
+…
+
+In fact it is being processed in parallel:
+2: kd> .thread /p /r ffffc58a69235040
+Implicit thread is now ffffc58a`69235040
+Implicit process is now ffffc58a`63c8c040
+Loading User Symbols
+
+
+************* Symbol Loading Error Summary **************
+Module name            Error
+SharedUserData         No error - symbol load deferred
+
+You can troubleshoot most symbol related issues by turning on symbol loading diagnostics (!sym noisy) and repeating the command that caused symbols to be loaded.
+You should also verify that your symbol search path (.sympath) is correct.
+2: kd> !thread ffffc58a69235040 0
+THREAD ffffc58a69235040  Cid 0004.01f4  Teb: 0000000000000000 Win32Thread: 0000000000000000 RUNNING on processor 1
+2: kd> k
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!RtlpUnwindPrologue+0x154
+01 (Inline Function) --------`-------- nt!RtlpxVirtualUnwind+0x1e2
+02 (Inline Function) --------`-------- nt!RtlpVirtualUnwind+0x1f5
+03 ffffdf01`1f49dc30 fffff802`eda15836 nt!RtlpWalkFrameChain+0x500
+04 ffffdf01`1f49e340 fffff802`eda13e42 nt!RtlWalkFrameChain+0x76
+05 ffffdf01`1f49e370 fffff802`ee179acc nt!RtlCaptureStackBackTrace+0x42
+06 ffffdf01`1f49e3a0 fffff802`ee179b87 nt!ViPoolLogStackCallout+0x1c
+07 ffffdf01`1f49e3d0 fffff802`ee1798bf nt!ViPoolLogStackTrace+0x9f
+08 ffffdf01`1f49e410 fffff802`edc8801d nt!VfFreePoolNotification+0x5b
+09 (Inline Function) --------`-------- nt!ExpFreePoolChecks+0xf98
+0a ffffdf01`1f49e440 fffff807`ccb934d7 nt!ExFreePoolWithTag+0x100d
+0b ffffdf01`1f49e540 fffff807`ccb8e5a6 msgpioclx!GpiopQueryBankIdFromGsivOrConnectionId+0x233
+0c ffffdf01`1f49e5b0 fffff807`c9dfeaa4 msgpioclx!GpioClxEvtProcessInternalDeviceIoControl+0x166
+0d (Inline Function) --------`-------- Wdf01000!FxIoQueueIoInternalDeviceControl::Invoke+0x40
+0e ffffdf01`1f49e620 fffff807`c9dfdc6f Wdf01000!FxIoQueue::DispatchRequestToDriver+0x294
+0f ffffdf01`1f49e6d0 fffff807`c9df9a52 Wdf01000!FxIoQueue::DispatchEvents+0x3bf
+10 (Inline Function) --------`-------- Wdf01000!FxIoQueue::QueueRequestFromForward+0x280
+11 ffffdf01`1f49e7b0 fffff807`c9df5cbf Wdf01000!FxPkgIo::EnqueueRequest+0x372
+12 ffffdf01`1f49e870 fffff807`cce7d890 Wdf01000!imp_WdfDeviceEnqueueRequest+0xbf
+13 (Inline Function) --------`-------- PMIC!WdfDeviceEnqueueRequest+0x1a
+14 ffffdf01`1f49e8d0 fffff807`c9df95e1 PMIC!PmicGpioIoInCallerContext+0xa4
+15 (Inline Function) --------`-------- Wdf01000!FxIoInCallerContext::Invoke+0x15
+16 (Inline Function) --------`-------- Wdf01000!FxPkgIo::DispathToInCallerContextCallback+0xb7
+17 (Inline Function) --------`-------- Wdf01000!FxPkgIo::DispatchStep2+0x605
+18 ffffdf01`1f49e930 fffff807`c9df6fe5 Wdf01000!FxPkgIo::DispatchStep1+0x681
+19 (Inline Function) --------`-------- Wdf01000!FxPkgIo::Dispatch+0x4c
+1a (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x52f
+1b (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0x53b
+1c ffffdf01`1f49e9f0 fffff802`ee16709d Wdf01000!FxDevice::DispatchWithLock+0x5a5
+1d ffffdf01`1f49eae0 fffff802`edb956ff nt!IovCallDriver+0x245
+1e ffffdf01`1f49eb20 fffff807`c9e19fb8 nt!IofCallDriver+0x14c9cf
+1f (Inline Function) --------`-------- Wdf01000!FxIoTarget::Send+0xd
+20 ffffdf01`1f49eb60 fffff807`c9e18b2e Wdf01000!FxIoTarget::SubmitSync+0x198
+21 ffffdf01`1f49ec50 fffff807`c9e77188 Wdf01000!FxIoTargetSendIoctl+0x38e
+22 ffffdf01`1f49ef10 fffff807`ccb9522e Wdf01000!imp_WdfIoTargetSendInternalIoctlSynchronously+0x48
+23 (Inline Function) --------`-------- msgpioclx!WdfIoTargetSendInternalIoctlSynchronously+0x5d
+24 ffffdf01`1f49ef70 fffff807`ccb9518a msgpioclx!GpiopForwardInterruptRequestToQueue+0x66
+25 ffffdf01`1f49eff0 fffff807`ccb9457c msgpioclx!GpioClxEnableInterrupt+0x96
+26 ffffdf01`1f49f060 fffff802`ee2f3edd msgpioclx!GpioHubEnableInterrupt+0x13c
+27 ffffdf01`1f49f0e0 fffff802`ee2afa80 hal!HalpEnableSecondaryInterrupt+0xad
+28 ffffdf01`1f49f120 fffff802`edb35381 hal!HalEnableInterrupt+0x13240
+29 ffffdf01`1f49f1a0 fffff802`edf777d1 nt!KeConnectInterrupt+0xa9
+2a ffffdf01`1f49f1f0 fffff802`edf76f83 nt!IopConnectInterrupt+0x245
+2b ffffdf01`1f49f340 fffff807`c9e08109 nt!IoConnectInterruptEx+0x1e3
+2c ffffdf01`1f49f420 fffff807`c9e085c9 Wdf01000!FxInterrupt::ConnectInternal+0xd5
+2d ffffdf01`1f49f4a0 fffff807`c9e07f90 Wdf01000!FxInterrupt::Connect+0x65
+2e (Inline Function) --------`-------- Wdf01000!FxPkgPnp::NotifyResourceObjectsD0+0x78
+2f ffffdf01`1f49f540 fffff807`c9e15187 Wdf01000!FxPkgPnp::PowerD0StartingConnectInterrupt+0x90
+30 (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PowerEnterNewState+0x112
+31 ffffdf01`1f49f5b0 fffff807`c9e137f4 Wdf01000!FxPkgPnp::PowerProcessEventInner+0x207
+32 ffffdf01`1f49f720 fffff807`c9e298b2 Wdf01000!FxPkgPnp::PowerProcessEvent+0x144
+33 ffffdf01`1f49f7c0 fffff807`c9e13edf Wdf01000!FxPkgPnp::PowerPolStarting+0x52
+34 (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PowerPolicyEnterNewState+0xff
+35 ffffdf01`1f49f7f0 fffff807`c9e156ed Wdf01000!FxPkgPnp::PowerPolicyProcessEventInner+0x1ff
+36 ffffdf01`1f49f960 fffff807`c9e1c442 Wdf01000!FxPkgPnp::PowerPolicyProcessEvent+0x15d
+37 (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PnpPowerPolicyStart+0xd
+38 ffffdf01`1f49fa00 fffff807`c9e163c9 Wdf01000!FxPkgPnp::PnpEventHardwareAvailable+0xb2
+39 (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PnpEnterNewState+0xc9
+3a ffffdf01`1f49fa40 fffff807`c9e21f18 Wdf01000!FxPkgPnp::PnpProcessEventInner+0x1a9
+3b ffffdf01`1f49faf0 fffff807`c9e21e2f Wdf01000!FxPkgPnp::_PnpProcessEventInner+0x58
+3c (Inline Function) --------`-------- Wdf01000!FxEventQueue::EventQueueWorker+0x83
+3d ffffdf01`1f49fb30 fffff802`edab3a1b Wdf01000!FxWorkItemEventQueue::_WorkItemCallback+0x9f
+3e ffffdf01`1f49fb90 fffff802`eda261c8 nt!IopProcessWorkItem+0xfb
+3f ffffdf01`1f49fc00 fffff802`edac0a37 nt!ExpWorkerThread+0xd8
+40 ffffdf01`1f49fc90 fffff802`edb78456 nt!PspSystemThreadStartup+0x47
+41 ffffdf01`1f49fce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+As the interrupt was connected, device has interrupted and driver has to process resulting workitem:
+2: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffdf01`1fa950a8 fffff802`edc03f22 nt!DbgBreakPointWithStatus
+01 ffffdf01`1fa950b0 fffff802`edc037d2 nt!KiBugCheckDebugBreak+0x12
+02 ffffdf01`1fa95110 fffff802`edb730d7 nt!KeBugCheck2+0x922
+03 ffffdf01`1fa95820 fffff802`edb8068f nt!KeBugCheckEx+0x107
+04 (Inline Function) --------`-------- nt!PspUnhandledExceptionInSystemThread+0x27
+05 ffffdf01`1fa95860 fffff802`edb5cecf nt!PspSystemThreadStartup$filt$0+0x44
+06 ffffdf01`1fa958a0 fffff802`edb794ad nt!__C_specific_handler+0x9f
+07 ffffdf01`1fa95910 fffff802`eda14284 nt!RtlpExecuteHandlerForException+0xd
+08 ffffdf01`1fa95940 fffff802`eda13063 nt!RtlDispatchException+0x404
+09 ffffdf01`1fa96030 fffff802`edb7e482 nt!KiDispatchException+0x143
+0a ffffdf01`1fa966f0 fffff802`edb7c957 nt!KiExceptionDispatch+0xc2
+0b ffffdf01`1fa968d0 fffff802`f44a839f nt!KiPageFault+0x217
+0c ffffdf01`1fa96a60 fffff802`f449b541 IntelBatteryManagement!Detect_CC+0xb7
+0d ffffdf01`1fa96ac0 fffff807`c9e0c13d IntelBatteryManagement!BXT_ChargerIntWorkItem+0xdd
+0e ffffdf01`1fa96b10 fffff807`c9e094b9 Wdf01000!FxWorkItem::WorkItemHandler+0x81
+0f ffffdf01`1fa96b50 fffff802`edab3a1b Wdf01000!FxWorkItem::WorkItemThunk+0x29
+10 ffffdf01`1fa96b90 fffff802`eda261c8 nt!IopProcessWorkItem+0xfb
+11 ffffdf01`1fa96c00 fffff802`edac0a37 nt!ExpWorkerThread+0xd8
+12 ffffdf01`1fa96c90 fffff802`edb78456 nt!PspSystemThreadStartup+0x47
+13 ffffdf01`1fa96ce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+And since the interface with PMIC is not established yet:
+2: kd> dt 0xffffc58a69f125c0 IntelBatteryManagement!DEVICE_CONTEXT QueryInterface.
+   +0x1f0 QueryInterface  : 
+      +0x000 NotificationHandle : (null) 
+      +0x008 PMICInterfaceAcquired : 0 ''
+      +0x010 PMICInterface   : _DRV_INTERFACE_STANDARD
+
+IntelBatteryManagement!Detect_CC attempts to access the NULL pointer.
+
+So this is a race condition in IntelBatteryManagement.sys – the interrupt will be connected as part of D0Entry and, therefore, can happen before interface with PMIC has been established.
+To avoid this issue, PnP notification should be registered much earlier – perhaps in BatteryManagementEvtDeviceAdd.
+
+Here is the driver’s version information:
+2: kd> !!sigcheck -q \\wosext3\bsP\BSP_Packages\BxT-M_Desktop\WW12.2\GSH\Battery-83.78224-x64\Release.x64\IntelBatteryManagement.sys
+<.shell waiting 1 second(s) for process>
+\\wosext3\bsp\bsp_packages\bxt-m_desktop\ww12.2\gsh\battery-83.78224-x64\release.x64\IntelBatteryManagement.sys:
+	Verified:	Unsigned
+	Link date:	11:06 PM 2/15/2016
+	Publisher:	n/a
+	Company:	Intel Corporation
+	Description:	Intel Battery Management Driver
+	Product:	Intel Battery Management Driver
+	Prod version:	604.10154.2855.12688
+	File version:	604.10154.2855.12688
+	MachineType:	64-bit
+
+2: kd> lmvi mIntelBatteryManagement
+Browse full module list
+start             end                 module name
+fffff802`f4490000 fffff802`f44c1000   IntelBatteryManagement   (private pdb symbols)  IntelBatteryManagement.sys
+    Symbol file: d:\symcache\IntelBatteryManagement.pdb\80724EB88AB4463FB5B2156886B593AA1\IntelBatteryManagement.pdb
+    Image path: \SystemRoot\System32\drivers\IntelBatteryManagement.sys
+    Image name: IntelBatteryManagement.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Mon Feb 15 22:06:56 2016 (56C2BC80)
+    CheckSum:         00039A8E
+    ImageSize:        00031000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4

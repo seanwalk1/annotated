@@ -1,0 +1,264 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604664744
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck E1 - WORKER_THREAD_RETURNED_AT_BAD_IRQL (e1) – see memory dump at \\10.223.137.10\d\CFL_CNP-USFF\ww6.4\59383_BSOD\MEMORY.DMP
+4: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+WORKER_THREAD_RETURNED_AT_BAD_IRQL (e1)
+Arguments:
+Arg1: fffff801073237c0, address of worker routine (do ln on this to find guilty driver)
+Arg2: 000000000000000b, IRQL returned at (should have been 0, but isn't).
+Arg3: ffffc285efc819c0, workitem parameter
+Arg4: ffffc285efc819c0, workitem address
+…
+
+The worker thread returned at bad IRQL – 0xB – 11:
+4: kd> !irql
+Debugger saved IRQL for processor 0x4 -- 11
+4: kd> ? b
+Evaluate expression: 11 = 00000000`0000000b
+
+The worker routine was TBT controller driver tbt100x!TbtBusDrvEvtWorkItem:
+4: kd> dt nt!_IO_WORKITEM ffffc285efc819c0 Routine Context
+   +0x020 Routine : 0xfffff807`c0da9360     void  Wdf01000!FxWorkItem::WorkItemThunk+0
+   +0x030 Context : 0xffffc285`f0536490 Void
+4: kd> !wdfkd.wdfobject 0xffffc285`f0536490
+
+The type for object 0xffffc285f0536490 is FxWorkItem
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x00003d7a0fac9b68
+
+dt FxWorkItem 0xffffc285f0536490
+
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+
+ Parent: !wdfobject  0xffffc285eff17020, !wdfhandle 0x00003d7a100e8fd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00003d7a100e8fd8
+4: kd> dt FxWorkItem 0xffffc285f0536490 m_Callback
+Wdf01000!FxWorkItem
+   +0x0a0 m_Callback : 0xfffff807`c6fa1bac     void  tbt100x!TbtBusDrvEvtWorkItem+0
+
+Looking at the device context:
+4: kd> !wdfhandle 0x00003d7a100e8fd8
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00003d7a100e8fd8
+=============================
+Handle type is WDFDEVICE
+Refcount: 19
+Contexts:
+    context:  dt 0xffffc285eff17310 tbt100x!BUS_DEVICE_CONTEXT (size is 0x3b8 bytes)
+    EvtCleanupCallback fffff807c6fb31c0 tbt100x!TbtBusDrvEvtDeviceContextCleanup
+
+Parent: !wdfhandle 0x00003d7a0ff1f4a8, type is WDFDRIVER
+Owning device: !wdfdevice 0x00003d7a100e8fd8
+
+!wdfobject 0xffffc285eff17020
+
+We can see WDFINTERRUPT handle for the device:
+4: kd>  dt 0xffffc285eff17310 tbt100x!BUS_DEVICE_CONTEXT WdfInterrupt
+   +0x080 WdfInterrupt : 0x00003d7a`1044fac8 WDFINTERRUPT__
+
+And we can see that Interrupt spinlock is still taken and that interrupt spinlock IRQL matches current IRQL:
+4: kd> !wdfhandle  0x00003d7a`1044fac8 
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x00003d7a1044fac8
+=============================
+Handle type is WDFINTERRUPT
+Refcount: 2
+Contexts:
+    context:  dt 0xffffc285efbb0730 tbt100x!ULONG (size is 0x4 bytes)
+    <no associated attribute callbacks>
+
+Parent: !wdfhandle 0x00003d7a100e8fd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00003d7a100e8fd8
+
+!wdfobject 0xffffc285efbb0530
+
+4: kd> !wdfobject 0xffffc285efbb0530
+
+The type for object 0xffffc285efbb0530 is FxInterrupt
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x00003d7a1044fac8
+
+dt FxInterrupt 0xffffc285efbb0530
+
+Contexts:
+    context:  dt 0xffffc285efbb0730 tbt100x!ULONG (size is 0x4 bytes)
+    <no associated attribute callbacks>
+
+
+ Parent: !wdfobject  0xffffc285eff17020, !wdfhandle 0x00003d7a100e8fd8, type is WDFDEVICE
+Owning device: !wdfdevice 0x00003d7a100e8fd8
+4: kd>  dt FxInterrupt 0xffffc285efbb0530 m_SpinLock m_SynchronizeIrql
+Wdf01000!FxInterrupt
+   +0x030 m_SpinLock        : MxLock
+   +0x088 m_SpinLock        : 0xffffc285`efb0e700  -> 1
+   +0x091 m_SynchronizeIrql : 0xb '
+
+Looking at the device itself, we can see that it went into D3:
+4: kd> !wdfdevice 0x00003d7a100e8fd8 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x00003d7a100e8fd8
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffffc285efb1d330, attached ffffc285f006e440, pdo ffffc285f006e440
+
+Pnp state:  119 ( WdfDevStatePnpStarted )
+Power state:  31c ( WdfDevStatePowerGotoDxIoStopped )
+Power Pol state:  528 ( WdfDevStatePwrPolSleepingNoWakeCompletePowerDown )
+
+Default WDFIOTARGET: 00003d7a0fc27498
+
+Device is the power policy owner for the stack
+No pended pnp, wait-wake irps
+Pended device power !irp 0xffffc285f0b2ab40 (D3)
+Pended system power !irp 0xffffc285f06feb40 (S5)
+
+Pnp state history:
+[0] WdfDevStatePnpObjectCreated (0x100)
+[1] WdfDevStatePnpInit (0x105)
+[2] WdfDevStatePnpInitStarting (0x106)
+[3] WdfDevStatePnpHardwareAvailable (0x108)
+[4] WdfDevStatePnpEnableInterfaces (0x109)
+[5] WdfDevStatePnpStarted (0x119)
+
+owning thread:  ffffc285eff52700
+Power state history:
+[0] WdfDevStatePowerD0StartingConnectInterrupt (0x310)
+[1] WdfDevStatePowerD0StartingDmaEnable (0x311)
+[2] WdfDevStatePowerD0StartingStartSelfManagedIo (0x312)
+[3] WdfDevStatePowerDecideD0State (0x313)
+[4] WdfDevStatePowerD0 (0x307)
+[5] WdfDevStatePowerGotoDx (0x31a)
+[6] WdfDevStatePowerNotifyingD0ExitToWakeInterrupts (0x359)
+[7] WdfDevStatePowerGotoDxIoStopped (0x31c)
+…
+
+The device power state is D3:
+4: kd> !devstack ffffc285f006e440
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffc285efb1d330  \Driver\nhi        ffffc285eff17310  
+> ffffc285f006e440  \Driver\pci        ffffc285f006e590  NTPNP_PCI0025
+!DevNode ffffc285efe7f920 :
+  DeviceInst is "PCI\VEN_8086&DEV_15EB&SUBSYS_00008086&REV_06\9D73C938C2C9A00000"
+  ServiceName is "nhi"
+4: kd> dt nt!_device_node ffffc285efe7f920 CurrentPowerState.DeviceState
+   +0x08c CurrentPowerState             : 
+      +0x000 DeviceState                   : 4 ( PowerDeviceD3 )
+
+And as part of D3 processing, WDF is currently disconnecting interrupts:
+4: kd> !thread ffffc285eff52700
+THREAD ffffc285eff52700  Cid 0004.1660  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 1
+Not impersonating
+DeviceMap                 ffff818e79419ba0
+Owning Process            ffffc285e924a2c0       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      4129           Ticks: 0
+Context Switch Count      21             IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address nt!PopIrpWorker (0xfffff8010735f7a0)
+Stack Init fffff08ca5bbfb90 Current fffff08ca5bbf0a0
+Base fffff08ca5bc0000 Limit fffff08ca5bb9000 Call 0000000000000000
+Priority 14 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff08c`a5bbf0e0 fffff801`07292436 : ffffc285`eff52700 fffff801`05fb7180 ffffc285`00000000 00000000`00000000 : nt!KiSwapContext+0x76
+fffff08c`a5bbf220 fffff801`073031c2 : 00000000`00000000 00000000`00000000 00000000`00000000 fffff08c`a5bbf2f0 : nt!KeSetSystemGroupAffinityThread+0x216
+fffff08c`a5bbf290 fffff801`073029fd : ffff9600`655d6dc0 fffff801`00000000 ffffc285`efe2e1f8 00000000`00000000 : nt!KiAcquireInterruptConnectLock+0x42
+fffff08c`a5bbf2d0 fffff801`073026ef : 00000000`00000001 00000000`0000000c ffffc285`00000004 00000000`00000000 : nt!KiDisconnectInterruptCommon+0xa1
+fffff08c`a5bbf390 fffff801`07755bae : ffffc285`0000000c 00000000`00000000 00000000`0000000c 00000000`00000000 : nt!KeDisconnectInterrupt+0x77
+fffff08c`a5bbf3f0 fffff801`07861f9c : ffffc285`efbb0530 00000000`00000000 00000000`00000000 00000000`00000010 : nt!IoDisconnectInterrupt+0xbe
+fffff08c`a5bbf480 fffff807`c0d7e317 : ffffc285`efbb0530 00000000`00000000 00000000`00000000 fffff807`c0d8f001 : nt!IoDisconnectInterruptEx+0x10c51c
+fffff08c`a5bbf4c0 fffff807`c0d7e27e : ffffc285`efbb0530 fffff807`c0d7e120 fffff08c`a5bbf550 fffff807`c0d8f001 : Wdf01000!FxInterrupt::DisconnectInternal+0x4f
+fffff08c`a5bbf500 fffff807`c0d98fe4 : 00000000`00000000 ffffc285`efbb06e8 ffffc285`efe2e020 fffff08c`a5bbf740 : Wdf01000!FxInterrupt::Disconnect+0xea
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgPnp::NotifyResourceObjectsDx+0x168 (Inline Function @ fffff807`c0d98fe4)
+fffff08c`a5bbf580 fffff807`c0daa3e9 : 00000000`00000000 fffff08c`a5bbf680 ffffc285`efe2e020 00000000`00000000 : Wdf01000!FxPkgPnp::PowerGotoDxIoStopped+0x224
+fffff08c`a5bbf610 fffff807`c0d992c8 : ffffc285`efe2e020 00000000`00000b20 00000000`0000031c 00000000`00000000 : Wdf01000!FxPkgPnp::PowerGotoDNotZeroIoStopped+0x9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgPnp::PowerEnterNewState+0x103 (Inline Function @ fffff807`c0d992c8)
+fffff08c`a5bbf640 fffff807`c0d98203 : ffffc285`efe2e220 00000000`00000000 ffffc285`efe2e1f8 00000000`00000000 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0x1f8
+fffff08c`a5bbf7b0 fffff807`c0d93284 : 00000000`00000000 ffffc285`efe2e020 00000000`00000012 fffff08c`a5bbf8f8 : Wdf01000!FxPkgPnp::PowerProcessEvent+0x143
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgFdo::LowerDevicePower+0x11 (Inline Function @ fffff807`c0d93284)
+fffff08c`a5bbf850 fffff807`c0d9205a : 00000000`00000002 fffff08c`a5bbf918 00000000`00000004 00000000`00000000 : Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x60
+fffff08c`a5bbf8a0 fffff807`c0d77d9e : ffffc285`eff17020 00003d7a`100e8fd8 00000000`00000001 00000000`00000000 : Wdf01000!FxPkgFdo::_DispatchSetPower+0x1a
+fffff08c`a5bbf8d0 fffff807`c0d77400 : ffffc285`f0b2ab40 ffffc285`eff17020 ffffc285`efe2e020 ffffc285`ef93a010 : Wdf01000!FxPkgPnp::Dispatch+0xee
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!DispatchWorker+0xca (Inline Function @ fffff807`c0d77400)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxDevice::Dispatch+0xe6 (Inline Function @ fffff807`c0d77400)
+fffff08c`a5bbf970 fffff801`0735f9c6 : ffffc285`f0b2ab40 ffffc285`00000000 fffff08c`00000000 fffff801`075796b0 : Wdf01000!FxDevice::DispatchWithLock+0x150
+fffff08c`a5bbfa60 fffff801`0732e807 : ffffffff`fa0a1f00 ffffc285`eff52700 fffff801`0735f7a0 00000000`00000000 : nt!PopIrpWorker+0x226
+fffff08c`a5bbfb10 fffff801`07393e96 : ffff9600`61843180 ffffc285`eff52700 fffff801`0732e7c0 00000000`00000246 : nt!PspSystemThreadStartup+0x47
+fffff08c`a5bbfb60 00000000`00000000 : fffff08c`a5bc0000 fffff08c`a5bb9000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+But as the tbt100x!TbtBusDrvEvtDeviceContextCleanup just run, it means it was run in parallel with interrupt disconnect.
+
+But the worker routine acquires and releases the interrupt lock:
+4: kd> uf  tbt100x!TbtBusDrvEvtDeviceContextCleanup
+…
+tbt100x!TbtBusDrvEvtWorkItem+0xa78:
+fffff807`c6fa2624 488b0585cb0000  mov     rax,qword ptr [tbt100x!WdfFunctions_01015 (fffff807`c6faf1b0)]
+fffff807`c6fa262b 488b9780000000  mov     rdx,qword ptr [rdi+80h]
+fffff807`c6fa2632 488b0d6fcb0000  mov     rcx,qword ptr [tbt100x!WdfDriverGlobals (fffff807`c6faf1a8)]
+fffff807`c6fa2639 ff9080040000    call    qword ptr [rax+480h]
+fffff807`c6fa263f 8b8b00820300    mov     ecx,dword ptr [rbx+38200h]
+fffff807`c6fa2645 3bce            cmp     ecx,esi
+fffff807`c6fa2647 7410            je      tbt100x!TbtBusDrvEvtWorkItem+0xaad (fffff807`c6fa2659)  Branch
+
+tbt100x!TbtBusDrvEvtWorkItem+0xa9d:
+fffff807`c6fa2649 8b87d0000000    mov     eax,dword ptr [rdi+0D0h]
+fffff807`c6fa264f f7d0            not     eax
+fffff807`c6fa2651 0bc1            or      eax,ecx
+fffff807`c6fa2653 898300820300    mov     dword ptr [rbx+38200h],eax
+
+tbt100x!TbtBusDrvEvtWorkItem+0xaad:
+fffff807`c6fa2659 488b0550cb0000  mov     rax,qword ptr [tbt100x!WdfFunctions_01015 (fffff807`c6faf1b0)]
+fffff807`c6fa2660 488b9780000000  mov     rdx,qword ptr [rdi+80h]
+fffff807`c6fa2667 488b0d3acb0000  mov     rcx,qword ptr [tbt100x!WdfDriverGlobals (fffff807`c6faf1a8)]
+fffff807`c6fa266e ff9088040000    call    qword ptr [rax+488h]
+fffff807`c6fa2674 488d35d5650000  lea     rsi,[tbt100x! ?? ::FNODOBFM::`string' (fffff807`c6fa8c50)]
+…
+4: kd> u poi(poi(tbt100x!WdfFunctions_01015)+480) L1
+Wdf01000!imp_WdfInterruptAcquireLock:
+fffff807`c0d72080 4883ec38        sub     rsp,38h
+4: kd> u poi(poi(tbt100x!WdfFunctions_01015)+488) L1
+Wdf01000!imp_WdfInterruptReleaseLock:
+fffff807`c0d72100 4883ec38        sub     rsp,38h
+
+MSDN however clearly prohibits calling WdfInterruptReleaseLock after driver’s s EvtInterruptDisable callback has been called:
+“Your driver cannot call WdfInterruptReleaseLock before the framework has called the driver's EvtInterruptEnable callback function or after the framework has called the driver's EvtInterruptDisablecallback function.”
+https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/wdfinterrupt/nc-wdfinterrupt-pfn_wdfinterruptreleaselock
+
+The reason for that is because WDF cannot release the interrupt lock because the KINTERRUPT is already disconnected from FxInterrupt:
+4: kd> dt FxInterrupt 0xffffc285efbb0530 m_Interrupt
+Wdf01000!FxInterrupt
+   +0x080 m_Interrupt : (null)
+
+For this reason the interrupt spinlock stays acquired and is not released when tbt100x!TbtBusDrvEvtWorkItem returns.
+This causes Bugcheck E1 and can also cause Bugcheck 133.
+
+There are multiple problems here:
+1)	tbt100x!TbtBusDrvEvtWorkItem cannot call WdfInterruptReleaseLock after driver’s s EvtInterruptEnable callback has been called.
+2)	tbt100x!TbtBusDrvEvtWorkItem cannot access device registers when device has exited D0 – this can cause hangs and machine checks.
+
+Version of the driver used:
+D:\Dumps\ww08\tbt>sigcheck -nobanner tbt100x.sys
+D:\Dumps\ww08\tbt\tbt100x.sys:
+        Verified:       Signed
+        Signing date:   8:42 AM 1/25/2018
+        Publisher:      Intel(R) Client Connectivity Division SW
+        Company:        Intel Corporation
+        Description:    Thunderbolt(TM) Bus Driver
+        Product:        Thunderbolt(TM) Bus Driver
+        Prod version:   17.3.73.6
+        File version:   17.3.73.6
+        MachineType:    64-bit

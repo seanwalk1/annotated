@@ -1,0 +1,472 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1405282243/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+Here we have DRIVER_POWER_STATE_FAILURE (9f):
+
+2: kd> .bugcheck
+Bugcheck code 0000009F
+Arguments 00000000`00000003 ffffcd8e`a01fee40 ffffde80`4745c8e0 ffffcd8e`a8f8c6b0
+
+This is timed-out IRP:
+2: kd> !irp ffffcd8e`a8f8c6b0
+Irp is active with 3 stacks 2 is current (= 0xffffcd8ea8f8c7c8)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+[IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffcd8ea01fee40 00000000 fffff80a00000000-00000000    
+            \Driver\ACPI   (IopUnloadSafeCompletion)
+                Args: 00000000 00000000 00000000 00000002
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffcd8ea579d300 00000000 fffff8011939c4d0-ffffcd8ea47e1a00 Success Error Cancel pending
+            \Driver\dptf_acpi   nt!PopRequestCompletion
+                Args: 00051100 00000001 00000001 00000002
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffcd8ea47e1a00    
+
+                Args: 00000000 00000000 00000000 00000000
+
+The owning driver is dptf_acpi.sys:
+2: kd> !drvobj \Driver\dptf_acpi
+Driver object (ffffcd8ea55f8a70) is for:
+\Driver\dptf_acpi
+Driver Extension List: (id , addr)
+(fffff80a7101b290 ffffcd8ea61c52d0)  
+Device Object list:
+ffffcd8ea579d300  ffffcd8ea6fedc80  ffffcd8ea6dcae20  ffffcd8ea6fbab30
+
+The first WDF object corresponds to the WDM device object owning the IRP:
+2: kd> !wdfkd.wdfdriverinfo dptf_acpi
+----------------------------------
+Default driver image name: dptf_acpi
+WDF library image name: Wdf01000
+FxDriverGlobals  0xffffcd8ea5bf7230
+WdfBindInfo      0xfffff80a77e0a6f0
+   Version        v1.11
+Library module   0xffffcd8e9f63e1e0
+   ServiceName    \Registry\Machine\System\CurrentControlSet\Services\Wdf01000
+   ImageName      Wdf01000
+----------------------------------
+WDFDRIVER: 0x000032715a84c568
+Driver logs: Not available 
+Framework logs: !wdflogdump dptf_acpi.sys -f
+
+    !wdfdevice 0x000032715907b4c8 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerWaking, WdfDevStatePwrPolSystemWakeDeviceToD0
+        context:  dt 0xffffcd8ea6f84e20 DEVICE_EXTENSION (size is 0xe8 bytes)
+        EvtCleanupCallback fffff80a77e02830 dptf_acpi
+        !wdfdevicequeues 0x000032715907b4c8
+.
+
+Looking at WDF device we can see what the driver is doing:
+2: kd> !wdfdevice 0x000032715907b4c8 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x000032715907b4c8
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffffcd8ea579d300, attached ffffcd8ea01fee40, pdo ffffcd8ea01fee40
+
+Pnp state:  119 ( WdfDevStatePnpStarted )
+Power state:  333 ( WdfDevStatePowerWaking )
+Power Pol state:  52e ( WdfDevStatePwrPolSystemWakeDeviceToD0 )
+
+Default WDFIOTARGET: 0000327159016438
+
+Device is the power policy owner for the stack
+No pended pnp, wait-wake irps
+Pended device power !irp 0xffffcd8ea8f8c6b0 (D0)
+
+Pnp state history:
+[0] WdfDevStatePnpObjectCreated (0x100)
+[1] WdfDevStatePnpInit (0x105)
+[2] WdfDevStatePnpInitStarting (0x106)
+[3] WdfDevStatePnpHardwareAvailable (0x108)
+[4] WdfDevStatePnpEnableInterfaces (0x109)
+[5] WdfDevStatePnpStarted (0x119)
+
+owning thread:  ffffcd8ea00cd040
+.
+
+The driver is waiting for an AML method to be processed:
+2: kd> !thread ffffcd8ea00cd040
+THREAD ffffcd8ea00cd040  Cid 0004.00c8  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffde8047788858  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffff9f04e90166b0
+Owning Process            ffffcd8e9f4ab040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      18419          Ticks: 7663 (0:00:01:59.734)
+Context Switch Count      3223           IdealProcessor: 0  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:01.796
+Win32 Start Address nt!ExpWorkerThread (0xfffff801192dac90)
+Stack Init ffffde8047789c10 Current ffffde8047788470
+Base ffffde804778a000 Limit ffffde8047783000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffde80`477884b0 fffff801`192bccdc : 00000000`00000000 ffff9f04`00000000 00000000`00000001 ffff9f04`e90e04f0 : nt!KiSwapContext+0x76
+ffffde80`477885f0 fffff801`192bc77f : ffffcd8e`a00cd040 ffffcd8e`a00cd180 fffff801`19640550 00000000`00000000 : nt!KiSwapThread+0x17c
+ffffde80`477886a0 fffff801`192be547 : fffff80a`00000000 00000000`00000001 ffffcd8e`a4998880 00000000`00000000 : nt!KiCommitThreadWait+0x14f
+ffffde80`47788740 fffff80a`71181568 : ffffde80`47788858 ffff9f04`00000000 00000000`00000000 00000000`00000000 : nt!KeWaitForSingleObject+0x377
+ffffde80`477887f0 fffff80a`711812bd : ffffde80`00000000 ffff9f04`e9330ce0 ffffcd8e`a67e8100 00000000`00000000 : ACPI!SyncEvalObject+0x268
+ffffde80`477888a0 fffff80a`71187900 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ACPI!AMLIEvalNameSpaceObject+0xad
+ffffde80`47788900 fffff80a`71184637 : ffffcd8e`a67e8100 ffffcd8e`00000000 00000000`00000000 ffff9f04`e9330ce0 : ACPI!ACPIIoctlEvalControlMethod+0x68
+ffffde80`47788960 fffff80a`7118420e : ffffcd8e`a01e3c60 00000000`00000007 ffffcd8e`a67e81d0 00000000`c0000034 : ACPI!ACPIIrpDispatchDeviceControl+0x157
+ffffde80`477889a0 fffff80a`70fca7a5 : 00000000`00000007 ffffde80`47788b40 ffffde80`47788a89 00000000`00000005 : ACPI!ACPIDispatchIrp+0xce
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxIoTarget::Send+0xd (Inline Function @ fffff80a`70fca7a5)
+ffffde80`47788a20 fffff80a`70fc93a2 : 00000000`00000000 ffffde80`00000001 ffffde80`00000000 00000000`00000000 : Wdf01000!FxIoTarget::SubmitSync+0x1a5
+ffffde80`47788af0 fffff80a`70fc9008 : ffffcd8e`a6fe9bc0 00000000`00000000 ffffde80`47788f20 00000000`0032c004 : Wdf01000!FxIoTargetSendIoctl+0x392
+ffffde80`47788db0 fffff80a`7a257641 : ffffde80`47788f28 ffffcd8e`a6f84b30 ffffde80`47788e90 00000000`00000008 : Wdf01000!imp_WdfIoTargetSendIoctlSynchronously+0x48
+ffffde80`47788e10 fffff80a`7a257ff0 : 00000000`00000000 00000000`00000001 00000000`00000000 00000000`00000001 : esif_lf+0x27641
+ffffde80`47788eb0 fffff80a`7a2362da : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : esif_lf+0x27ff0
+ffffde80`47788fa0 fffff80a`7a2365dc : 00000000`00000000 ffffde80`47789069 00000000`00000001 00000000`00000000 : esif_lf+0x62da
+ffffde80`47788fd0 fffff80a`7a236989 : 00000000`00000000 00000000`00000000 00000000`00000028 ffff0f98`fa418fb6 : esif_lf+0x65dc
+ffffde80`477890c0 fffff80a`7a23decc : 00000000`00000000 00000000`00000001 00000000`00000000 ffffde80`477893c0 : esif_lf+0x6989
+ffffde80`47789120 fffff80a`7a249ad9 : ffffcd8e`a6fe5010 ffffcd8e`a6fe5010 ffffde80`00000000 ffffcd8e`a95fcc00 : esif_lf+0xdecc
+ffffde80`477891e0 fffff80a`7a24995e : 00000000`00000000 ffffde80`477893a8 00000000`00000000 00000000`00000000 : esif_lf+0x19ad9
+ffffde80`47789250 fffff80a`7a249a4d : fffff801`195bc440 00000000`000000c0 00000000`00000801 ffffde80`46e9d000 : esif_lf+0x1995e
+ffffde80`47789360 fffff80a`7a24b6dc : 00000000`000000a0 ffffcd8e`a6bf7430 ffffcd8e`a6bf7430 00000000`00000000 : esif_lf+0x19a4d
+ffffde80`477893e0 fffff80a`7a24d433 : ffffcd8e`a6fe515e fffff80a`7a231cb2 ffffcd8e`a6fe5070 00000000`00000000 : esif_lf+0x1b6dc
+ffffde80`47789490 fffff80a`7a250a8c : ffffcd8e`00000000 ffffcd8e`a6fe5070 00000000`00000000 00000000`00000001 : esif_lf+0x1d433
+ffffde80`47789540 fffff80a`7a248435 : 00000000`00000000 fffff80a`7a269100 00000000`00000005 00000000`00000006 : esif_lf+0x20a8c
+ffffde80`477895c0 fffff80a`7a247688 : 00000000`00004e41 00000000`00004e41 ffffcd8e`a00cd040 00000000`00000006 : esif_lf+0x18435
+ffffde80`47789660 fffff80a`77e04098 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : esif_lf+0x17688
+ffffde80`47789730 fffff80a`77e02b9b : 00000000`00000001 00000000`00000000 00000000`00000000 00000000`00000000 : dptf_acpi+0x4098
+ffffde80`47789760 fffff80a`70fd36a3 : ffffcd8e`a6f89c38 ffffcd8e`a6f84b30 ffffcd8e`a6f89c38 00000000`00000000 : dptf_acpi+0x2b9b
+ffffde80`477897c0 fffff80a`70fd364b : 00000000`00000000 00000000`00000000 00000000`0000000e ffffde80`477898b8 : Wdf01000!FxPnpDeviceD0Entry::InvokeClient+0x23
+ffffde80`47789820 fffff80a`70fb35f8 : 00000000`00000000 ffffde80`47789990 00000000`00000660 00000000`00000000 : Wdf01000!FxPrePostCallback::InvokeStateful+0x47
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPnpDeviceD0Entry::Invoke+0x1b (Inline Function @ fffff80a`70fb35f8)
+ffffde80`47789860 fffff80a`70fc5b51 : ffffcd8e`a6f89730 00000000`00000020 00000000`00000333 fffff80a`71044600 : Wdf01000!FxPkgPnp::PowerWaking+0x38
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgPnp::PowerEnterNewState+0x123 (Inline Function @ fffff80a`70fc5b51)
+ffffde80`47789890 fffff80a`70fceb68 : ffffcd8e`a6f89930 ffffcd8e`00000000 ffffcd8e`a6f89930 00000000`00000000 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0x231
+ffffde80`47789a00 fffff80a`70fce9be : ffffcd8e`a6f89908 ffffcd8e`a6f89730 00000000`00000000 ffffcd8e`a00cd180 : Wdf01000!FxPkgPnp::_PowerProcessEventInner+0x58
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxEventQueue::EventQueueWorker+0x7a (Inline Function @ fffff80a`70fce9be)
+ffffde80`47789a40 fffff801`1931bdf0 : ffffcd8e`a6f849c0 00000000`00000000 ffffcd8e`a579d300 00000000`00000000 : Wdf01000!FxThreadedEventQueue::_WorkItemCallback+0x8e
+ffffde80`47789a90 fffff801`192dad79 : fffff801`19640100 ffffcd8e`a00cd040 fffff801`1931bd00 fffff801`00000000 : nt!IopProcessWorkItem+0xf0
+ffffde80`47789b00 fffff801`1931f4bd : ffffde80`46f19180 00000000`00000080 ffffcd8e`9f4ab040 ffffcd8e`a00cd040 : nt!ExpWorkerThread+0xe9
+
+Switching to the thread we can see the object is \_SB.GEN4._TMP:
+2: kd> .thread /p /r ffffcd8ea00cd040
+Implicit thread is now ffffcd8e`a00cd040
+Implicit process is now ffffcd8e`9f4ab040
+Loading User Symbols
+2: kd> .frame 5
+05 ffffde80`477888a0 fffff80a`71187900 ACPI!AMLIEvalNameSpaceObject+0xad
+2: kd> dv /V
+<unavailable>     <unavailable>              Handle = <value unavailable>
+@rbx              @rbx                  pdataResult = 0xffff9f04`e9330ce0
+@esi              @esi                       icArgs = 0
+ffffde80`47788918 @rsp+0x0078             pdataArgs = 0x00000000`00000000
+<unavailable>     <unavailable>          pTmpString = <value unavailable>
+<unavailable>     <unavailable>                  rc = <value unavailable>
+ffffde80`477888d0 @rsp+0x0030                pHData = 0x00000000`00000000
+ffffde80`47788900 @rsp+0x0060            psavedArgs = 0x00000000`00000000
+@rdi              @rdi                          pns = 0xffffcd8e`a02af508
+2: kd> dx -r1 (*((ACPI!_NSObj *)0xffffcd8ea02af508))
+(*((ACPI!_NSObj *)0xffffcd8ea02af508))                 [Type: _NSObj]
+    [+0x000] list             [Type: _LIST_ENTRY]
+    [+0x010] pnsParent        : 0xffffcd8ea02aee10 [Type: _NSObj *]
+    [+0x018] childListHead    [Type: _LIST_ENTRY]
+    [+0x028] dwNameSeg        : 0x504d545f [Type: unsigned long]
+    [+0x030] hOwner           : 0xffffcd8ea0297670 [Type: void *]
+    [+0x038] pnsOwnedNext     : 0xffffcd8ea02af388 [Type: _NSObj *]
+    [+0x040] ObjData          [Type: _ObjData]
+    [+0x068] Context          : 0x0 [Type: void *]
+    [+0x070] ReferenceCount   : 2 [Type: long]
+    [+0x078] Self             [Type: _NSObjRef]
+    [+0x088] NativeObject     : 0x0 [Type: _NSObj *]
+2: kd> db 0xffffcd8ea02af508+28 L4
+ffffcd8e`a02af530  5f 54 4d 50                                      _TMP
+2: kd> dx -r1 (*((ACPI!_NSObj *)0xffffcd8ea02aee10))
+(*((ACPI!_NSObj *)0xffffcd8ea02aee10))                 [Type: _NSObj]
+    [+0x000] list             [Type: _LIST_ENTRY]
+    [+0x010] pnsParent        : 0xffffcd8ea0131228 [Type: _NSObj *]
+    [+0x018] childListHead    [Type: _LIST_ENTRY]
+    [+0x028] dwNameSeg        : 0x344e4547 [Type: unsigned long]
+    [+0x030] hOwner           : 0xffffcd8ea0297670 [Type: void *]
+    [+0x038] pnsOwnedNext     : 0xffffcd8ea02aec50 [Type: _NSObj *]
+    [+0x040] ObjData          [Type: _ObjData]
+    [+0x068] Context          : 0xffffcd8ea01e3c60 [Type: void *]
+    [+0x070] ReferenceCount   : 2 [Type: long]
+    [+0x078] Self             [Type: _NSObjRef]
+    [+0x088] NativeObject     : 0x0 [Type: _NSObj *]
+2: kd> db 0xffffcd8ea02aee10+28 L4
+ffffcd8e`a02aee38  47 45 4e 34                                      GEN4
+
+The method has to wait until \BAT1._STA completes:
+2: kd> !amli lc
+Ctxt=ffffcd8ea65e0800, ThID=0000000000000000, Flgs=A--C-----, pbOp=ffffcd8ea025b4c2, Obj=\BAT1._STA
+Ctxt=ffffcd8ea41dd320, ThID=0000000000000000, Flgs=---C-----, pbOp=ffffcd8ea02a1e62, Obj=\_SB.GEN1._TMP
+Ctxt=ffffcd8ea93e3010, ThID=0000000000000000, Flgs=---C-----, pbOp=ffffcd8ea02add14, Obj=\_SB.GEN3._TMP
+Ctxt=ffffcd8ea47fb800, ThID=0000000000000000, Flgs=---C-----, pbOp=ffffcd8ea02ac3ac, Obj=\_SB.GEN2._TMP
+Ctxt=ffffcd8ea4998800, ThID=0000000000000000, Flgs=---C-----, pbOp=ffffcd8ea02af67c, Obj=\_SB.GEN4._TMP
+Ctxt=ffffcd8ea65e7800, ThID=0000000000000000, Flgs=---C-----, pbOp=0000000000000000, Obj=\_SB.GEN4._TMP
+
+Disassembling the method, it called SAN0 field in the OR01 OpRegion (see attached DSDT.DSL):
+2: kd> !amli u ffffcd8ea025b4c2
+ffffcd8ea025b4c2:[\_SB._SAN.SEND+0x80]
+ffffcd8ea025b4c2 : SPB1
+ffffcd8ea025b4c6 : Store("SEND: Request completed by Surface Serial Hub Driver", Debug)
+ffffcd8ea025b4ff : Store(_STS, Debug)
+ffffcd8ea025b506 : If(LNot(LEqual(_STS, Zero)))
+ffffcd8ea025b510 : {
+ffffcd8ea025b510 : | Store("SEND: Request failed by Surface Serial Hub Driver", Debug)
+ffffcd8ea025b546 : | Return(0xffffffff)
+ffffcd8ea025b54c : }
+ffffcd8ea025b54c : Return(SPB1)
+
+2: kd> !amli u \BAT1._STA
+ffffcd8ea0256c22:[\BAT1._STA]
+ffffcd8ea0256c22 : If(LEqual(\_SB_._SAN.AVBL, One))
+ffffcd8ea0256c35 : {
+ffffcd8ea0256c35 : | Store(BAST(), Local0)
+ffffcd8ea0256c3b : | If(And(Local0, 0x10, ))
+ffffcd8ea0256c42 : | {
+ffffcd8ea0256c42 : | | UDB0("battery is available")
+ffffcd8ea0256c5c : | | Return(0x1f)
+ffffcd8ea0256c5f : | }
+ffffcd8ea0256c5f : }
+ffffcd8ea0256c5f : UDB0("SSH -> SAM communication is not ready. Returning a hardcoded 'battery present' state to OS
+")
+ffffcd8ea0256cc0 : Return(0x1f)
+
+The OR01 is defined as Generic Serial Bus Operational Region (see attached DSDT):
+.
+            OperationRegion (OR01, GenericSerialBus, Zero, 0x0100)
+            Field (OR01, BufferAcc, NoLock, Preserve)
+            {
+                Connection (I2Z0), 
+                AccessAs (BufferAcc, AttribRawProcessBytes (0x02)), 
+                SAN0,   8
+            }
+.
+
+GenericSerialBus is Region Space 9:
+ 
+http://www.uefi.org/sites/default/files/resources/ACPI_6_1.pdf
+
+Looking for OpRegion Handler, it is ACPIEX.SYS:
+2: kd> !list -t acpi!_OPREGIONHANDLER.ListEntry.Flink -x "dt" -a "acpi!_OPREGIONHANDLER" poi(ACPI!AcpiOpRegionHandlerList)
+.
+
+   +0x000 ListEntry        : _LIST_ENTRY [ 0xfffff80a`711f39e0 - 0xffffcd8e`9f643900 ]
+   +0x010 Handler          : 0xfffff80a`710a4480     long  acpiex!RhSerialBusOperationRegionHandler+0
+   +0x018 HandlerContext   : 0x00003271`60b2db58 Void
+   +0x020 AccessType       : 7
+   +0x024 RegionSpace      : 9
+   +0x028 DeletePending    : 0 ''
+
+Looking for ACPIEX thread:
+2: kd> !stacks 2 acpiex
+.
+   4.0000dc  ffffcd8ea0379040 ffffb80d Blocked    nt!KiSwapContext+0x76
+.
+
+ACPIEX have sent synchronous IOCTL to SurfaceAcpiNotifyDriver  which in turn dispatched it SurfaceSerialHubDriver:
+2: kd> .thread /p /r ffffcd8ea0379040
+Implicit thread is now ffffcd8e`a0379040
+Implicit process is now ffffcd8e`9f4ab040
+Loading User Symbols
+
+2: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 ffffde80`47806430 fffff801`192bccdc nt!KiSwapContext+0x76
+01 ffffde80`47806570 fffff801`192bc77f nt!KiSwapThread+0x17c
+02 ffffde80`47806620 fffff801`192bbe3e nt!KiCommitThreadWait+0x14f
+03 ffffde80`478066c0 fffff80a`72a397c4 nt!KeWaitForMultipleObjects+0x1fe
+04 ffffde80`478067a0 fffff80a`70fab537 SurfaceSerialHubDriver+0x97c4
+05 (Inline Function) --------`-------- Wdf01000!FxIoQueueIoDeviceControl::Invoke+0x3f
+06 ffffde80`47806850 fffff80a`70faa7aa Wdf01000!FxIoQueue::DispatchRequestToDriver+0x1b7
+07 ffffde80`478068f0 fffff80a`70fa5d0c Wdf01000!FxIoQueue::DispatchEvents+0x3aa
+08 (Inline Function) --------`-------- Wdf01000!FxIoQueue::QueueRequest+0x8b
+09 (Inline Function) --------`-------- Wdf01000!FxPkgIo::DispatchStep2+0x4b0
+0a ffffde80`478069c0 fffff80a`70fa3a9b Wdf01000!FxPkgIo::DispatchStep1+0x52c
+0b (Inline Function) --------`-------- Wdf01000!FxPkgIo::Dispatch+0x4c
+0c (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x685
+0d (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0x691
+0e ffffde80`47806a80 fffff80a`70fca7a5 Wdf01000!FxDevice::DispatchWithLock+0x6fb
+0f (Inline Function) --------`-------- Wdf01000!FxIoTarget::Send+0xd
+10 ffffde80`47806b70 fffff80a`70faec8a Wdf01000!FxIoTarget::SubmitSync+0x1a5
+11 ffffde80`47806c40 fffff80a`72a7e95d Wdf01000!imp_WdfRequestSend+0x1ea
+12 ffffde80`47806cd0 fffff80a`72a7fb0b SurfaceAcpiNotifyDriver+0xe95d
+13 ffffde80`47806e10 fffff80a`72a7b7cb SurfaceAcpiNotifyDriver+0xfb0b
+14 ffffde80`47806e80 fffff80a`72a74ca8 SurfaceAcpiNotifyDriver+0xb7cb
+15 ffffde80`47806f00 fffff80a`72a759ec SurfaceAcpiNotifyDriver+0x4ca8
+16 ffffde80`47806f40 fffff80a`70fab537 SurfaceAcpiNotifyDriver+0x59ec
+17 (Inline Function) --------`-------- Wdf01000!FxIoQueueIoDeviceControl::Invoke+0x3f
+18 ffffde80`47806fb0 fffff80a`70faa7aa Wdf01000!FxIoQueue::DispatchRequestToDriver+0x1b7
+19 ffffde80`47807050 fffff80a`70fa5d0c Wdf01000!FxIoQueue::DispatchEvents+0x3aa
+1a (Inline Function) --------`-------- Wdf01000!FxIoQueue::QueueRequest+0x8b
+1b (Inline Function) --------`-------- Wdf01000!FxPkgIo::DispatchStep2+0x4b0
+1c ffffde80`47807120 fffff80a`70fa3a9b Wdf01000!FxPkgIo::DispatchStep1+0x52c
+1d (Inline Function) --------`-------- Wdf01000!FxPkgIo::Dispatch+0x4c
+1e (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x685
+1f (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0x691
+20 ffffde80`478071e0 fffff80a`70fca7a5 Wdf01000!FxDevice::DispatchWithLock+0x6fb
+21 (Inline Function) --------`-------- Wdf01000!FxIoTarget::Send+0xd
+22 ffffde80`478072d0 fffff80a`70fc93a2 Wdf01000!FxIoTarget::SubmitSync+0x1a5
+23 ffffde80`478073a0 fffff80a`70fc9008 Wdf01000!FxIoTargetSendIoctl+0x392
+24 ffffde80`47807660 fffff80a`710bb653 Wdf01000!imp_WdfIoTargetSendIoctlSynchronously+0x48
+25 (Inline Function) --------`-------- acpiex!WdfIoTargetSendIoctlSynchronously+0x67
+26 ffffde80`478076c0 fffff80a`710bb9af acpiex!RhpSendSpbIoctl+0x17b
+27 ffffde80`47807810 fffff80a`710babc5 acpiex!RhpSerialBusRegionSpaceAccess+0x2c3
+28 ffffde80`478078b0 fffff80a`710bb137 acpiex!RhpPerformRegionSpaceAccess+0x6d
+29 ffffde80`47807910 fffff80a`710b9cb6 acpiex!RhpProcessRegionSpaceAccess+0x2eb
+2a ffffde80`478079c0 fffff80a`70fbaaf4 acpiex!RhpEvtOpRegionProcessRegionSpaceWorkItem+0x106
+2b ffffde80`47807a10 fffff80a`70fd6e19 Wdf01000!FxWorkItem::WorkItemHandler+0x7c
+2c ffffde80`47807a50 fffff801`1931bdf0 Wdf01000!FxWorkItem::WorkItemThunk+0x29
+2d ffffde80`47807a90 fffff801`192dad79 nt!IopProcessWorkItem+0xf0
+2e ffffde80`47807b00 fffff801`1931f4bd nt!ExpWorkerThread+0xe9
+2f ffffde80`47807b90 fffff801`193d2456 nt!PspSystemThreadStartup+0x41
+30 ffffde80`47807be0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+To double-check the Region Space type for the handler:
+2: kd> .frame /r 29
+29 ffffde80`47807910 fffff80a`710b9cb6 acpiex!RhpProcessRegionSpaceAccess+0x2eb
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffff9f04eb2feba0 rdi=ffffcd8e9f46e8e0
+rip=fffff80a710bb137 rsp=ffffde8047807910 rbp=ffffde8047807980
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=fffff80a710b5fa0
+r14=fffff80a70fd6df0 r15=0000327160b2db58
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+acpiex!RhpProcessRegionSpaceAccess+0x2eb:
+fffff80a`710bb137 8bd8            mov     ebx,eax
+2: kd> dv /V
+@r15              @r15                                Device = 0x00003271`60b2db58
+<unavailable>     <unavailable>        RequestContextPointer = <value unavailable>
+@rsi              @rsi                          CacheContext = 0xffff9f04`eb2feba0
+<unavailable>     <unavailable>               ConnectionData = <value unavailable>
+ffffde80`478079c8 @rsp+0x00b8       FullyQualifiedNameLength = 0xa6191568
+@r14d             @r14d                                Retry = 0x70fd6df0
+ffffde80`478079d0 @rsp+0x00c0             ConnectionDataSize = 5
+@rdi              @rdi                        RequestContext = 0xffffcd8e`9f46e8e0
+ffffde80`47807960 @rsp+0x0050                       SourceId = struct _STRING "--- memory read error at address 0x00550041`00460045 ---"
+ffffde80`47807970 @rsp+0x0060               RegionResourceId = ""
+@ebx              @ebx                                Status = 0n0
+<unavailable>     <unavailable>             NlsMbCodePageTag = <value unavailable>
+2: kd> dx -r1 (*((acpiex!_RH_OPREGION_REQUEST *)0xffffcd8e9f46e8e0))
+(*((acpiex!_RH_OPREGION_REQUEST *)0xffffcd8e9f46e8e0))                 [Type: _RH_OPREGION_REQUEST]
+    [+0x000] OpRegionRequestList [Type: _LIST_ENTRY]
+    [+0x010] Active           : 0x1 [Type: unsigned char]
+    [+0x018] InputMemory      : 0x327160b91a98 [Type: WDFMEMORY__ *]
+    [+0x020] OutputMemory     : 0x3271609cce28 [Type: WDFMEMORY__ *]
+    [+0x028] State            : 0 [Type: long]
+    [+0x030] IoTarget         : 0x0 [Type: WDFIOTARGET__ *]
+    [+0x038] ProcessRegionWorkItem : 0x32715d605668 [Type: WDFWORKITEM__ *]
+    [+0x040] RegionSpaceType  : 0x9 [Type: unsigned long]
+    [+0x048] RegionAccessInformation [Type: _ACPI_REGION_ACCESS_INFORMATION]
+    [+0x088] ConnectionDataMemory : 0x327159e6eaf8 [Type: WDFMEMORY__ *]
+    [+0x090] Data             : 0xffffcd8ea0259e70 [Type: void *]
+    [+0x098] DataSize         : 0xff [Type: unsigned long]
+    [+0x0a0] CompletionHandler : 0xfffff80a7119d980 [Type: void (__cdecl*)(void *)]
+    [+0x0a8] CompletionContext : 0xffffcd8ea65e0948 [Type: void *]
+    [+0x0b0] HostDeviceObject : 0xffffcd8ea031aae0 : Device for "\Driver\ACPI" [Type: _DEVICE_OBJECT *]
+    [+0x0b8] IncreasedBufferSize : 0x0 [Type: unsigned long]
+    [+0x0c0] RegionResourceId : "" [Type: _UNICODE_STRING]
+    [+0x0d0] CacheContextName : "" [Type: _UNICODE_STRING]
+
+SurfaceSerialHubDriver owns the request:
+2: kd> !wdfdriverinfo SurfaceSerialHubDriver
+----------------------------------
+Default driver image name: SurfaceSerialHubDriver
+WDF library image name: Wdf01000
+FxDriverGlobals  0xffffcd8ea2ba77e0
+WdfBindInfo      0xfffff80a72a3f690
+   Version        v1.15
+Library module   0xffffcd8e9f63e1e0
+   ServiceName    \Registry\Machine\System\CurrentControlSet\Services\Wdf01000
+   ImageName      Wdf01000
+----------------------------------
+WDFDRIVER: 0x000032715d6049e8
+Driver logs: Not available 
+Framework logs: !wdflogdump SurfaceSerialHubDriver.sys -f
+
+    !wdfdevice 0x000032715d272488 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpFailedWaitForRemove, WdfDevStatePowerStopped, WdfDevStatePwrPolRemoved
+        context:  dt 0xffffcd8ea2d8de60 DEVICE_CONTEXT (size is 0x198 bytes)
+        <no associated attribute callbacks>
+        !wdfdevicequeues 0x000032715d272488
+
+----------------------------------
+
+WDF Verifier settings for SurfaceSerialHubDriver.sys is OFF
+----------------------------------
+2: kd> !wdfdevicequeues 0x000032715d272488
+Treating handle as a KMDF handle!
+
+Dumping queues of WDFDEVICE 0x000032715d272488
+=====================================
+Number of queues: 2
+----------------------------------
+Queue: 1 !wdfqueue  0x000032715d27c3d8
+    Parallel, Auto, Not power-managed, PowerOn, Can accept, Can dispatch, Dispatching, ExecutionLevelDispatch, SynchronizationScopeNone
+    Number of driver owned requests: 1
+    !wdfrequest 0x000032715d001198  !irp 0xffffcd8eaa592010
+    Number of waiting requests: 0
+
+
+    EvtIoDeviceControl: (0xfffff80a72a39684) SurfaceSerialHubDriver
+    EvtIoStop: (0xfffff80a72a39efc) SurfaceSerialHubDriver
+.
+
+But it looks like it failed D0 entry:
+2: kd> !wdfdevice 0x000032715d272488 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x000032715d272488
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffffcd8ea2bf2910, attached ffffcd8e9f591bd0, pdo ffffcd8e9f591bd0
+
+Pnp state:  12e ( WdfDevStatePnpFailedWaitForRemove )
+Power state:  315 ( WdfDevStatePowerStopped )
+Power Pol state:  58e ( WdfDevStatePwrPolRemoved )
+
+Default WDFIOTARGET: 000032715d40d928
+
+Device is the power policy owner for the stack
+No pended pnp, power, wait-wake irps
+
+Pnp state history:
+[0] WdfDevStatePnpHardwareAvailable (0x108)
+[1] WdfDevStatePnpEnableInterfaces (0x109)
+[2] WdfDevStatePnpStarted (0x119)
+[3] WdfDevStatePnpFailedIoStarting (0x129)
+[4] WdfDevStatePnpFailedOwnHardware (0x12a)
+[5] WdfDevStatePnpFailed (0x12b)
+[6] WdfDevStatePnpFailedPowerPolicyRemoved (0x139)
+[7] WdfDevStatePnpFailedWaitForRemove (0x12e)
+
+Power state history:
+[0] WdfDevStatePowerDx (0x31f)
+[1] WdfDevStatePowerCheckDeviceType (0x301)
+[2] WdfDevStatePowerWaking (0x333)
+[3] WdfDevStatePowerUpFailedDerefParent (0x354)
+[4] WdfDevStatePowerReportPowerUpFailedDerefParent (0x33d)
+[5] WdfDevStatePowerReportPowerUpFailed (0x33e)
+[6] WdfDevStatePowerPowerFailedPowerDown (0x33f)
+[7] WdfDevStatePowerStopped (0x315)
+.
+
+2: kd> !wdflogdump SurfaceSerialHubDriver.sys -f
+Trace searchpath is: 
+
+Trace format prefix is: %7!u!: %!FUNC! - 
+Trying to extract TMF information from - z:\14393.0.rs1.release_rtm\sympriv\wdf\sys\Wdf01000.pdb
+Gather log: Please wait, this may take a moment (reading 4024 bytes).
+% read so far ... 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+There are 78 log entries
+--- start of log ---
+.
+69: FxPnpDeviceD0Entry::InvokeClient - EvtDeviceD0Entry WDFDEVICE 0x000032715D272488 !devobj 0xFFFFCD8EA2BF2910, old state WdfPowerDeviceD3 failed, 0xc000000d(STATUS_INVALID_PARAMETER)
+.
+
+So this appears to be an issue in SurfaceSerialHubDriver.sys.
+
+Best regards,
+Ivan Rouzanov.

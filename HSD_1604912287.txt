@@ -1,0 +1,260 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604912287
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 9F - DRIVER_POWER_STATE_FAILURE (9f):
+5: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffe18429ace800, Physical Device Object of the stack
+Arg3: fffff3820626f850, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffe1843411daf0, The blocked IRP
+…
+
+A power IRP timed-out and it is owned by TBT driver:
+5: kd> !irp ffffe1843411daf0
+Irp is active with 3 stacks 2 is current (= 0xffffe1843411dc08)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe1842f5e8c60 00000000 fffff8033e36e410-ffffe1843379dd70 Success Error Cancel pending
+	       \Driver\nhi	nt!PopRequestCompletion
+			Args: 00014400 00000001 00000004 00000002
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffe1843379dd70    
+
+			Args: 00000000 00000000 00000000 00000000
+5: kd> !devstack ffffe1842f5e8c60
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffe1842f5e8c60  \Driver\nhi        ffffe1842f7642f0  
+  ffffe18429ace800  \Driver\pci        ffffe18429ace950  NTPNP_PCI0028
+!DevNode ffffe18429acf490 :
+  DeviceInst is "PCI\VEN_8086&DEV_15D2&SUBSYS_00008086&REV_02\A0D9F0BAB223040000"
+  ServiceName is "nhi"
+
+Looking at the Power Manager state, the timed-out D3 IRP is owned and processed by the TbtBusDrv.sys:
+5: kd> !poaction
+…
+  IRP: ffffe1843411daf0 (set/D3,), PDO: ffffe18429ace800, CURRENT: ffffe1842f5e8c60
+
+Irp worker threads (PopIrpThreadList - fffff8033e5d2250)
+  THREAD: ffffe18427ad6700 (static)
+  THREAD: ffffe18427ad1040 (static)
+  THREAD: ffffe18431c0b700 (dynamic)
+  THREAD: ffffe18431ca7680 (dynamic), IRP: ffffe1843411daf0, DEVICE: ffffe1842f5e8c60
+…
+
+The thread has been waiting for nearly 5 minutes:
+5: kd> !thread ffffe18431ca7680
+THREAD ffffe18431ca7680  Cid 0004.7278  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffe1842e3c6fb8  NotificationEvent
+Not impersonating
+DeviceMap                 ffffc887fc8187b0
+Owning Process            ffffe18427ac5040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      1239867        Ticks: 19193 (0:00:04:59.890)
+Context Switch Count      283            IdealProcessor: 6             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address nt!PopIrpWorker (0xfffff8033e36ed10)
+Stack Init fffff38208917c10 Current fffff38208916e80
+Base fffff38208918000 Limit fffff38208911000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff382`08916ec0 fffff803`3e26ad76 : fffff803`00000000 ffffe184`31ca7680 00000000`00000046 fffff803`3e46e6e0 : nt!KiSwapContext+0x76
+fffff382`08917000 fffff803`3e26a56b : 00000000`00140001 00000000`00000020 00000000`00000000 00000000`00000000 : nt!KiSwapThread+0x2c6
+fffff382`089170d0 fffff803`3e269c8f : 00000000`00000000 fffff803`00000000 00000000`00140000 ffffe184`31ca77c0 : nt!KiCommitThreadWait+0x13b
+fffff382`08917170 fffff80e`01fc2b16 : ffffe184`2e3c6fb8 fffff382`00000000 ffffe184`2f151b00 ffffe184`296fb900 : nt!KeWaitForSingleObject+0x1ff
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!MxEvent::WaitFor+0x1a (Inline Function @ fffff80e`01fc2b16)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxCREvent::EnterCRAndWait+0x20 (Inline Function @ fffff80e`01fc2b16)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x20 (Inline Function @ fffff80e`01fc2b16)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxSystemWorkItem::WaitForExit+0x20 (Inline Function @ fffff80e`01fc2b16)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxTimer::Stop+0x40e42 (Inline Function @ fffff80e`01fc2b16)
+fffff382`08917250 fffff80e`09fa15e4 : 00000000`00000000 fffff382`08917300 fffff382`089172f9 ffffe184`2e3c6020 : Wdf01000!imp_WdfTimerStop+0x40e96
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : TbtBusDrv!WdfTimerStop+0x17 (Inline Function @ fffff80e`09fa15e4)
+fffff382`089172b0 fffff80e`09fa4322 : ffffe184`2e3c6870 00000000`00000004 ffffe184`2e3c6878 fffff80e`01f8b7c2 : TbtBusDrv!wdf_common::WdfTimer::StopAndWait+0xf0
+fffff382`08917360 fffff80e`09fa3e66 : ffffe184`2f5eb100 ffffe184`2f5eb1c0 00000000`00000004 00000000`00000000 : TbtBusDrv!hardware_abstraction::WaitForCmReadyFlowStateTimer::Stop+0x86
+fffff382`089173a0 fffff80e`09fa025e : ffffe184`2f5eb1c0 ffffe184`2f5eb1c0 00000000`00000050 00001e7b`d089bff8 : TbtBusDrv!hardware_abstraction::WaitForCmReadyFlow::Stop+0x6e
+fffff382`08917410 fffff80e`09fa0171 : 00000000`00000000 fffff382`08917509 00000000`00000004 fffff382`08917500 : TbtBusDrv!tbt_bus_driver::DevicePowerStateSelfManagedIoBase::OnD0Exit+0x8a
+fffff382`08917450 fffff80e`09f4560f : 00000000`00000000 00000000`00000004 00000000`00000004 00000000`00000000 : TbtBusDrv!tbt_bus_driver::DevicePowerStateMachine::OnD0Exit+0x61
+fffff382`08917490 fffff80e`01fb4a5e : 00000000`00000000 fffff80e`01f8e34a ffffe184`2f5e4bb8 00000000`00000000 : TbtBusDrv!TbtBusDrvEvtDeviceD0Exit+0x2ab
+fffff382`08917570 fffff80e`01fb48d2 : 00000000`00000004 ffffe184`00000000 ffffe184`2f5e2df0 00000000`00000000 : Wdf01000!FxPnpDeviceD0Exit::InvokeClient+0x2e
+fffff382`089175d0 fffff80e`01fa97e9 : 00000000`00000004 ffffe184`2f5e4ae8 ffffe184`2f5e4650 fffff382`089177c0 : Wdf01000!FxPrePostCallback::InvokeStateless+0x42
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPnpDeviceD0Exit::Invoke+0x10 (Inline Function @ fffff80e`01fa97e9)
+fffff382`08917600 fffff80e`01fba4c9 : 00000000`00000300 fffff382`00000000 ffffe184`2f5e4650 00000000`00000000 : Wdf01000!FxPkgPnp::PowerGotoDxIoStopped+0xf9
+fffff382`08917690 fffff80e`01fa9c0a : ffffe184`2f5e4650 00000000`00000000 00000000`0000031c fffff80e`020299a0 : Wdf01000!FxPkgPnp::PowerGotoDNotZeroIoStopped+0x9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgPnp::PowerEnterNewState+0x101 (Inline Function @ fffff80e`01fa9c0a)
+fffff382`089176c0 fffff80e`01faddb0 : ffffe184`2f5e4850 00000000`00000000 ffffe184`2f5e4828 00000000`00000000 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0x1fa
+fffff382`08917830 fffff80e`01fa362c : 00000000`00000000 ffffe184`2f5e4650 fffff382`08910012 fffff382`08917978 : Wdf01000!FxPkgPnp::PowerProcessEvent+0x140
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgFdo::LowerDevicePower+0x11 (Inline Function @ fffff80e`01fa362c)
+fffff382`089178d0 fffff80e`01fa2f5a : 00000000`00000002 fffff382`08917998 00000000`00000004 00000000`00000000 : Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x60
+fffff382`08917920 fffff80e`01f87e00 : ffffe184`2f764000 00001e7b`d089bff8 fffff803`3e5d2280 00000000`00000107 : Wdf01000!FxPkgFdo::_DispatchSetPower+0x1a
+fffff382`08917950 fffff80e`01f87480 : ffffe184`3411daf0 ffffe184`2f764000 ffffe184`2f5e4650 00000000`00000000 : Wdf01000!FxPkgPnp::Dispatch+0xf0
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!DispatchWorker+0xda (Inline Function @ fffff80e`01f87480)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxDevice::Dispatch+0xe6 (Inline Function @ fffff80e`01f87480)
+fffff382`089179f0 fffff803`3e36eef7 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000002 : Wdf01000!FxDevice::DispatchWithLock+0x150
+fffff382`08917ae0 fffff803`3e2fbac7 : ffffffff`fa0a1f00 ffffe184`31ca7680 fffff803`3e36ed10 00000000`00000000 : nt!PopIrpWorker+0x1e7
+fffff382`08917b90 fffff803`3e3b9b56 : ffffb301`087c0180 ffffe184`31ca7680 fffff803`3e2fba80 00000000`00000246 : nt!PspSystemThreadStartup+0x47
+fffff382`08917be0 00000000`00000000 : fffff382`08918000 fffff382`08911000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+The TbtBusDrv.sys is waiting for all timer callback functions to return:
+(https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/wdftimer/nf-wdftimer-wdftimerstop)
+
+5: kd> .thread /p /r ffffe18431ca7680
+Implicit thread is now ffffe184`31ca7680
+Implicit process is now ffffe184`27ac5040
+Loading User Symbols
+
+5: kd> k
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 fffff382`08916ec0 fffff803`3e26ad76 nt!KiSwapContext+0x76
+01 fffff382`08917000 fffff803`3e26a56b nt!KiSwapThread+0x2c6
+02 fffff382`089170d0 fffff803`3e269c8f nt!KiCommitThreadWait+0x13b
+03 fffff382`08917170 fffff80e`01fc2b16 nt!KeWaitForSingleObject+0x1ff
+04 (Inline Function) --------`-------- Wdf01000!MxEvent::WaitFor+0x1a
+05 (Inline Function) --------`-------- Wdf01000!FxCREvent::EnterCRAndWait+0x20
+06 (Inline Function) --------`-------- Wdf01000!FxCREvent::EnterCRAndWaitAndLeave+0x20
+07 (Inline Function) --------`-------- Wdf01000!FxSystemWorkItem::WaitForExit+0x20
+08 (Inline Function) --------`-------- Wdf01000!FxTimer::Stop+0x40e42
+09 fffff382`08917250 fffff80e`09fa15e4 Wdf01000!imp_WdfTimerStop+0x40e96
+0a (Inline Function) --------`-------- TbtBusDrv!WdfTimerStop+0x17
+0b fffff382`089172b0 fffff80e`09fa4322 TbtBusDrv!wdf_common::WdfTimer::StopAndWait+0xf0
+0c fffff382`08917360 fffff80e`09fa3e66 TbtBusDrv!hardware_abstraction::WaitForCmReadyFlowStateTimer::Stop+0x86
+0d fffff382`089173a0 fffff80e`09fa025e TbtBusDrv!hardware_abstraction::WaitForCmReadyFlow::Stop+0x6e
+0e fffff382`08917410 fffff80e`09fa0171 TbtBusDrv!tbt_bus_driver::DevicePowerStateSelfManagedIoBase::OnD0Exit+0x8a
+0f fffff382`08917450 fffff80e`09f4560f TbtBusDrv!tbt_bus_driver::DevicePowerStateMachine::OnD0Exit+0x61
+10 fffff382`08917490 fffff80e`01fb4a5e TbtBusDrv!TbtBusDrvEvtDeviceD0Exit+0x2ab
+11 fffff382`08917570 fffff80e`01fb48d2 Wdf01000!FxPnpDeviceD0Exit::InvokeClient+0x2e
+12 fffff382`089175d0 fffff80e`01fa97e9 Wdf01000!FxPrePostCallback::InvokeStateless+0x42
+13 (Inline Function) --------`-------- Wdf01000!FxPnpDeviceD0Exit::Invoke+0x10
+14 fffff382`08917600 fffff80e`01fba4c9 Wdf01000!FxPkgPnp::PowerGotoDxIoStopped+0xf9
+15 fffff382`08917690 fffff80e`01fa9c0a Wdf01000!FxPkgPnp::PowerGotoDNotZeroIoStopped+0x9
+16 (Inline Function) --------`-------- Wdf01000!FxPkgPnp::PowerEnterNewState+0x101
+17 fffff382`089176c0 fffff80e`01faddb0 Wdf01000!FxPkgPnp::PowerProcessEventInner+0x1fa
+18 fffff382`08917830 fffff80e`01fa362c Wdf01000!FxPkgPnp::PowerProcessEvent+0x140
+19 (Inline Function) --------`-------- Wdf01000!FxPkgFdo::LowerDevicePower+0x11
+1a fffff382`089178d0 fffff80e`01fa2f5a Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x60
+1b fffff382`08917920 fffff80e`01f87e00 Wdf01000!FxPkgFdo::_DispatchSetPower+0x1a
+1c fffff382`08917950 fffff80e`01f87480 Wdf01000!FxPkgPnp::Dispatch+0xf0
+1d (Inline Function) --------`-------- Wdf01000!DispatchWorker+0xda
+1e (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0xe6
+1f fffff382`089179f0 fffff803`3e36eef7 Wdf01000!FxDevice::DispatchWithLock+0x150
+20 fffff382`08917ae0 fffff803`3e2fbac7 nt!PopIrpWorker+0x1e7
+21 fffff382`08917b90 fffff803`3e3b9b56 nt!PspSystemThreadStartup+0x47
+22 fffff382`08917be0 00000000`00000000 nt!KiStartSystemThread+0x16
+
+5: kd> ub  fffff80e`09fa15e4 
+TbtBusDrv!operator delete+0xb [inlined in TbtBusDrv!wdf_common::WdfTimer::StopAndWait+0xca]:
+fffff80e`09fa15be 7406            je      TbtBusDrv!wdf_common::WdfTimer::StopAndWait+0xd2 (fffff80e`09fa15c6)
+fffff80e`09fa15c0 ff154a1bfeff    call    qword ptr [TbtBusDrv!_imp_ExFreePool (fffff80e`09f83110)]
+fffff80e`09fa15c6 bba30000c0      mov     ebx,0C00000A3h
+fffff80e`09fa15cb eb23            jmp     TbtBusDrv!wdf_common::WdfTimer::StopAndWait+0xfc (fffff80e`09fa15f0)
+fffff80e`09fa15cd 488b0574a1feff  mov     rax,qword ptr [TbtBusDrv!WdfFunctions_01015 (fffff80e`09f8b748)]
+fffff80e`09fa15d4 41b001          mov     r8b,1
+fffff80e`09fa15d7 488b0d62a1feff  mov     rcx,qword ptr [TbtBusDrv!WdfDriverGlobals (fffff80e`09f8b740)]
+fffff80e`09fa15de ff90000a0000    call    qword ptr [rax+0A00h]
+
+Switching to the frame, we can see callback thread:
+5: kd> .frame /r 9
+09 fffff382`08917250 fffff80e`09fa15e4 Wdf01000!imp_WdfTimerStop+0x40e96
+rax=0000000000000000 rbx=ffffe1842e3c6020 rcx=0000000000000000
+rdx=0000000000000000 rsi=fffff382089173a0 rdi=0000000000000000
+rip=fffff80e01fc2b16 rsp=fffff38208917250 rbp=ffffe1842e3c6f20
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=00001e7bd089bff8 r13=0000000000000050
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+Wdf01000!imp_WdfTimerStop+0x40e96:
+fffff80e`01fc2b16 ff15bcc60800    call    qword ptr [Wdf01000!_imp_KeLeaveCriticalRegion (fffff80e`0204f1d8)] ds:fffff80e`0204f1d8={nt!KeLeaveCriticalRegion (fffff803`3e2675d0)}
+5: kd> dv /V
+<unavailable>     <unavailable>        DriverGlobals = <value unavailable>
+<unavailable>     <unavailable>                Timer = <value unavailable>
+<unavailable>     <unavailable>                 Wait = <value unavailable>
+fffff382`089172c8 @rsp+0x0078               pFxTimer = 0xffffe184`2e3c6020
+<unavailable>     <unavailable>     pFxDriverGlobals = <value unavailable>
+<unavailable>     <unavailable>               status = <value unavailable>
+5: kd> dt pFxTimer m_CallbackThread
+Local var @ 0xfffff382089172c8 Type FxTimer*
+0xffffe184`2e3c6020 
+   +0x148 m_CallbackThread : 0xffffe184`31a11040 _KTHREAD
+
+The callback thread is waiting for a lock:
+5: kd> .thread /p /r  0xffffe184`31a11040
+Implicit thread is now ffffe184`31a11040
+Implicit process is now ffffe184`27ac5040
+Loading User Symbols
+
+5: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 fffff382`0957f4c0 fffff803`3e26ad76 nt!KiSwapContext+0x76
+01 fffff382`0957f600 fffff803`3e26a56b nt!KiSwapThread+0x2c6
+02 fffff382`0957f6d0 fffff803`3e269c8f nt!KiCommitThreadWait+0x13b
+03 fffff382`0957f770 fffff80e`01f81a59 nt!KeWaitForSingleObject+0x1ff
+04 (Inline Function) --------`-------- Wdf01000!MxEvent::WaitFor+0x16
+05 (Inline Function) --------`-------- Wdf01000!FxWaitLockInternal::AcquireLock+0x26
+06 fffff382`0957f850 fffff80e`09fa374c Wdf01000!imp_WdfWaitLockAcquire+0x89
+07 fffff382`0957f8a0 fffff80e`09f26e03 TbtBusDrv!hardware_abstraction::WaitForCmReadyFlow::OnTimerExpired+0x44
+08 fffff382`0957f910 fffff80e`09f0a5c5 TbtBusDrv!common_frameworks::Callback<hardware_abstraction::WaitForCmReadyFlow>::Invoke+0x3b
+09 (Inline Function) --------`-------- TbtBusDrv!wdf_common::WdfTimer::TimerExpired+0x21
+0a fffff382`0957f9c0 fffff80e`01f8367e TbtBusDrv!wdf_common::WdfTimer::OnTimerExpired+0x61
+0b fffff382`0957f9f0 fffff80e`01f83579 Wdf01000!FxTimer::TimerHandler+0x96
+0c fffff382`0957fa30 fffff80e`01f84f28 Wdf01000!FxTimer::_FxTimerWorkItemCallback+0x9
+0d (Inline Function) --------`-------- Wdf01000!FxSystemWorkItem::WorkItemHandler+0x8a
+0e fffff382`0957fa60 fffff803`3e273f6c Wdf01000!FxSystemWorkItem::_WorkItemThunk+0x98
+0f fffff382`0957fa90 fffff803`3e240445 nt!IopProcessWorkItem+0x12c
+10 fffff382`0957fb00 fffff803`3e2fbac7 nt!ExpWorkerThread+0xf5
+11 fffff382`0957fb90 fffff803`3e3b9b56 nt!PspSystemThreadStartup+0x47
+12 fffff382`0957fbe0 00000000`00000000 nt!KiStartSystemThread+0x16
+
+Switching to the frame, we can see lock owner thread:
+5: kd> .frame /r 6
+06 fffff382`0957f850 fffff80e`09fa374c Wdf01000!imp_WdfWaitLockAcquire+0x89
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000000 rdi=ffffe1842f5ebc88
+rip=fffff80e01f81a59 rsp=fffff3820957f850 rbp=fffff3820957f900
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000100 r13=0000000000000000
+r14=ffffe1842e3c6148 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+Wdf01000!imp_WdfWaitLockAcquire+0x89:
+fffff80e`01f81a59 8bd8            mov     ebx,eax
+5: kd> dv /V
+<unavailable>     <unavailable>        DriverGlobals = <value unavailable>
+<unavailable>     <unavailable>                 Lock = <value unavailable>
+@rbx              @rbx                       Timeout = 0x00000000`00000000
+fffff382`0957f8a8 @rsp+0x0058                  pLock = 0xffffe184`2f5ebc20
+<unavailable>     <unavailable>     pFxDriverGlobals = <value unavailable>
+5: kd> dt pLock  m_OwningThread  
+Local var @ 0xfffff3820957f8a8 Type FxWaitLock*
+0xffffe184`2f5ebc20 
+   +0x088 m_OwningThread : 0xffffe184`31ca7680 _KTHREAD
+
+The lock is owned by the power IRP processing thread which is waiting for the timer callback. The timer callback is waiting for the lock, which is owned by the power IRP processing thread – this is a deadlock in the TbtBusDrv.sys driver. Given the age of the driver, it is probable caused by recent changes:
+5: kd> lmvi mTbtBusDrv
+Browse full module list
+start             end                 module name
+fffff80e`09ef0000 fffff80e`09fb3000   TbtBusDrv   (private pdb symbols)  TbtBusDrv.sys
+    Symbol file: d:\symcache\TbtBusDrv.pdb\35011BD87B2D46F3B77DCBB411E2083E5\TbtBusDrv.pdb
+    Image path: \SystemRoot\System32\drivers\TbtBusDrv.sys
+    Image name: TbtBusDrv.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Thu Mar 29 07:12:54 2018 (5ABCF466)
+    CheckSum:         000C4016
+    ImageSize:        000C3000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4

@@ -1,0 +1,346 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209727126/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a race condition in iaPreciseTouch.sys.
+This is Bugcheck 139 - KERNEL_SECURITY_CHECK_FAILURE (139) (see provided memory dump):
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+KERNEL_SECURITY_CHECK_FAILURE (139)
+A kernel component has corrupted a critical data structure.  The corruption
+could potentially allow a malicious user to gain control of this machine.
+Arguments:
+Arg1: 0000000000000003, A LIST_ENTRY has been corrupted (i.e. double remove).
+Arg2: ffff9501d670e790, Address of the trap frame for the exception that caused the bugcheck
+Arg3: ffff9501d670e6e8, Address of the exception record for the exception that caused the bugcheck
+Arg4: 0000000000000000, Reserved
+…
+
+Looking for the trap:
+0: kd> kV
+ # Child-SP          RetAddr           : Args to Child                                                           : Call Site
+00 ffff9501`d670e468 fffff803`44d92a29 : 00000000`00000139 00000000`00000003 ffff9501`d670e790 ffff9501`d670e6e8 : nt!KeBugCheckEx
+01 ffff9501`d670e470 fffff803`44d92d90 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiBugCheckDispatch+0x69
+02 ffff9501`d670e5b0 fffff803`44d91af7 : fffff803`44f63600 fffff803`44c97ba7 ffffac01`53f21360 00000000`00000000 : nt!KiFastFailDispatch+0xd0
+03 ffff9501`d670e790 fffff803`44d2e7ba : fffff803`45172e01 ffffac01`569feb70 fffff80c`00000000 ffffe705`c42c3ad0 : nt!KiRaiseSecurityCheckFailure+0xf7 (TrapFrame @ ffff9501`d670e790)
+04 ffff9501`d670e928 fffff803`45172e01 : ffffac01`569feb70 fffff80c`00000000 ffffe705`c42c3ad0 ffffac01`53f21040 : nt!PopUnregisterPowerSettingCallback+0x3e
+05 ffff9501`d670e930 fffff80c`067f9e9b : ffffac01`5592fdd0 fffff80c`041814cb ffffac01`5592fdd0 ffffac01`53f21040 : nt!PoUnregisterPowerSettingCallback+0x51
+06 ffff9501`d670e970 fffff80c`067f9f3c : ffffac01`56b822f0 fffff803`492eb070 ffffac01`00000000 fffff803`00000000 : iaPreciseTouch!UnregisterPowerSettingsCallback+0x63
+07 ffff9501`d670e9b0 fffff80c`04199fcd : 000053fe`aa6d0228 00000000`0000000c 00000000`0000000c ffffac01`56b96780 : iaPreciseTouch!UnregisterPowerSettingsCallbackWorkItemFunc+0x88
+08 ffff9501`d670ea10 fffff80c`0419beb9 : ffffac01`53f21000 ffffac01`5592fdd0 ffffac01`53f21040 ffffac01`56bb6e00 : Wdf01000!FxWorkItem::WorkItemHandler+0x81
+09 ffff9501`d670ea50 fffff803`44cd68fd : ffffac01`56bb6e00 fffff803`44cd6800 fffff80c`0419be90 00000000`00000000 : Wdf01000!FxWorkItem::WorkItemThunk+0x29
+0a ffff9501`d670ea90 fffff803`44c5ebe9 : fffff803`44fda200 ffffac01`53f21040 ffffac01`56bb6e00 00007fff`00000000 : nt!IopProcessWorkItem+0xfd
+0b ffff9501`d670eb00 fffff803`44cdc668 : 00000000`00000001 fffff803`44c5e9d0 ffffac01`5328c4c0 ffffac01`53f21040 : nt!ExpWorkerThread+0x219
+0c ffff9501`d670eb90 fffff803`44d8c8c6 : ffff9501`cb5e5180 ffffac01`53f21040 fffff803`44cdc620 ffff864d`027139c0 : nt!PspSystemThreadStartup+0x48
+0d ffff9501`d670ebe0 00000000`00000000 : ffff9501`d670f000 ffff9501`d6708000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+Switching context to the trap frame, we can see that the trap was explicit failure from unregistering power setting callback:
+0: kd> .trap ffff9501`d670e790
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=ffffe705c42c3ad0 rbx=0000000000000000 rcx=0000000000000003
+rdx=ffffe705cc3b70b0 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff80344d2e7ba rsp=ffff9501d670e928 rbp=ffffac01569feb70
+ r8=00000000000001ff  r9=ffffac0153f21360 r10=fffff80344f63600
+r11=ffff9501d670e800 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+nt!PopUnregisterPowerSettingCallback+0x3e:
+fffff803`44d2e7ba cd29            int     29h
+
+Looking for the power setting registration handle:
+0: kd> .cxr
+Resetting default scope
+0: kd> kn 
+ # Child-SP          RetAddr           Call Site
+00 ffff9501`d670e468 fffff803`44d92a29 nt!KeBugCheckEx
+01 ffff9501`d670e470 fffff803`44d92d90 nt!KiBugCheckDispatch+0x69
+02 ffff9501`d670e5b0 fffff803`44d91af7 nt!KiFastFailDispatch+0xd0
+03 ffff9501`d670e790 fffff803`44d2e7ba nt!KiRaiseSecurityCheckFailure+0xf7
+04 ffff9501`d670e928 fffff803`45172e01 nt!PopUnregisterPowerSettingCallback+0x3e
+05 ffff9501`d670e930 fffff80c`067f9e9b nt!PoUnregisterPowerSettingCallback+0x51
+06 ffff9501`d670e970 fffff80c`067f9f3c iaPreciseTouch!UnregisterPowerSettingsCallback+0x63
+07 ffff9501`d670e9b0 fffff80c`04199fcd iaPreciseTouch!UnregisterPowerSettingsCallbackWorkItemFunc+0x88
+08 ffff9501`d670ea10 fffff80c`0419beb9 Wdf01000!FxWorkItem::WorkItemHandler+0x81
+09 ffff9501`d670ea50 fffff803`44cd68fd Wdf01000!FxWorkItem::WorkItemThunk+0x29
+0a ffff9501`d670ea90 fffff803`44c5ebe9 nt!IopProcessWorkItem+0xfd
+0b ffff9501`d670eb00 fffff803`44cdc668 nt!ExpWorkerThread+0x219
+0c ffff9501`d670eb90 fffff803`44d8c8c6 nt!PspSystemThreadStartup+0x48
+0d ffff9501`d670ebe0 00000000`00000000 nt!KiStartSystemThread+0x16
+
+We can see that PoUnregisterPowerSettingCallback stores registration handle passed as a  parameter into RBX:
+0: kd> u nt!PoUnregisterPowerSettingCallback
+nt!PoUnregisterPowerSettingCallback:
+fffff803`45172db0 48895c2408      mov     qword ptr [rsp+8],rbx
+fffff803`45172db5 57              push    rdi
+fffff803`45172db6 4883ec30        sub     rsp,30h
+fffff803`45172dba 33ff            xor     edi,edi
+fffff803`45172dbc 488bd9          mov     rbx,rcx
+fffff803`45172dbf 4885c9          test    rcx,rcx
+fffff803`45172dc2 7456            je      nt!PoUnregisterPowerSettingCallback+0x6a (fffff803`45172e1a)
+fffff803`45172dc4 81791050536574  cmp     dword ptr [rcx+10h],74655350h
+
+Therefore we can obtain the value:
+0: kd> .frame /r 5
+05 ffff9501`d670e930 fffff80c`067f9e9b nt!PoUnregisterPowerSettingCallback+0x51
+rax=ffffe705c42c3ad0 rbx=ffffe705c42c3ad0 rcx=0000000000000003
+rdx=ffffe705cc3b70b0 rsi=ffffac0153f21040 rdi=0000000000000000
+rip=fffff80345172e01 rsp=ffff9501d670e930 rbp=ffffac01569feb70
+ r8=00000000000001ff  r9=ffffac0153f21360 r10=fffff80344f63600
+r11=ffff9501d670e800 r12=0000000000000200 r13=0000000000000000
+r14=0000000000000000 r15=fffff80344fda200
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000282
+nt!PoUnregisterPowerSettingCallback+0x51:
+fffff803`45172e01 488d0d18d0dbff  lea     rcx,[nt!PopSettingLock (fffff803`44f2fe20)]
+
+And we can confirm that it is indeed points to the correct setting registration structure:
+0: kd> dps ffffe705c42c3ad0+50 L1
+ffffe705`c42c3b20  fffff80c`067f8da8 iaPreciseTouch!OnLidChangeCallback
+
+But if we look at the list linkage, we can see that list is broken as “next” node “previous” pointer does not point back to the “current”:
+0: kd> dq ffffe705c42c3ad0 L2
+ffffe705`c42c3ad0  ffffe705`cc3b70b0 ffffe705`c42c3ad0
+0: kd> dq ffffe705`cc3b70b0 L2
+ffffe705`cc3b70b0  ffffe705`cd8d4180 ffffe705`cc3b70b0
+
+The “next” however does point to another registration done by iaPreciseTouch:
+0: kd> dps ffffe705`cc3b70b0+50 L1
+ffffe705`cc3b7100  fffff80c`067f8914 iaPreciseTouch!OnDisplayChangeCallback
+
+So the bugcheck is caused by the failed check for the linked list integrity – the registration iaPreciseTouch is trying to unregister is invalid.
+In fact, both registration structures already freed:
+0: kd> !pool ffffe705c42c3ad0
+Pool page ffffe705c42c3ad0 region is Paged pool
+…
+*ffffe705c42c3ac0 size:   80 previous size:   a0  (Free ) *PSet
+		Owning component : Unknown (update pooltag.txt)
+ …
+0: kd> !pool ffffe705`cc3b70b0
+Pool page ffffe705cc3b70b0 region is Paged pool
+…
+*ffffe705cc3b70a0 size:   80 previous size:   a0  (Free ) *PSet
+		Owning component : Unknown (update pooltag.txt)
+ …
+
+At this point things are rather puzzling. First of all, the registration handle passed as a parameter is not NULL but it both handles are NULL in the touch driver structures:
+0: kd> ub fffff80c`067f9e9b
+iaPreciseTouch!UnregisterPowerSettingsCallback+0x32:
+fffff80c`067f9e6a 488b442440      mov     rax,qword ptr [rsp+40h]
+fffff80c`067f9e6f 48c780982d010000000000 mov qword ptr [rax+12D98h],0
+fffff80c`067f9e7a 488b442440      mov     rax,qword ptr [rsp+40h]
+fffff80c`067f9e7f 4883b8a02d010000 cmp     qword ptr [rax+12DA0h],0
+fffff80c`067f9e87 7422            je      iaPreciseTouch!UnregisterPowerSettingsCallback+0x73 (fffff80c`067f9eab)
+fffff80c`067f9e89 488b442440      mov     rax,qword ptr [rsp+40h]
+fffff80c`067f9e8e 488b88a02d0100  mov     rcx,qword ptr [rax+12DA0h]
+fffff80c`067f9e95 ff15ad420600    call    qword ptr [iaPreciseTouch!_imp_PoUnregisterPowerSettingCallback (fffff80c`0685e148)]
+0: kd> .frame /r 6
+06 ffff9501`d670e970 fffff80c`067f9f3c iaPreciseTouch!UnregisterPowerSettingsCallback+0x63
+rax=ffffe705c42c3ad0 rbx=ffffac015592fdd0 rcx=0000000000000003
+rdx=ffffe705cc3b70b0 rsi=ffffac0153f21040 rdi=0000000000000000
+rip=fffff80c067f9e9b rsp=ffff9501d670e970 rbp=ffffac01569feb70
+ r8=00000000000001ff  r9=ffffac0153f21360 r10=fffff80344f63600
+r11=ffff9501d670e800 r12=0000000000000200 r13=0000000000000000
+r14=0000000000000000 r15=fffff80344fda200
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000282
+iaPreciseTouch!UnregisterPowerSettingsCallback+0x63:
+fffff80c`067f9e9b 488b442440      mov     rax,qword ptr [rsp+40h] ss:0018:ffff9501`d670e9b0=ffffac0156b822f0
+0: kd> dv /v
+ffff9501`d670e9b0     pdevContext = 0xffffac01`56b822f0
+ffff9501`d670e990          status = 0n0
+0: kd> dt pdevContext PowerMngementCallbackInfo.
+Local var @ 0xffff9501d670e9b0 Type _DEVICE_EXTENSION*
+0xffffac01`56b822f0 
+   +0x12d98 PowerMngementCallbackInfo  : 
+      +0x000 pDisplayPowerSettingHandle : (null) 
+      +0x008 pLidSwitchSettingHandle    : (null) 
+      +0x010 UnregisterPowerSettingsWorkItem : 0x000053fe`aa6d0228 WDFWORKITEM__
+      +0x018 displayCurState            : 1 ( DISPLAY_ON )
+      +0x01c lidCurState                : 1 ( LID_OPEN )
+
+But if handles are NULL, the touch driver would not call the unregistration and  it always sets handles to NULL after handle is unregistered:
+NTSTATUS __fastcall UnregisterPowerSettingsCallback(_DEVICE_EXTENSION *pdevContext)
+{
+  if ( pdevContext->PowerMngementCallbackInfo.pDisplayPowerSettingHandle )
+  {
+    PoUnregisterPowerSettingCallback(pdevContext->PowerMngementCallbackInfo.pDisplayPowerSettingHandle);
+    pdevContext->PowerMngementCallbackInfo.pDisplayPowerSettingHandle = NULL;
+  }
+  if ( pdevContext->PowerMngementCallbackInfo.pLidSwitchSettingHandle )
+  {
+    PoUnregisterPowerSettingCallback(pdevContext->PowerMngementCallbackInfo.pLidSwitchSettingHandle);
+    pdevContext->PowerMngementCallbackInfo.pLidSwitchSettingHandle = NULL;
+  }
+  return STATUS_SUCCESS;
+}
+
+The handles are assigned in 1 places only:
+E:\DUMPS\ww08\1209727128>link -dump -headers iaPreciseTouch.sys | findstr image| findstr base
+       140000000 image base (0000000140000000 to 00000001400BBFFF)
+
+E:\DUMPS\ww08\1209727128>link -dump -disasm iaPreciseTouch.sys | findstr /i +12d98h], | findstr mov
+  0000000140049E6F: 48 C7 80 98 2D 01  mov         qword ptr [rax+12D98h],0
+
+0: kd>  u 140049E6F - 140000000 + iaPreciseTouch L1
+iaPreciseTouch!UnregisterPowerSettingsCallback+0x37:
+fffff80c`067f9e6f 48c780982d010000000000 mov qword ptr [rax+12D98h],0
+
+So how is it possible then that handle is NULL yet a non-NULL value was passed to the PoUnregisterPowerSettingCallback API?
+The answer lies in what UnregisterPowerSettingsCallbackWorkItemFunc does _after_ unregistration completes:
+void __fastcall UnregisterPowerSettingsCallbackWorkItemFunc(WDFWORKITEM__ *WorkItemTask)
+{
+…
+  UnregisterPowerSettingsCallback(pdevContext);
+  HandleEvent(pdevContext->pSM, ePowerSettingCallbackUnregistered);
+}
+
+As we can see, _after_ unregistration completes (which in this thread has not happened yet – because we crash before return), we handle ePowerSettingCallbackUnregistered event.
+As we can see, the ePowerSettingCallbackUnregistered is already handled and power settings callbacks are already unregistered:
+0: kd> .frame /r 6
+06 ffff9501`d670e970 fffff80c`067f9f3c iaPreciseTouch!UnregisterPowerSettingsCallback+0x63 [c:\tcag1\work\abe13827cd6a0b74\src\power.c @ 343] 
+rax=ffffe705c42c3ad0 rbx=ffffac015592fdd0 rcx=0000000000000003
+rdx=ffffe705cc3b70b0 rsi=ffffac0153f21040 rdi=0000000000000000
+rip=fffff80c067f9e9b rsp=ffff9501d670e970 rbp=ffffac01569feb70
+ r8=00000000000001ff  r9=ffffac0153f21360 r10=fffff80344f63600
+r11=ffff9501d670e800 r12=0000000000000200 r13=0000000000000000
+r14=0000000000000000 r15=fffff80344fda200
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000282
+iaPreciseTouch!UnregisterPowerSettingsCallback+0x63:
+fffff80c`067f9e9b 488b442440      mov     rax,qword ptr [rsp+40h] ss:0018:ffff9501`d670e9b0=ffffac0156b822f0
+0: kd> dv /V
+ffff9501`d670e9b0 @rsp+0x0040           pdevContext = 0xffffac01`56b822f0
+ffff9501`d670e990 @rsp+0x0020                status = 0n0
+0: kd> dt  pdevContext pSM
+Local var @ 0xffff9501d670e9b0 Type _DEVICE_EXTENSION*
+0xffffac01`56b822f0 
+   +0x12e28 pSM : 0xffffac01`595b4010 _StateMachineContext
+0: kd> dt 0xffffac01`595b4010 _StateMachineContext TransitionCounter
+iaPreciseTouch!_StateMachineContext
+   +0x298 transitionCounter : 0xa
+0: kd> dt 0xffffac01`595b4010 _StateMachineContext TransitionHistory[a-1].
+iaPreciseTouch!_StateMachineContext
+   +0x29c transitionHistory       : [9] 
+      +0x000 tid                     : 0x733030
+      +0x004 eventHandled            : 14 ( ePowerSettingCallbackUnregistered )
+      +0x008 fromState               : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+      +0x00c toState                 : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+
+So this explains the crash and the fact that handle values a NULL – there are concurrent unregistrations without any locks, so this creates race condition.
+If we look at the prior history we can see what caused concurrent unregistrations:
+0: kd> dt 0xffffac01`595b4010 _StateMachineContext TransitionHistory[a-2].
+iaPreciseTouch!_StateMachineContext
+   +0x29c transitionHistory       : [8] 
+      +0x000 tid                     : 0x73302e
+      +0x004 eventHandled            : e ( eHeciLinkNeedsReset )
+      +0x008 fromState               : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+      +0x00c toState                 : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+0: kd> dt 0xffffac01`595b4010 _StateMachineContext TransitionHistory[a-3].
+iaPreciseTouch!_StateMachineContext
+   +0x29c transitionHistory       : [7] 
+      +0x000 tid                     : 0x73302d
+      +0x004 eventHandled            : e ( eHeciLinkNeedsReset )
+      +0x008 fromState               : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+      +0x00c toState                 : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+0: kd> dt 0xffffac01`595b4010 _StateMachineContext TransitionHistory[a-4].
+iaPreciseTouch!_StateMachineContext
+   +0x29c transitionHistory       : [6] 
+      +0x000 tid                     : 0x73302c
+      +0x004 eventHandled            : e ( eHeciLinkNeedsReset )
+      +0x008 fromState               : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+      +0x00c toState                 : 10 ( sMain_PendingGFXTeardownOnHeciLinkReset )
+
+Of course the unregistration workitem is scheduled on the HECI link reset:
+void __fastcall Main_Default_HeciLinkNeedsReset(_StateMachineContext *pSM)
+{
+  if ( UnregisterPowerSettingsViaWorkItem(pSM->pDeviceExtension) )
+    (pSM->TransitionTo)(pSM, Main_PendingGFXTeardownOnHeciLinkReset);
+  else
+    pSM->bActionStatus = 0;
+}
+
+As we can see reset threads can run simultaneously and in parallel:
+0: kd> !stacks 2 iaPreciseTouch
+Proc.Thread  .Thread  Ticks   ThreadState Blocker
+                            [fffff80344fd99c0 Idle]
+                            [ffffac015328c4c0 System]
+   4.001f10  ffffac016b7a8700 ffc1f4cd Blocked    nt!KiSwapContext+0x76
+                                        nt!KiSwapThread+0x477
+                                        nt!KiCommitThreadWait+0x160
+                                        nt!KeDelayExecutionThread+0x105
+                                        iaPreciseTouch!HECI_HW_ReadMessage+0x7fd
+                                        iaPreciseTouch!HECI_ReadMessage+0x90
+                                        iaPreciseTouch!ReadMEtoHECIMessages+0x74
+                                        iaPreciseTouch!ProcessHeciMessage+0x300
+                                        iaPreciseTouch!ProcessHeciInterrupt+0x27b
+                                        iaPreciseTouch!HeciInterruptWorkitemFunc+0x1b2
+                                        Wdf01000!FxWorkItem::WorkItemHandler+0x81
+                                        Wdf01000!FxWorkItem::WorkItemThunk+0x29
+                                        nt!IopProcessWorkItem+0xfd
+                                        nt!ExpWorkerThread+0x219
+                                        nt!PspSystemThreadStartup+0x48
+                                        nt!KiStartSystemThread+0x16
+   4.002b98  ffffac01672ab700 ffc1f4cc Blocked    nt!KiSwapContext+0x76
+                                        nt!KiSwapThread+0x477
+                                        nt!KiCommitThreadWait+0x160
+                                        nt!KeDelayExecutionThread+0x105
+                                        iaPreciseTouch!HECI_HW_ReadMessage+0x7fd
+                                        iaPreciseTouch!HECI_ReadMessage+0x90
+                                        iaPreciseTouch!ReadMEtoHECIMessages+0x74
+                                        iaPreciseTouch!ProcessHeciMessage+0x300
+                                        iaPreciseTouch!ProcessHeciInterrupt+0x27b
+                                        iaPreciseTouch!HeciInterruptWorkitemFunc+0x1b2
+                                        Wdf01000!FxWorkItem::WorkItemHandler+0x81
+                                        Wdf01000!FxWorkItem::WorkItemThunk+0x29
+                                        nt!IopProcessWorkItem+0xfd
+                                        nt!ExpWorkerThread+0x219
+                                        nt!PspSystemThreadStartup+0x48
+                                        nt!KiStartSystemThread+0x16
+   4.00125c  ffffac0166cb3700 ffc1f4cc Blocked    nt!KiSwapContext+0x76
+                                        nt!KiSwapThread+0x477
+                                        nt!KiCommitThreadWait+0x160
+                                        nt!KeDelayExecutionThread+0x105
+                                        iaPreciseTouch!HECI_HW_ReadMessage+0x7fd
+                                        iaPreciseTouch!HECI_ReadMessage+0x90
+                                        iaPreciseTouch!ReadMEtoHECIMessages+0x74
+                                        iaPreciseTouch!ProcessHeciMessage+0x300
+                                        iaPreciseTouch!ProcessHeciInterrupt+0x27b
+                                        iaPreciseTouch!HeciInterruptWorkitemFunc+0x1b2
+                                        Wdf01000!FxWorkItem::WorkItemHandler+0x81
+                                        Wdf01000!FxWorkItem::WorkItemThunk+0x29
+                                        nt!IopProcessWorkItem+0xfd
+                                        nt!ExpWorkerThread+0x219
+                                        nt!PspSystemThreadStartup+0x48
+                                        nt!KiStartSystemThread+0x16
+   4.003194  ffffac015c3f3040 ffc1f4cc Blocked    nt!KiSwapContext+0x76
+                                        nt!KiSwapThread+0x477
+                                        nt!KiCommitThreadWait+0x160
+                                        nt!KeDelayExecutionThread+0x105
+                                        iaPreciseTouch!HECI_HW_ReadMessage+0x7fd
+                                        iaPreciseTouch!HECI_ReadMessage+0x90
+                                        iaPreciseTouch!ReadMEtoHECIMessages+0x74
+                                        iaPreciseTouch!ProcessHeciMessage+0x300
+                                        iaPreciseTouch!ProcessHeciInterrupt+0x27b
+                                        iaPreciseTouch!HeciInterruptWorkitemFunc+0x1b2
+                                        Wdf01000!FxWorkItem::WorkItemHandler+0x81
+                                        Wdf01000!FxWorkItem::WorkItemThunk+0x29
+                                        nt!IopProcessWorkItem+0xfd
+                                        nt!ExpWorkerThread+0x219
+                                        nt!PspSystemThreadStartup+0x48
+                                        nt!KiStartSystemThread+0x16
+…
+
+So the bottom line is: if we get multiple concurrent HECI link resets, we attempt concurrent unregistration.
+The if-check in UnregisterPowerSettingsCallbackWorkItemFunc is not an adequate protection from this race condition. This has to be protected with a lock.
+Furthermore, MSDN recoomends more robust design:
+
+“Typically, Kernel-Mode Driver Framework (KMDF) drivers should call PoRegisterPowerSettingCallback from their EvtDeviceSelfManagedIoInit callback function, and should call PoUnregisterPowerSettingCallback from their EvtDeviceSelfManagedIoCleanup callback function.”
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff559727(v=vs.85).aspx#power_setting_callback
+

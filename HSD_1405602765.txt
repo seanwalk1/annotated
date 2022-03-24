@@ -1,0 +1,134 @@
+[BUG]:		https://hsdes.intel.com/home/default.html#article?id=1405602765
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is a manual crash:
+0: kd> .bugcheck
+Bugcheck code 000000E2
+Arguments 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000
+
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+MANUALLY_INITIATED_CRASH (e2)
+The user manually initiated this crash dump.
+Arguments:
+Arg1: 0000000000000000
+Arg2: 0000000000000000
+Arg3: 0000000000000000
+Arg4: 0000000000000000
+…
+
+Callstack shows this was a USB keyboard event:
+0: kd> k
+ # Child-SP          RetAddr           Call Site
+00 fffff800`37c9a038 fffff800`cd9d39fc nt!KeBugCheckEx
+01 fffff800`37c9a040 fffff800`cd9d3400 kbdhid!KbdHidProcessCrashDump+0x1e0
+02 fffff800`37c9a080 fffff800`cd1a4de8 kbdhid!KbdHid_InsertCodesIntoQueue+0xb0
+03 fffff800`37c9a0e0 fffff800`cd1a4f6a HIDPARSE!HidP_KbdPutKey+0x44
+04 fffff800`37c9a110 fffff800`cd1a50e7 HIDPARSE!HidP_ModifierCode+0xba
+05 fffff800`37c9a140 fffff800`cd1a51df HIDPARSE!HidP_TranslateUsage+0x8f
+06 fffff800`37c9a190 fffff800`cd9d314f HIDPARSE!HidP_TranslateUsageAndPagesToI8042ScanCodes+0xbf
+07 fffff800`37c9a200 fffff800`3631d9e6 kbdhid!KbdHid_ReadComplete+0x2ef
+08 fffff800`37c9a280 fffff800`35ce7d11 nt!IovpLocalCompletionRoutine+0x176
+09 fffff800`37c9a2e0 fffff800`3631d380 nt!IopfCompleteRequest+0x121
+0a fffff800`37c9a380 fffff800`35da2a57 nt!IovCompleteRequest+0x1c0
+0b fffff800`37c9a460 fffff800`cd171448 nt!IofCompleteRequest+0xbae97
+0c fffff800`37c9a490 fffff800`cd16952c HIDCLASS!HidpDistributeInterruptReport+0x1e0
+0d fffff800`37c9a550 fffff800`3631d9e6 HIDCLASS!HidpInterruptReadComplete+0x5cac
+0e fffff800`37c9a5f0 fffff800`35ce7d11 nt!IovpLocalCompletionRoutine+0x176
+0f fffff800`37c9a650 fffff800`3631d380 nt!IopfCompleteRequest+0x121
+10 fffff800`37c9a6f0 fffff800`35da2a57 nt!IovCompleteRequest+0x1c0
+11 fffff800`37c9a7d0 fffff800`ca408f32 nt!IofCompleteRequest+0xbae97
+12 fffff800`37c9a800 fffff800`ca4086fb Wdf01000!FxRequest::CompleteInternal+0x7a2
+13 fffff800`37c9a8c0 fffff800`cd526a95 Wdf01000!imp_WdfRequestComplete+0x8b
+14 fffff800`37c9a920 fffff800`cd51b455 USBXHCI!Bulk_Transfer_CompleteCancelable+0x13301
+15 fffff800`37c9a980 fffff800`cd51f39b USBXHCI!Bulk_ProcessTransferEventWithED1+0x2d5
+16 fffff800`37c9aa30 fffff800`cd511bdb USBXHCI!Endpoint_TransferEventHandler+0xdb
+17 fffff800`37c9aab0 fffff800`cd51afd9 USBXHCI!UsbDevice_TransferEventHandler+0x87
+18 fffff800`37c9ab10 fffff800`35cf6c47 USBXHCI!Interrupter_WdfEvtInterruptDpc+0x749
+19 fffff800`37c9ac70 fffff800`35cf6533 nt!KiExecuteAllDpcs+0x2a7
+1a fffff800`37c9adb0 fffff800`35d76615 nt!KiRetireDpcList+0xd3
+1b fffff800`37c9afb0 fffff800`35d76420 nt!KxRetireDpcList+0x5
+1c ffff9801`b6406780 fffff800`35d74e05 nt!KiDispatchInterruptContinue
+1d ffff9801`b64067b0 fffff800`35d72be3 nt!KiDpcInterruptBypass+0x25
+1e ffff9801`b64067c0 fffff800`35c587c1 nt!KiInterruptDispatch+0xc3
+1f ffff9801`b6406950 fffff800`35c595d9 nt!MiFlushTbList+0x2a1
+20 ffff9801`b6406a90 fffff800`35df0f90 nt!MiDeleteSystemPagableVm+0x699
+21 ffff9801`b6406c30 fffff800`35e5d0d1 nt!MmFreeSpecialPool+0x394
+22 ffff9801`b6406da0 fffff800`3605fcaa nt!ExFreePoolWithTag+0x1b1
+23 ffff9801`b6406e90 fffff800`36110a12 nt!CmpGetSymbolicLinkTarget+0x31a
+24 ffff9801`b64070d0 fffff800`360733c0 nt!CmpDoParseKey+0x1492
+25 ffff9801`b6407410 fffff800`36113c2d nt!CmpParseKey+0x3c0
+26 ffff9801`b6407590 fffff800`36114d30 nt!ObpLookupObjectName+0x10dd
+27 ffff9801`b6407760 fffff800`3605444a nt!ObOpenObjectByNameEx+0x1e0
+28 ffff9801`b64078a0 fffff800`36052db3 nt!CmOpenKey+0x26a
+29 ffff9801`b6407a40 fffff800`35d7c693 nt!NtOpenKeyEx+0xf
+2a ffff9801`b6407a80 00007ffa`58f58e34 nt!KiSystemServiceCopyEnd+0x13
+2b 000000ab`596fec58 00007ffa`5550a314 ntdll!NtOpenKeyEx+0x14
+2c 000000ab`596fec60 00007ffa`55509596 KERNELBASE!LocalBaseRegOpenKey+0x1c4
+2d 000000ab`596fef80 00007ffa`55509432 KERNELBASE!RegOpenKeyExInternalW+0x146
+2e 000000ab`596ff020 00007ffa`502842ad KERNELBASE!RegOpenKeyExW+0x22
+2f 000000ab`596ff060 00007ffa`50285b09 profsvc!GetHomeDirConfigPreference+0xbd
+30 000000ab`596ff0c0 00007ffa`50285fe5 profsvc!SetHomeDirectory+0xfd
+31 000000ab`596ff3a0 00007ffa`502851dd profsvc!PrepareEnvBlock+0x1c5
+32 000000ab`596ff680 00007ffa`50284e70 profsvc!LogonThreadProc+0x2cd
+33 000000ab`596ff700 00007ffa`58f2e0c0 profsvc!_WorkItemWrapper+0x40
+34 000000ab`596ff730 00007ffa`58edda74 ntdll!TppSimplepExecuteCallback+0x100
+35 000000ab`596ff780 00007ffa`58a546ad ntdll!TppWorkerThread+0x1014
+36 000000ab`596ffb30 00007ffa`58f18d81 KERNEL32!BaseThreadInitThunk+0x1d
+37 000000ab`596ffb60 00000000`00000000 ntdll!RtlUserThreadStart+0x21
+
+USB keyboard is present:
+0: kd> !usb3kd.usb_tree
+
+Dumping HUB Tree - !drvObj 0xffff8e8fd6f5ae60
+--------------------------------------------
+
+Topology
+--------
+1)  !xhci_info 0xffff8e8fd2c66fe0  Intel(R) - PCI: VendorId 0x8086 DeviceId 0x9d2f RevisionId 0x21 SubVendorId 0x8086 SubSystemId 0x7270
+    !hub_info 0xffff8e8fd70125f0 (ROOT)
+        !port_info 0xffff8e8fd4db8a40 <free>
+        !port_info 0xffff8e8fd6cd6a40 !device_info 0xffff8e8fd71865a0 Desc: HP Elite USB Keyboard Speed: Low
+        !port_info 0xffff8e8fd6c68a40 <free>
+        !port_info 0xffff8e8fd69c6a40 <free>
+        !port_info 0xffff8e8fd71d6a40 !device_info 0xffff8e8fd839a5a0 Desc: Bluetooth and Wireless LAN Composite Device Speed: High
+        !port_info 0xffff8e8fd6edca40 <free>
+        !port_info 0xffff8e8fd6c7aa40 <free>
+        !port_info 0xffff8e8fd7090a40 <free>
+        !port_info 0xffff8e8fd73dea40 <free>
+        !port_info 0xffff8e8fd6eaca40 <free>
+        !port_info 0xffff8e8fd6cc8a40 <free>
+        !port_info 0xffff8e8fd6d78a40 <free>
+        !port_info 0xffff8e8fd6cb8a40 <free>
+        !port_info 0xffff8e8fd6c6ca40 <free>
+        !port_info 0xffff8e8fd7376a40 <free>
+        !port_info 0xffff8e8fd6c1ca40 <free>
+        !port_info 0xffff8e8fd68a6a40 <free>
+        !port_info 0xffff8e8fd649aa40 <free>
+
+Enumerated Device List
+----------------------
+1) !device_info 0xffff8e8fd839a5a0, !devstack ffff8e8fd8758e20
+    Current Device State: ConfiguredSuspended.Suspended
+    Desc: Bluetooth and Wireless LAN Composite Device
+    USB\VID_1286&PID_204C&REV_3201 MARVELL SEMICONDUCTOR, INC.
+    !ucx_device 0xffff8e8fd78a0e00 !xhci_deviceslots 0xffff8e8fd2c66fe0 2 !xhci_info 0xffff8e8fd2c66fe0
+
+2) !device_info 0xffff8e8fd71865a0, !devstack ffff8e8fd7e3ce20
+    Current Device State: ConfiguredInD0
+    Desc: HP Elite USB Keyboard
+    USB\VID_03F0&PID_034A&REV_0121 Hewlett Packard
+    !ucx_device 0xffff8e8fd768ee00 !xhci_deviceslots 0xffff8e8fd2c66fe0 1 !xhci_info 0xffff8e8fd2c66fe0
+
+Enumerated HUB List
+-------------------
+1)  Root HUB
+    Hub FDO: 0xffff8e8fd67fce20, PDO: 0xffff8e8fd2c2ce20, Depth 0
+    !hub_info 0xffff8e8fd70125f0
+    Current Hub State: ConfiguredWithIntTransfer

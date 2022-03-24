@@ -1,0 +1,160 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209611952/main
+[AUTHOR]:	Joel Faber
+
+[ANALYSYS]:	Watchdog timeout started when starting OID_WDI_SET_POWER_STATE
+[BUGCHECK]:	0x7C
+
+!analyze shows that the bugcheck was due to a watchdog timeout started when starting OID_WDI_SET_POWER_STATE:
+
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+BUGCODE_NDIS_DRIVER (7c)
+The operating system detected an error in a networking driver.
+The BUGCODE_NDIS_DRIVER bugcheck identifies problems in network drivers.
+Often, the defect is caused by a NDIS miniport driver. You can get a complete
+list of NDIS miniport drivers using !ndiskd.netadapter.  You can get a
+big-picture overview of the network stack with !ndiskd.netreport.
+Arguments:
+Arg1: 0000000000000025, NDIS_BUGCHECK_WATCHDOG
+    An attempt to manage the network stack has taken too
+    long. When NDIS calls out into other drivers, NDIS
+    starts a watchdog timer to ensure the call completes
+    promptly. If the call takes too long, NDIS injects a
+    bugcheck.
+    This can be caused by a simple deadlock -- look with
+    look suspicious.  Pay special attention to the
+    "!stacks 2 ndis!" or similar to see if any threads
+    PrimaryThread from the NDIS_WATCHDOG_TRIAGE_BLOCK.
+    This can be caused by lost NBLs, in which case
+    !ndiskd.pendingnbls may help. Check for OIDs that are
+    stuck using !ndiskd.oid.
+Arg2: 0000000000000023, NDIS_BUGCHECK_WATCHDOG_MINIPORT_OID
+    There was a timeout while delivering an OID request to a
+    miniport adapter.
+Arg3: ffffd084944a0338, Cast to ndis!NDIS_WATCHDOG_TRIAGE_BLOCK. Interesting fields:
+    * StartTime shows what time the operation started,
+    in 100ns units, as returned by KeQueryInterruptTime.
+    * TimeoutMilliseconds shows how long NDIS waited, at a
+    minimum, before triggering this bugcheck.
+    Measured in milliseconds.
+    * TargetObject is a handle to the protocol, filter,
+    or miniport that NDIS is waiting on.  Use with
+    !ndiskd.protocol, !ndiskd.filter, or !ndiskd.miniport.
+    * PrimaryThread is the thread on which NDIS initiated
+    the operation.  Usually this is the first place to
+    look, although the thread may have gone elsewhere
+    if the operation is being handled asynchronously.
+Arg4: 00000000e4400013, The OID code of the stuck request. Use !ndiskd.help
+    or look in a header file to decode it
+
+
+0: kd> !ndiskd.help 00000000e4400013
+OID_WDI_SET_POWER_STATE
+    #define OID_WDI_SET_POWER_STATE 0xe4400013
+
+But that oid is not current or pending; it therefore has already been completed:
+
+0: kd> !ndiskd.oids
+ALL PENDING OIDs
+    NetAdapter         ffffd084944a31a0 - Marvell AVASTAR Wireless-AC Network Controller
+        Low-level OID      OID_WDI_GET_PM_PROTOCOL_OFFLOAD
+        Current OID        OID_PM_GET_PROTOCOL_OFFLOAD
+    Filter             ffffd08495404430 - Marvell AVASTAR Wireless-AC Network Controller-WFP Native MAC Layer LightWeight Filter-0000
+        Current OID        OID_PM_GET_PROTOCOL_OFFLOAD
+    Filter             ffffd08495403bc0 - Marvell AVASTAR Wireless-AC Network Controller-Virtual WiFi Filter Driver-0000
+        Current OID        OID_PM_GET_PROTOCOL_OFFLOAD
+
+
+There are two watchdogs in NDIS.  One is for "pending" oids, the other is for drivers that support the hooked API.  There is a bug in arming one and disarming the other.
+
+The hooked watchdog is
+0: kd> dt NdisWatchdogState 0xffffd084`944a4ee0
+   +0x000 m_dpc            : _KDPC
+   +0x040 m_timer          : _KTIMER
+   +0x080 m_work           : _WORK_QUEUE_ITEM
+   +0x0a0 m_isReportingEnabled : 0n1
+   +0x0a4 m_armSequenceNumber : 0x13ab
+   +0x0a8 m_asyncDone      : _KEVENT
+   +0x0c0 m_bugcheckType   : 0x23
+   +0x0c8 m_triage         : _NDIS_WATCHDOG_TRIAGE_BLOCK
+   +0x100 m_failureReported : 0
+   +0x108 m_linkage        : _LIST_ENTRY [ 0xffffd084`953a42d8 - 0xffffd084`944a0378 ]
+
+It has this watchdog triage block:
+0: kd> 0: kd> dt ndis!NDIS_WATCHDOG_TRIAGE_BLOCK ffffd084`944A4FA8
+   +0x000 Signature        : 0x6477444e
+   +0x004 TimeoutMilliseconds : 0x88b8
+   +0x008 GlobalTriage     : 0xfffff803`0e28e5f0
+   +0x010 TargetObject     : 0xffffd084`944a31a0
+   +0x018 StartTime        : 0x00000003`85d23c54
+   +0x020 PrimaryThread    : 0xffffd084`93967040
+   +0x028 ExtraArgument    : 0xfd01010e
+   +0x030 Pending9FDetected : 0 ''
+
+which says that it started at interrupt time 0x00000003`85d23c54 (00:25:13.004) and has a 35s timeout
+
+The pending watchdog is
+0: kd> dt NdisWatchdogState 0xffffd084`944a0270
+   +0x000 m_dpc            : _KDPC
+   +0x040 m_timer          : _KTIMER
+   +0x080 m_work           : _WORK_QUEUE_ITEM
+   +0x0a0 m_isReportingEnabled : 0n1
+   +0x0a4 m_armSequenceNumber : 0x1382
+   +0x0a8 m_asyncDone      : _KEVENT
+   +0x0c0 m_bugcheckType   : 0x23
+   +0x0c8 m_triage         : _NDIS_WATCHDOG_TRIAGE_BLOCK
+   +0x100 m_failureReported : 0
+   +0x108 m_linkage        : _LIST_ENTRY [ 0xffffd084`944a4fe8 - 0xfffff803`0e28f558 ]
+
+It has this watchdog triage block:
+0: kd> dt ndis!NDIS_WATCHDOG_TRIAGE_BLOCK ffffd084944a0338
+   +0x000 Signature        : 0x6477444e
+   +0x004 TimeoutMilliseconds : 0x88b8
+   +0x008 GlobalTriage     : 0xfffff803`0e28e5f0
+   +0x010 TargetObject     : 0xffffd084`944a31a0
+   +0x018 StartTime        : 0x00000003`7fdbdb9e
+   +0x020 PrimaryThread    : 0xffffd084`92fd0040
+   +0x028 ExtraArgument    : 0xe4400013
+   +0x030 Pending9FDetected : 0x1 ''
+
+which says that it started at interrupt time 0x00000003`7fdbdb9e (00:25:03.001) and has a 35s timeout.
+
+So, the pending watch dog was armed first, and the hooked watchdog ten seconds later.  
+
+The current time is 00000003`94b8a250 (00:25:38.003).  So we can see that the pending watch dog should have timed out.  From the !analyze we have confirmation as we can see that the watchdog that fired has triage block at ffffd084944a0338.  So this is for the pending watchdog.
+
+The raw OID invoke method does the following:
+ - drain the pending watchdog
+ - arm the pending watchdog
+ - invoke the OID
+ - if the OID handler does not return pending, the pending watchdog is disarmed.
+If the oid returns with status of pending, it should be completed by a completion function.  The completion function disarms the hooked watchdog (because the driver supports the Hooked API) but not the watchdog that was armed, the pending watchdog.  We can see from this stack that there is a thread waiting on a watchdog from this function that waits for and starts the pending watchdog:
+   4.0000ec  ffffd08492fd0040 fffe85c0 Blocked    nt!KiSwapContext+0x76  Ticks: 1600 (0:00:00:25.000)
+                                        nt!KiSwapThread+0x477
+                                        nt!KiCommitThreadWait+0x160
+                                        nt!KeWaitForSingleObject+0x2c6
+                                        ndis!ndisDrainWatchdog+0x2a   (drains only the pending oid watch dog)
+                                        ndis!ndisMRawInvokeOidRequest+0x50 (arms the pending oid watch dog.  disarms only the pending watchdog unless ndis_status_pending is returned.)
+                                        ndis!ndisMpHookInvokeOidRequestHandler+0x15
+                                        wdiwifi!CCtlPlane::SendWdiCommand+0x2e7
+                                        wdiwifi!DeviceCommandScheduler::OnIssueNextCommandHandler+0x18a
+                                        wdiwifi!DeviceCommandScheduler::OnEventQueueCallback+0x61
+                                        wdiwifi!EventQueue::ProcessEventQueueUntilEmpty+0x13d
+                                        wdiwifi!EventQueue::OnWorkItemCallback+0x5e
+                                        Wdf01000!FxWorkItem::WorkItemHandler+0x81
+                                        Wdf01000!FxWorkItem::WorkItemThunk+0x29
+                                        nt!IopProcessWorkItem+0xfd
+                                        nt!ExpWorkerThread+0x219
+                                        nt!PspSystemThreadStartup+0x48
+                                        nt!KiStartSystemThread+0x16
+
+Other OID invoke methods arm the pending or hooked watchdogs, depending on whether the driver supports the Hooked APIs.  The completion function does this check too.  The Raw OID invoke method does not perform the Hooked test; it just blindly uses the non-hooked watchdog (but asserts if hooked is not supported).
+
+The pending watchdog fired while another newer raw OID was trying to drain the pending watchdog that was armed waiting for the completion of OID_WDI_SET_POWER_STATE.  This OID completed, but the watchdog was not disarmed; the wrong one was disarmed instead.
+
+There is not anything special about the specific OIDs that are presented here: this bug will exist for any OIDs that return Pending from the ndisMpHookInvokeOidRequestHandler method.  Other possible things that can happen are concurrent OIDs that should not be run in parallel.  Ndis uses these watchdogs to ensure that OIDs are not invoked in parallel. With this bug we can have OIDs that are arming both pending and hooked watchdogs and running in parallel.  This illegal parallel behaviour can be something that causes additional confusion in analysis of different presentations of the same issue.  This case can happen even if OIDs are not returning Pending then invoking a completion function; one OID can be run from ndisMpHookInvokeOidRequestHandler and the other from ndisMInvokeOidRequest, for example.  They could still be invoked in parallel.

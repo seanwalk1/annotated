@@ -1,0 +1,103 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209588620/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	SYSTEM_SERVICE_EXCEPTION (3b)
+[BUGCHECK]:	0x3B
+
+This is SYSTEM_SERVICE_EXCEPTION (3b) (see attached memory dump):
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_SERVICE_EXCEPTION (3b)
+An exception happened while executing a system service routine.
+Arguments:
+Arg1: 00000000c0000005, Exception code that caused the bugcheck
+Arg2: fffff801576569b0, Address of the instruction which caused the bugcheck
+Arg3: ffffc3807e9657f0, Address of the context record for the exception that caused the bugcheck
+Arg4: 0000000000000000, zero
+.
+
+The exception is essentially NULL-pointer access:
+1: kd> .cxr ffffc380`7e9657f0
+rax=0000000000000001 rbx=ffff92071b7edd50 rcx=0000000000000000
+rdx=ffff92071b7eded8 rsi=ffff92071b7eded8 rdi=ffff92071b7edee0
+rip=fffff801576569b0 rsp=ffffc3807e9661f8 rbp=ffffc3807e9662a9
+r8=ffff92071b7edee0  r9=0000000000000000 r10=0000000000000000
+r11=ffffc3807e9662e0 r12=0000000000000000 r13=00000000c0000225
+r14=0000000000000005 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010202
+dxgkrnl!DpiGetIntegratedDisplayOrientationOverrides:
+fffff801`576569b0 4c8b5140        mov     r10,qword ptr [rcx+40h] ds:002b:00000000`00000040=????????????????
+1: kd> rcr2
+Last set context:
+cr2=0000000000000040
+
+The dxgkrnl!DpiGetIntegratedDisplayOrientationOverrides was passed NULL as a parameter:
+1: kd> k
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 ffffc380`7e9661f8 fffff801`576e683f dxgkrnl!DpiGetIntegratedDisplayOrientationOverrides
+01 ffffc380`7e966200 fffff801`576e7f0e dxgkrnl!DXGMONITOR::_PrepareDefaultMonitorConfiguration+0x6f
+02 ffffc380`7e966310 fffff801`57788655 dxgkrnl!DXGMONITOR::_InitializeMonitor+0x1d6
+03 ffffc380`7e966360 fffff801`57788bd9 dxgkrnl!MONITOR_MGR::_CreateSimulatedMonitor+0x181
+04 ffffc380`7e9663d0 fffff801`577897a5 dxgkrnl!MONITOR_MGR::_HandleCreateSimulatedMonitor+0x1ed
+05 ffffc380`7e966440 fffff801`5775732f dxgkrnl!MonitorCreateSimulatedMonitor+0x129
+06 ffffc380`7e966490 fffff801`57700f1d dxgkrnl!DisplayConfigHelperCreateSimulateMonitor+0x13b
+07 ffffc380`7e966540 fffff801`57666dc9 dxgkrnl!DisplayConfigHandleMonitorInvalidation+0x9a349
+08 ffffc380`7e9665e0 ffffbdd1`555b34f7 dxgkrnl!DxgkInvalidateMonitorConnections+0x89
+09 ffffc380`7e9666c0 ffffbdd1`55616e57 win32kbase!DrvSetDisplayConfig+0x487
+0a ffffc380`7e9668a0 ffffbdd1`55609445 win32kbase!InitVideo+0x9b
+0b ffffc380`7e966930 ffffbdd1`5560de43 win32kbase!UserInitialize+0x475
+0c ffffc380`7e966a40 fffff802`9d3f9693 win32kbase!NtUserInitialize+0xd3
+0d ffffc380`7e966a80 00007ffa`499787f4 nt!KiSystemServiceCopyEnd+0x13
+0e 00000035`3ab5f798 00000000`00000000 0x00007ffa`499787f4
+1: kd> ub fffff801`576e683f
+dxgkrnl!DXGMONITOR::_PrepareDefaultMonitorConfiguration+0x4a:
+fffff801`576e681a 84c0            test    al,al
+fffff801`576e681c 0f840c010000    je      dxgkrnl!DXGMONITOR::_PrepareDefaultMonitorConfiguration+0x15e (fffff801`576e692e)
+fffff801`576e6822 488b4b28        mov     rcx,qword ptr [rbx+28h]
+fffff801`576e6826 488dbb90010000  lea     rdi,[rbx+190h]
+fffff801`576e682d 488db388010000  lea     rsi,[rbx+188h]
+fffff801`576e6834 4c8bc7          mov     r8,rdi
+fffff801`576e6837 488bd6          mov     rdx,rsi
+fffff801`576e683a e87101f7ff      call    dxgkrnl!DpiGetIntegratedDisplayOrientationOverrides (fffff801`576569b0)
+
+The Monitor PDO device object in dxgkrnl!DXGMONITOR::_PrepareDefaultMonitorConfiguration is not yet initialized:
+1: kd> .frame /r 1
+01 ffffc380`7e966200 fffff801`576e7f0e dxgkrnl!DXGMONITOR::_PrepareDefaultMonitorConfiguration+0x6f
+rax=0000000000000001 rbx=ffff92071b7edd50 rcx=0000000000000000
+rdx=ffff92071b7eded8 rsi=ffff92071b7eded8 rdi=ffff92071b7edee0
+rip=fffff801576e683f rsp=ffffc3807e966200 rbp=ffffc3807e9662a9
+r8=ffff92071b7edee0  r9=0000000000000000 r10=0000000000000000
+r11=ffffc3807e9662e0 r12=0000000000000000 r13=00000000c0000225
+r14=0000000000000005 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010202
+dxgkrnl!DXGMONITOR::_PrepareDefaultMonitorConfiguration+0x6f:
+fffff801`576e683f 85c0            test    eax,eax
+1: kd> dq ffff92071b7edd50+28 L1
+ffff9207`1b7edd78  00000000`00000000
+
+Does not look like memory corruption:
+1: kd> !pool @rbx
+Pool page ffff92071b7edd50 region is Unknown
+ffff92071b7ed000 size:  950 previous size:    0  (Allocated)  Thre
+ffff92071b7ed950 size:   30 previous size:  950  (Free)       Free
+ffff92071b7ed980 size:   a0 previous size:   30  (Free )  smMd
+ffff92071b7eda20 size:   80 previous size:   a0  (Allocated)  SeTl
+ffff92071b7edaa0 size:   50 previous size:   80  (Allocated)  Icp 
+ ffff92071b7edaf0 size:  250 previous size:   50  (Allocated)  ALPC
+*ffff92071b7edd40 size:  270 previous size:  250  (Allocated) *DxgM
+           Owning component : Unknown (update pooltag.txt)
+ffff92071b7edfb0 size:   50 previous size:  270  (Allocated)  VadS
+
+Appears to be a new issue in recent builds:
+1: kd> ?? this->_pMonitorPdo
+struct _DEVICE_OBJECT * 0x00000000`00000000
+1: kd> ?? this->_MonitorType
+_DMM_VIDPN_MONITOR_TYPE DMM_VMT_SIMULATED_MONITOR (0n5)

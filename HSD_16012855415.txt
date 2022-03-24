@@ -1,0 +1,135 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/16012855415
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck C2 - BAD_POOL_CALLER (c2) (see attached memory dump):
+11: kd> !analyze -show
+BAD_POOL_CALLER (c2)
+The current thread is making a bad pool request.  Typically this is at a bad IRQL level or double freeing the same allocation, etc.
+Arguments:
+Arg1: 000000000000000d, Attempt to release quota on a corrupted pool allocation.
+Arg2: ffffa581f299d210, Address of pool
+Arg3: 00000000506d7054, Pool allocation's tag
+Arg4: f9d266ef75719590, Quota process pointer (bad).
+
+TPM.SYS is trying to free pool allocation and nt!ExpGetBilledProcess begchecks because Billed process pointer is invalid:
+11: kd> k
+# Child-SP          RetAddr               Call Site
+00 ffff8504`716061e8 fffff804`67523082     nt!DbgBreakPointWithStatus
+01 ffff8504`716061f0 fffff804`67522666     nt!KiBugCheckDebugBreak+0x12
+02 ffff8504`71606250 fffff804`67406b87     nt!KeBugCheck2+0x946
+03 ffff8504`71606960 fffff804`6743e2e8     nt!KeBugCheckEx+0x107
+04 (Inline Function) --------`--------     nt!ExpGetBilledProcess+0x1e0757
+05 (Inline Function) --------`--------     nt!ExpReleasePoolQuota+0x1e0757
+06 ffff8504`716069a0 fffff804`679c2019     nt!ExFreeHeapPool+0x1e0b58
+07 (Inline Function) --------`--------     nt!ExFreePoolWithTag+0x5
+08 ffff8504`71606a80 fffff804`679e3226     nt!ExFreePool+0x9
+09 ffff8504`71606ab0 fffff804`688f816d     nt!VerifierExFreePoolWithTag+0x56
+0a ffff8504`71606ae0 fffff804`688f18bd     tpm!TpmRegistry::InitRegistryKey+0x1f9
+0b ffff8504`71606b70 fffff804`688f61e2     tpm!TpmRegistry::QueryValue+0x31d
+0c ffff8504`71606c10 fffff804`688f6d53     tpm!TpmIsAllowRemovalRequested+0x2e
+0d ffff8504`71606c50 fffff804`68654c07     tpm!TpmEvtDeviceAdd+0x383
+0e (Inline Function) --------`--------     Wdf01000!FxDriverDeviceAdd::Invoke+0x44
+0f ffff8504`71606f60 fffff804`68654b2c     Wdf01000!FxDriver::AddDevice+0xc7
+10 ffff8504`71607380 fffff804`6737bf57     Wdf01000!FxDriver::AddDevice+0x2c
+11 ffff8504`716073b0 fffff804`67734c14     nt!PpvUtilCallAddDevice+0x3b
+12 ffff8504`716073f0 fffff804`677383ff     nt!PnpCallAddDevice+0x94
+13 ffff8504`716074b0 fffff804`677c1a88     nt!PipCallDriverAddDevice+0x827
+14 ffff8504`71607670 fffff804`67a79643     nt!PiProcessAddBootDevices+0x60
+15 ffff8504`716076a0 fffff804`677bc72c     nt!PipAddDevicesToBootDriverWorker+0x23
+16 ffff8504`716076d0 fffff804`67a67552     nt!PipApplyFunctionToServiceInstances+0x1bc
+17 (Inline Function) --------`--------     nt!PipAddDevicesToBootDriver+0x12
+18 ffff8504`71607760 fffff804`67a67d22     nt!PipInitializeCoreDriversByGroup+0x112
+19 (Inline Function) --------`--------     nt!PipInitializeCoreDriversAndElam+0x54
+1a ffff8504`71607800 fffff804`67a4cb80     nt!IopInitializeBootDrivers+0x186
+1b ffff8504`716079b0 fffff804`67a70401     nt!IoInitSystemPreDrivers+0xb24
+1c ffff8504`71607af0 fffff804`677ac29b     nt!IoInitSystem+0x15
+1d ffff8504`71607b20 fffff804`67328e25     nt!Phase1Initialization+0x3b
+1e ffff8504`71607b50 fffff804`6740e0d8     nt!PspSystemThreadStartup+0x55
+1f ffff8504`71607ba0 00000000`00000000     nt!KiStartSystemThread+0x28
+
+But it is not actually invalid, it is just not encoded:
+11: kd> dt nt!_POOL_HEADER ffffa581f299d210-10 ProcessBilled
+   +0x008 ProcessBilled : (null) 
+
+Here is the proof:
+11: kd> ? poi(nt!ExpPoolQuotaCookie) ^   ffffa581f299d210-10 ^ 0
+Evaluate expression: -445180234502662768 = f9d266ef`75719590
+
+What happens is that normally TpmAlloc would invoke ExAllocatePool2 which would then call ExAllocatePoolWithQuotaTag which would then call ExAllocatePoolWithTag to allocate memory and then ExAllocatePoolWithQuotaTag encodes process billed pointer into the pool header.
+
+But in this case Driver Verifier is enabled and it hooks ExAllocatePool2 and ends up calling ExAllocatePoolWithTagPriority to allocate pool and process billed is never encoded and stays null.
+Here is the trace from another execution from a similar TpmAlloc allocation from the RET at the end of the nt!ExAllocateHeapPool (notice process billed is null):
+
+0: kd> r
+rax=ffffc105a934e890 rbx=0000000000000000 rcx=0000000000000028
+rdx=0000000000000000 rsi=000000000000008e rdi=0000000000000489
+rip=fffff8054005930d rsp=ffffe10f84a06948 rbp=00000000506d7054
+r8=0000000000000fff  r9=00000000000006ed r10=00000000506d7054
+r11=0000000000001001 r12=fffff805417232b6 r13=0000000000000000
+r14=0000000000000001 r15=0000000000000000
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+nt!ExAllocateHeapPool+0x3fd:
+fffff805`4005930d c3              ret
+0: kd> dt nt!_POOL_HEADER ffffc105a934e890-10 ProcessBilled
+   +0x008 ProcessBilled : (null) 
+
+Here is the callstack:
+0: kd> k
+# Child-SP          RetAddr           Call Site
+00 ffffe10f`84a06948 fffff805`40058edf nt!ExAllocateHeapPool+0x3fd
+01 ffffe10f`84a06950 fffff805`40058e50 nt!ExpAllocatePoolWithTagFromNode+0x5f
+02 ffffe10f`84a069a0 fffff805`407da79d nt!ExAllocatePoolWithTagPriority+0x70
+03 ffffe10f`84a069e0 fffff805`407daa9d nt!VeAllocatePoolWithTagPriority+0x1cd
+04 ffffe10f`84a06a50 fffff805`417232b6 nt!VerifierExAllocatePool2+0xbd
+05 ffffe10f`84a06ab0 fffff805`416f8110 tpm!TpmAlloc+0x36
+06 ffffe10f`84a06ae0 fffff805`416f18bd tpm!TpmRegistry::InitRegistryKey+0x19c
+07 ffffe10f`84a06b70 fffff805`416f61e2 tpm!TpmRegistry::QueryValue+0x31d
+08 ffffe10f`84a06c10 fffff805`416f6d53 tpm!TpmIsAllowRemovalRequested+0x2e
+09 ffffe10f`84a06c50 fffff805`41454c07 tpm!TpmEvtDeviceAdd+0x383
+0a (Inline Function) --------`-------- Wdf01000!FxDriverDeviceAdd::Invoke+0x44
+0b ffffe10f`84a06f60 fffff805`41454b2c Wdf01000!FxDriver::AddDevice+0xc7
+0c ffffe10f`84a07380 fffff805`40173f57 Wdf01000!FxDriver::AddDevice+0x2c
+0d ffffe10f`84a073b0 fffff805`4052cc14 nt!PpvUtilCallAddDevice+0x3b
+0e ffffe10f`84a073f0 fffff805`405303ff nt!PnpCallAddDevice+0x94
+0f ffffe10f`84a074b0 fffff805`405b9a88 nt!PipCallDriverAddDevice+0x827
+10 ffffe10f`84a07670 fffff805`40871643 nt!PiProcessAddBootDevices+0x60
+11 ffffe10f`84a076a0 fffff805`405b472c nt!PipAddDevicesToBootDriverWorker+0x23
+12 ffffe10f`84a076d0 fffff805`4085f552 nt!PipApplyFunctionToServiceInstances+0x1bc
+13 ffffe10f`84a07760 fffff805`4085fd22 nt!PipInitializeCoreDriversByGroup+0x112
+14 ffffe10f`84a07800 fffff805`40844b80 nt!IopInitializeBootDrivers+0x186
+15 ffffe10f`84a079b0 fffff805`40868401 nt!IoInitSystemPreDrivers+0xb24
+16 ffffe10f`84a07af0 fffff805`405a429b nt!IoInitSystem+0x15
+17 ffffe10f`84a07b20 fffff805`40120e25 nt!Phase1Initialization+0x3b
+18 ffffe10f`84a07b50 fffff805`402060d8 nt!PspSystemThreadStartup+0x55
+19 ffffe10f`84a07ba0 00000000`00000000 nt!KiStartSystemThread+0x28
+
+Here is the trace back to the TpmAlloc:
+0: kd> pct
+nt!ExpAllocatePoolWithTagFromNode+0x80:
+fffff805`40058f00 c3              ret
+0: kd> pct
+nt!ExAllocatePoolWithTagPriority+0x84:
+fffff805`40058e64 c3              ret
+0: kd> pct
+nt!VeAllocatePoolWithTagPriority+0x266:
+fffff805`407da836 e84528beff      call    nt!ExIsSpecialPoolAddress (fffff805`403bd080)
+0: kd> pct
+nt!VeAllocatePoolWithTagPriority+0x2ca:
+fffff805`407da89a e8c5b60000      call    nt!VfAllocPoolNotification (fffff805`407e5f64)
+0: kd> pct
+nt!VeAllocatePoolWithTagPriority+0x30a:
+fffff805`407da8da c3              ret
+0: kd> pct
+nt!VerifierExAllocatePool2+0xf5:
+fffff805`407daad5 c3              ret
+0: kd> pct
+tpm!TpmAlloc+0x55:
+fffff805`417232d5 c3              ret
+
+Notice we are about to return from the TpmAlloc, TPM.SYS did not yet had a chance to use the memory and the process billed is still null:
+0: kd> dt nt!_POOL_HEADER ffffc105a934e890-10 ProcessBilled
+   +0x008 ProcessBilled : (null) 
+
+So once TPM.SYS will attempt to free the allocation, process billed will be decoded into garbage (because it was never encoded in the first place) and ExpGetBilledProcess will bugcheck.

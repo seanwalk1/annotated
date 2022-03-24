@@ -1,0 +1,268 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22010634405
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 9F - DRIVER_POWER_STATE_FAILURE (9f) (see attached memory dump):
+6: kd> !analyze -show
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffffa384d358c360, Physical Device Object of the stack
+Arg3: fffff5060ec7f120, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffa384e6697a20, The blocked IRP
+…
+
+The timed-out power IRP is S4 IRP for Wifi:
+6: kd> !irp ffffa384e6697a20
+Irp is active with 5 stacks 3 is current (= 0xffffa384e6697b80)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0  0 ffffa385237d6050 00000000 00000000-00000000    
+	       \Driver\Netwtw10
+			Args: 00015500 00000000 00000005 00000003
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffa384e6aa2de0 00000000 fffff80663b14020-ffffa384e01faef0 Success Error Cancel pending
+	       \Driver\vwifibus	nt!PopSystemIrpCompletion
+			Args: 00015500 00000000 00000005 00000003
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffa384e01faef0    
+
+			Args: 00000000 00000000 00000000 00000000
+
+6: kd> !poaction
+PopAction: fffff80663e23380
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Hibernate
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Hibernate
+  Hiber Context..: ffffa384da9ffa90
+
+Allocated power irps (PopIrpList - fffff80663e23af0)
+  IRP: ffffa384fdcda0e0 (wait-wake/S4), PDO: ffffa384deed6060
+  IRP: ffffa384e3fe4050 (wait-wake/S4), PDO: ffffa384db411060
+  IRP: ffffa384eb1df0e0 (wait-wake/S4), PDO: ffffa384deed8060
+  IRP: ffffa384db9320e0 (wait-wake/S4), PDO: ffffa384deec1060
+  IRP: ffffa384e6697a20 (set/S4), PDO: ffffa384d358c360, CURRENT: ffffa385237d6050, NOTIFY: ffffa384d3583c70
+  IRP: ffffa3850a5d10e0 (wait-wake/S4), PDO: ffffa384d0276e20
+  IRP: ffffa384f66f3940 (wait-wake/S4), PDO: ffffa384ded3a080
+  IRP: ffffa384f44e80e0 (wait-wake/S4), PDO: ffffa384d35b66c0
+  IRP: ffffa385172c90e0 (wait-wake/S4), PDO: ffffa384ded3a850
+  IRP: ffffa384e17dc260 (wait-wake/S4), PDO: ffffa384ded38490
+  IRP: ffffa384e3aca050 (wait-wake/S4), PDO: ffffa384e6852060
+  IRP: ffffa385109cda60 (wait-wake/S4), PDO: ffffa384e727ad50
+  IRP: ffffa3850e9d1af0 (wait-wake/S4), PDO: ffffa384d36ea360
+  IRP: ffffa384f5ed25f0 (wait-wake/S4), PDO: ffffa384d36ec360
+  IRP: ffffa3851dbe1970 (wait-wake/S4), PDO: ffffa384da6342c0
+
+Irp worker threads (PopIrpThreadList - fffff80663e20b10)
+  THREAD: ffffa384cfe5d040 (static)
+  THREAD: ffffa384cfe5c040 (static)
+  THREAD: ffffa384e44ce040 (dynamic)
+  THREAD: ffffa385203da0c0 (dynamic)
+  THREAD: ffffa384e72ef040 (dynamic)
+  THREAD: ffffa384e83f8040 (dynamic), IRP: ffffa384e6697a20, DEVICE: ffffa384e6aa2de0
+  THREAD: ffffa385107d3580 (dynamic)
+  THREAD: ffffa384e8ad1140 (dynamic)
+  THREAD: ffffa385250d65c0 (dynamic)
+  THREAD: ffffa385103d5140 (dynamic)
+  THREAD: ffffa385133d7140 (dynamic)
+  THREAD: ffffa385221e3280 (dynamic)
+  THREAD: ffffa384de4e3140 (dynamic)
+  THREAD: ffffa384de4f0380 (dynamic)
+  THREAD: ffffa384e43ce040 (dynamic)
+
+Broadcast in progress: TRUE
+…
+
+The thread, currently processing the IRP is blocked in NETBT Power Handler:
+6: kd> !thread ffffa384e83f8040
+THREAD ffffa384e83f8040  Cid 0004.2c8c  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    fffff806683f9340  NotificationEvent
+Not impersonating
+DeviceMap                 ffffce8b02c35540
+Owning Process            ffffa384cfead080       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      6788179        Ticks: 19193 (0:00:04:59.890)
+Context Switch Count      53             IdealProcessor: 7             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address nt!PopIrpWorker (0xfffff80663541d10)
+Stack Init fffff506136e7fd0 Current fffff506136e72f0
+Base fffff506136e8000 Limit fffff506136e1000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff506`136e7330 fffff806`6346aad4 : 00000000`00000000 ffff8c00`80697180 fffff506`00000000 ffffa384`e83f8040 : nt!KiSwapContext+0x76
+fffff506`136e7470 fffff806`634657ca : 00000000`00000000 fffff506`00000000 ffffa384`e83f8040 00000000`00000509 : nt!KiSwapThread+0x190
+fffff506`136e74e0 fffff806`63466fb0 : fffff806`683f9340 fffff806`00000000 fffff506`00000000 fffff806`683f9340 : nt!KiCommitThreadWait+0x13a
+fffff506`136e7590 fffff806`683c9f3d : ffffa384`e3ceba00 ffffa384`00000000 00000000`00000000 00000000`00000000 : nt!KeWaitForSingleObject+0x140
+fffff506`136e7630 fffff806`683a3d65 : 00000000`00000000 00000000`61494454 ffffa384`eedfa4d0 ffffa384`dbb2f410 : netbt!TdiPnPPowerHandler+0x33d
+fffff506`136e76e0 fffff806`683a2fab : ffffa384`ed5e8ed0 00000000`efefefef 00000000`abababab fffff806`683a0000 : TDI!TdiNotifyPnpClientList+0x1cd
+fffff506`136e7750 fffff806`683a3985 : ffffa384`ed5e90b0 fffff806`683a424a 00000000`0000000a ffffa384`eedf9b50 : TDI!TdiExecuteRequest+0x2cf
+fffff506`136e77a0 fffff806`683a424a : fffff506`136e7890 ffffa384`ed5e8ed0 fffff506`136e7c28 fffff806`634cf25e : TDI!TdiHandleSerializedRequest+0x371
+fffff506`136e7810 fffff806`683800a1 : ffffa385`1afd8bf0 00000000`00000000 fffff806`68389240 fffff506`12896f00 : TDI!TdiPnPPowerRequest+0x23a
+fffff506`136e7860 fffff806`665503c2 : ffffa384`f73d20e0 fffff806`666ca230 00000000`00000000 fffff506`136e7990 : tdx!TdxPnpEventNotification+0x201
+fffff506`136e78e0 fffff806`6654cc0e : ffffa384`f73d20e0 fffff506`12896f00 fffff806`08c808f8 fffff506`136e7a00 : tcpip!IpFlcPnpEvent+0xc2
+fffff506`136e7940 fffff806`6654cae2 : ffffa385`086e3c10 00000000`00000000 fffff506`136e7c20 00000000`00000000 : tcpip!FlPnpEvent+0x11e
+fffff506`136e79e0 fffff806`6637dffa : ffffa385`086e3c10 00000000`00000000 fffff506`136e7c20 ffffa384`d3e0e8a0 : tcpip!Fl48PnpEvent+0x12
+fffff506`136e7a10 fffff806`6637dbeb : 00000000`00000000 fffff506`136e7c20 ffffa385`086e3c10 fffff506`136e7c20 : ndis!ndisInvokeNetPnPEvent+0x82
+fffff506`136e7a80 fffff806`663abcb1 : 00000000`00000000 fffff506`136e7c10 ffffa384`d3e0e8a0 00000000`c00000bb : ndis!ndisDeliverNetPnPEventSynchronously+0xe7
+fffff506`136e7b10 fffff806`663ab98c : ffffa384`ebcc7440 00000000`00000000 ffffa385`086e3c10 00000000`00000000 : ndis!ndisPnPNotifyBinding+0x13d
+fffff506`136e7d10 fffff806`662957ac : 00000000`00000000 00000000`00000000 00000000`00000000 fffff506`12896130 : ndis!ndisPnPNotifyAllTransports+0xc8
+fffff506`136e7e50 fffff806`635a11de : fffff506`136e7fd0 fffff506`136e7fd0 00000000`00000000 00000000`00000000 : ndis!ndisFNetPnPEventInternal+0x16c
+fffff506`136e7f80 fffff806`635a119c : fffff506`12891002 00000000`00000000 ffffa384`e83f8040 fffff806`6349beec : nt!KxSwitchKernelStackCallout+0x2e (TrapFrame @ fffff506`136e7e40)
+fffff506`12895a70 fffff806`6349beec : fffff506`12891002 ffffa384`e83f8040 fffff506`12891000 00000000`00000000 : nt!KiSwitchKernelStackContinue
+fffff506`12895a90 fffff806`6349bcea : fffff806`66295640 fffff506`12895c98 00000000`00000002 00000000`00000004 : nt!KiExpandKernelStackAndCalloutOnStackSegment+0x1a4
+fffff506`12895b30 fffff806`6349bb62 : ffffa385`1c3cea30 fffff506`12895cd0 00000000`00000000 00000000`00000000 : nt!KiExpandKernelStackAndCalloutSwitchStack+0xea
+fffff506`12895ba0 fffff806`6349bb1d : fffff806`66295640 fffff506`12895c98 ffffa385`1c3cea30 00000000`00000000 : nt!KeExpandKernelStackAndCalloutInternal+0x32
+fffff506`12895c10 fffff806`6629592d : ffffa384`dd4f0044 00000000`00000000 00000000`00000130 00000000`00001a70 : nt!KeExpandKernelStackAndCalloutEx+0x1d
+fffff506`12895c50 fffff806`66295811 : 00000000`000dd4f0 ffffa385`1c3cea30 fffff506`12896130 fffff806`63494905 : ndis!NdisFNetPnPEvent+0x5d
+fffff506`12895ce0 fffff806`662956f9 : 00000000`00000000 00000000`00000000 00000000`00000000 ffffa384`de2b1a20 : ndis!ndisFForwardNetPnPEventToFilter+0x55
+fffff506`12895df0 fffff806`6349bba7 : ffffa384`de2b1a20 ffffa384`e83f8040 fffff506`12896050 fffff806`63463601 : ndis!ndisFNetPnPEventInternal+0xb9
+fffff506`12895f20 fffff806`6349bb1d : fffff806`66295640 fffff506`12896018 ffffa384`de2b1a20 fffff806`657d129b : nt!KeExpandKernelStackAndCalloutInternal+0x77
+fffff506`12895f90 fffff806`6629592d : ffffffff`05fc0624 fffff506`12896070 4a7c93f1`bf993f43 ffffa384`00000032 : nt!KeExpandKernelStackAndCalloutEx+0x1d
+fffff506`12895fd0 fffff806`6852b2b4 : 00000000`00000004 ffffa384`de2b1a20 fffff506`12896130 fffff506`12896428 : ndis!NdisFNetPnPEvent+0x5d
+fffff506`12896060 fffff806`6637af3f : ffffa384`de2b1a20 ffffa384`da1ba6a0 00000000`00000000 fffff806`6637b112 : pacer!PcFilterPnPEvent+0x14
+fffff506`12896090 fffff806`6629589b : ffffa384`de2b1a20 fffff506`12896199 fffff506`12896550 fffff506`12896550 : ndis!ndisFInvokeNetPnPEvent+0x77
+fffff506`128960f0 fffff806`662956f9 : 00000000`00000000 00000000`00000000 00000000`00000000 ffffa384`e4b38a20 : ndis!ndisFForwardNetPnPEventToFilter+0xdf
+fffff506`12896200 fffff806`6349bba7 : ffffa384`e4b38a20 ffffa384`e83f8040 fffff506`12896460 fffff806`66363048 : ndis!ndisFNetPnPEventInternal+0xb9
+fffff506`12896330 fffff806`6349bb1d : fffff806`66295640 fffff506`12896428 ffffa384`e4b38a20 fffff806`66285a2b : nt!KeExpandKernelStackAndCalloutInternal+0x77
+fffff506`128963a0 fffff806`6629592d : 00000000`c001000c fffff806`6cdcf51e ffffa384`f22ed010 00000000`00000004 : nt!KeExpandKernelStackAndCalloutEx+0x1d
+fffff506`128963e0 fffff806`6cdd54ab : 00000000`00000008 fffff506`12896550 ffffa384`d059a020 00000000`00000001 : ndis!NdisFNetPnPEvent+0x5d
+fffff506`12896470 fffff806`6637af3f : ffffa384`e4b38a20 ffffa384`cfe79010 00000000`00000000 fffff806`6637b112 : nwifi!FilterNetPnPEvent+0x10b
+fffff506`128964b0 fffff806`6629589b : ffffa384`e4b38a20 fffff506`128965b9 fffff506`12896960 fffff506`12896960 : ndis!ndisFInvokeNetPnPEvent+0x77
+fffff506`12896510 fffff806`662956f9 : 00000000`00000000 00000000`00000000 00000000`00000000 ffffa384`de411a20 : ndis!ndisFForwardNetPnPEventToFilter+0xdf
+
+6: kd> .thread /p /r ffffa384e83f8040
+Implicit thread is now ffffa384`e83f8040
+Implicit process is now ffffa384`cfead080
+Loading User Symbols
+
+NETBT is blocked waiting for its worker thread:
+6: kd> dt netbt!NbtConfig  pWorkThread  
+   +0x2d8 pWorkThread : 0xffffa384`e3dec040 _KTHREAD
+
+The NETBT  Worker thread is trying to cancel wakeup timer:
+6: kd> !thread 0xffffa384`e3dec040
+THREAD ffffa384e3dec040  Cid 0004.2f40  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrPushLock) KernelMode Non-Alertable
+    fffff50613bdf150  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffce8b02c35540
+Owning Process            ffffa384cfead080       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      6788179        Ticks: 19193 (0:00:04:59.890)
+Context Switch Count      159404         IdealProcessor: 7  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:16.640
+Win32 Start Address nt!ExpWorkerThread (0xfffff8066341a250)
+Stack Init fffff50613bdf5d0 Current fffff50613bdede0
+Base fffff50613be0000 Limit fffff50613bd9000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff506`13bdee20 fffff806`6346aad4 : 00000000`00000000 fffff806`5eb27180 fffff506`00000000 ffffa384`e3dec040 : nt!KiSwapContext+0x76
+fffff506`13bdef60 fffff806`634657ca : ffffa384`00000000 00000000`00000000 ffffa384`e3dec040 00000000`00000000 : nt!KiSwapThread+0x190
+fffff506`13bdefd0 fffff806`63466fb0 : fffff506`13bdf150 fffff506`00000000 fffff506`00000000 fffff506`13bdf150 : nt!KiCommitThreadWait+0x13a
+fffff506`13bdf080 fffff806`634c97e1 : ffffa384`e6f73d00 ffffce8b`0000001c a384e6f7`3df0ff00 00000000`001f0000 : nt!KeWaitForSingleObject+0x140
+fffff506`13bdf120 fffff806`63600f67 : ffffa384`00000000 ffffa384`e6f73e20 ffffa384`e3dec690 00000000`00000000 : nt!ExfAcquirePushLockExclusiveEx+0x1a5
+fffff506`13bdf1c0 fffff806`635af275 : ffffa384`e3dec040 00000000`00000000 00000000`00000000 00000000`00000000 : nt!NtCancelTimer+0x142167
+fffff506`13bdf250 fffff806`635a1760 : fffff806`6841163a ffffa384`e3dec180 ffffa384`cfe5e010 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x25 (TrapFrame @ fffff506`13bdf250)
+fffff506`13bdf3e8 fffff806`6841163a : ffffa384`e3dec180 ffffa384`cfe5e010 00000000`00000000 00000000`00000100 : nt!KiServiceLinkage
+fffff506`13bdf3f0 fffff806`683c33ca : ffffa385`216d2620 00000000`00000100 fffff806`63f25440 fffff806`6341a92d : netbt!DelayedNbtStopWakeupTimer+0xba
+fffff506`13bdf460 fffff806`6341a349 : fffff806`683c3310 fffff806`683f9378 ffffa384`e3dec040 fffff806`683f9378 : netbt!NTExecuteWorker+0xba
+fffff506`13bdf4b0 fffff806`6340b1b5 : ffffa384`e3dec040 ffffa384`e3dec040 00000000`00000080 fffff806`635a650e : nt!ExpWorkerThread+0xf9
+fffff506`13bdf550 fffff806`635a4f58 : ffff8c00`80697180 ffffa384`e3dec040 fffff806`6340b160 00000000`00000000 : nt!PspSystemThreadStartup+0x55
+fffff506`13bdf5a0 00000000`00000000 : fffff506`13be0000 fffff506`13bd9000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+And it is blocked, waiting for the wake timer lock:
+6: kd> .thread /p /r  0xffffa384`e3dec040
+Implicit thread is now ffffa384`e3dec040
+Implicit process is now ffffa384`cfead080
+Loading User Symbols
+
+
+************* Symbol Loading Error Summary **************
+Module name            Error
+SharedUserData         No error - symbol load deferred
+
+You can troubleshoot most symbol related issues by turning on symbol loading diagnostics (!sym noisy) and repeating the command that caused symbols to be loaded.
+You should also verify that your symbol search path (.sympath) is correct.
+6: kd> .frame /r 5
+05 fffff506`13bdf1c0 fffff806`635af275 nt!NtCancelTimer+0x142167
+rax=0000000000000000 rbx=ffffa384e6f73e20 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffffa384e3dec690 rdi=ffffffffffffffff
+rip=fffff80663600f67 rsp=fffff50613bdf1c0 rbp=fffff50613bdf2d0
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000100 r13=0000000000000000
+r14=fffff50613bdf410 r15=ffffa384e6f73df0
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+nt!NtCancelTimer+0x142167:
+fffff806`63600f67 90              nop
+6: kd> ub
+nt!NtCancelTimer+0x142143:
+fffff806`63600f43 498bca          mov     rcx,r10
+fffff806`63600f46 e819370b00      call    nt!KiRemoveSystemWorkPriorityKick (fffff806`636b4664)
+fffff806`63600f4b 90              nop
+fffff806`63600f4c e975e0ebff      jmp     nt!NtCancelTimer+0x1c6 (fffff806`634befc6)
+fffff806`63600f51 4c8d05d8588100  lea     r8,[nt!ExpWakeTimerLock (fffff806`63e16830)]
+fffff806`63600f58 488bd6          mov     rdx,rsi
+fffff806`63600f5b 488d0dce588100  lea     rcx,[nt!ExpWakeTimerLock (fffff806`63e16830)]
+fffff806`63600f62 e8d586ecff      call    nt!ExfAcquirePushLockExclusiveEx (fffff806`634c963c)
+
+But the Power Manager currently owns the wake timer lock as it paused the wake timers:
+6: kd> x nt!PopAction
+fffff806`63e23380 nt!PopAction = <no type information>
+6: kd> dt nt!_POP_POWER_ACTION fffff806`63e23380 WakeAlarmPaused
+   +0x0b0 WakeAlarmPaused : 0x1 ''
+
+And the Power Manager is waiting for the devices to complete S4:
+6: kd> dt nt!_POP_POWER_ACTION fffff806`63e23380 ActionWorkerThread 
+   +0x1b0 ActionWorkerThread : 0xffffa384`e62ef040 _KTHREAD
+
+6: kd> !thread  0xffffa384`e62ef040 
+THREAD ffffa384e62ef040  Cid 0004.16a0  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    fffff50612456d78  Semaphore Limit 0x7b
+Not impersonating
+DeviceMap                 ffffce8b02c35540
+Owning Process            ffffa384cfead080       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      6788196        Ticks: 19176 (0:00:04:59.625)
+Context Switch Count      723488         IdealProcessor: 0  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:01:02.078
+Win32 Start Address nt!ExpWorkerThread (0xfffff8066341a250)
+Stack Init fffff506124575d0 Current fffff506124569e0
+Base fffff50612458000 Limit fffff50612451000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffff506`12456a20 fffff806`6346aad4 : 00000000`00000000 fffff806`5eb27180 fffff506`00000000 ffffa384`e62ef040 : nt!KiSwapContext+0x76
+fffff506`12456b60 fffff806`634657ca : ffffa384`00000000 00000000`00000000 ffffa384`e62ef040 fffff806`63540eea : nt!KiSwapThread+0x190
+fffff506`12456bd0 fffff806`63466fb0 : fffff506`12456d78 fffff506`00000000 fffff506`00000000 fffff506`12456d78 : nt!KiCommitThreadWait+0x13a
+fffff506`12456c80 fffff806`635323fc : ffffa384`e4694d00 ffffa385`00000000 00000000`00000000 fffff806`6320c600 : nt!KeWaitForSingleObject+0x140
+fffff506`12456d20 fffff806`63b0ff01 : ffffa385`0e7f2a70 00000000`00000003 fffff506`12456ee0 fffff506`12456ee0 : nt!PopSleepDeviceList+0x1f8
+fffff506`12456e10 fffff806`63b0edab : 00000000`00000037 fffff506`12457000 fffff506`12457038 00000000`00000000 : nt!PoBroadcastSystemState+0x1f5
+fffff506`12456ec0 fffff806`63b0f924 : 00000000`00000000 fffff506`12457000 fffff506`12457038 fffff506`12457038 : nt!PopSetDevicesSystemState+0x87
+fffff506`12456f20 fffff806`63b1615c : fffff506`12457018 fffff506`00000006 00000000`00000002 fffff806`635af275 : nt!PopTransitionSystemPowerStateEx+0x700
+fffff506`12456fe0 fffff806`635af275 : ffffa384`e62ef690 fffff806`6346945d ffffa384`e62ef690 fffff806`63e25030 : nt!NtSetSystemPowerState+0x4c
+fffff506`124571c0 fffff806`635a1760 : fffff806`638d938e 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x25 (TrapFrame @ fffff506`124571c0)
+fffff506`12457358 fffff806`638d938e : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiServiceLinkage
+fffff506`12457360 fffff806`638d9059 : 00000000`00000000 00000000`00000300 00000000`00000001 00000000`00000000 : nt!PopIssueActionRequest+0x216
+fffff506`12457400 fffff806`63500c24 : 00000000`00000001 00000000`00000000 ffffffff`ffffffff fffff806`63e23b00 : nt!PopPolicyWorkerAction+0x79
+fffff506`12457470 fffff806`6341a349 : ffffa384`00000001 ffffa384`e62ef040 00000000`80000000 fffff806`63921fe0 : nt!PopPolicyWorkerThread+0x94
+fffff506`124574b0 fffff806`6340b1b5 : ffffa384`e62ef040 ffffa384`e62ef040 00000000`00000080 001fa4ff`bd9bbfff : nt!ExpWorkerThread+0xf9
+fffff506`12457550 fffff806`635a4f58 : ffff8c00`80236180 ffffa384`e62ef040 fffff806`6340b160 00000000`00000000 : nt!PspSystemThreadStartup+0x55
+fffff506`124575a0 00000000`00000000 : fffff506`12458000 fffff506`12451000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+This, therefore, is a deadlock – NETBT is waiting for the wake timer lock owned by the Power Manager which in turn is waiting for NETBT to complete S4.

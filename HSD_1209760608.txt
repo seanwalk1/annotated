@@ -1,0 +1,241 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209760608/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is DRIVER_POWER_STATE_FAILURE (9f) – Bugcheck 9F – power IRP timeout (see attached memory dump).
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 00000003, A device object has been blocking an Irp for too long a time
+Arg2: 8c5f4338, Physical Device Object of the stack
+Arg3: 88527dd0, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: 91cc3110, The blocked IRP
+…
+
+The IRP is held by ACPI bus driver:
+2: kd> !irp 91cc3110
+Irp is active with 10 stacks 6 is current (= 0x91cc3234)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 8c5f4338 00000000 00000000-00000000    pending
+	       \Driver\ACPI
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0  1 91cb9940 00000000 00000000-00000000    pending
+	       \Driver\hidi2c
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e0 91cbe8e8 00000000 93d51dea-91cbe9a0 Success Error Cancel 
+	       \Driver\mshidkmdf	HIDCLASS!HidpFdoPowerCompletion
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 91cbe8e8 00000000 8132bf3e-944a5de0 Success Error Cancel pending
+	       \Driver\mshidkmdf	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000001 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-944a5de0    
+
+			Args: 00000000 00000000 00000000 00000000
+
+Irp Extension present at 0x9d1ae968:
+
+	Activity ID: {00000000-0000-0000-0000-000000000000}
+
+The reason IRP is pended is because AML interpreter has stalled:
+2: kd> !amli lc
+ Ctxt=fffffffff4e24800, ThID=0000000000000000, Flgs=---C-----, pbOp=ffffffff8c042b13, Obj=\_SB.SXP1._TMP
+AMLI_DBGERR: SIG_CTXT does not match (f86fb808)
+
+AML is accessing PMIC OpRegion:
+2: kd> !amli u \_SB.SXP1._TMP
+ffffffff8c042ae6:[\_SB.SXP1._TMP]
+ffffffff8c042ae6 : If(LEqual(\_SB_.I2C5.PMI1.AVBG, One))
+ffffffff8c042afe : {
+ffffffff8c042afe : | Store(Zero, \_SB_.I2C5.PMI1.GMP0)
+ffffffff8c042b13 : | If(LEqual(\_SB_.I2C5.PMI1.AVBD, One))
+ffffffff8c042b2a : | {
+ffffffff8c042b2a : | | Return(\_SB_.I2C5.PMI1.TMP0)
+ffffffff8c042b3e : | }
+ffffffff8c042b3e : | Else
+ffffffff8c042b40 : | {
+ffffffff8c042b40 : | | Return(Zero)
+ffffffff8c042b42 : | }
+ffffffff8c042b42 : }
+ffffffff8c042b42 : Else
+ffffffff8c042b44 : {
+ffffffff8c042b44 : | Return(Zero)
+ffffffff8c042b46 : }
+
+The PMIC OpRegion handler have sent a request to the I2C driver:
+2: kd> .thread /p /r  c642eb40 
+…
+2: kd> kb
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # ChildEBP RetAddr  Args to Child              
+00 b5b56044 8127fdb3 00000000 00000000 c642eb40 nt!KiSwapContext+0x19
+01 b5b560b8 8127f8c8 b5b561c8 c642eb40 00000000 nt!KiSwapThread+0x193
+02 b5b56104 81286c5d 00000000 81420c3b 00000000 nt!KiCommitThreadWait+0x148
+03 b5b5619c 86ec0973 b5b561c8 00000000 884c5120 nt!KeWaitForSingleObject+0x22d
+04 b5b5620c 86ebf212 b5b56248 8f7fd808 00000000 Wdf01000!FxIoTarget::SubmitSync+0x173
+05 b5b56384 86eb549e 00000000 00041808 00000000 Wdf01000!FxIoTargetSendIoctl+0x3b2
+06 b5b563a8 95ef3abe 8f7fd908 6fd0fbc0 00000000 Wdf01000!imp_WdfIoTargetSendIoctlSynchronously+0x2a
+07 (Inline) -------- -------- -------- -------- PMIC!WdfIoTargetSendIoctlSynchronously+0x1d
+08 b5b5640c 95ef39db 8f7eaab8 00000000 b5b56448 PMIC!PmicGpioSpbSequence+0xb2
+09 b5b56480 95ef2ad6 8f7eaab8 00000000 0000005a PMIC!PmicGpioSpbRead+0x8d
+0a b5b564a8 95efadb1 8f7ea420 00000000 0000005a PMIC!PmicPageRead+0x34
+0b b5b564c8 95efacc5 8f7eaae8 00000000 b5b564e8 PMIC!Axp288TempReadRaw+0x25
+0c b5b564ec 95ef1945 8f7eaae8 00000000 00000000 PMIC!Axp288DptfOpRegionFlush+0x45
+0d b5b56500 95efa7dd 8f7ea420 00000000 00000000 PMIC!DptfRegOpRegionFlushData+0x21
+0e b5b56530 95ef35b6 8f7ea420 00000000 b5b56588 PMIC!Axp288WriteGpioPins+0x95
+0f b5b56548 90713e28 8f7ea420 b5b56568 9037a9a0 PMIC!PmicGpioWriteGpioPins+0x42
+10 b5b565ac 90719a63 00000001 e296c520 00000000 msgpioclx!GpioClnInvokeWritePins+0xaa
+11 b5b56624 9071ec71 62887578 00000000 e296c520 msgpioclx!GpiopWritePins+0x247
+12 b5b56680 90712e96 62887578 b5b56694 9d778a80 msgpioclx!GpiopProcessWritePinsRequest+0xeb
+13 b5b56698 86ebcea4 6fc85dc8 62887578 00000000 msgpioclx!GpioClxBankEvtProcessDeviceIoControl+0xa4
+14 b5b566dc 86ebc4f0 62887578 9d778a80 9037a230 Wdf01000!FxIoQueue::DispatchRequestToDriver+0x174
+15 b5b56704 86eb15ef 9037a200 00000000 9d778b34 Wdf01000!FxIoQueue::DispatchEvents+0x210
+16 b5b56724 86f1b092 9d778a80 62887578 8f77ede8 Wdf01000!FxIoQueue::QueueRequestFromForward+0xb5
+17 b5b56748 86f1af34 9d778a00 9037a230 8f7fd808 Wdf01000!FxIoQueue::ForwardRequestWorker+0x93
+18 b5b56760 86f071a1 9037a230 9d778a80 9d778a80 Wdf01000!FxIoQueue::ForwardRequest+0x36
+19 b5b5677c 90712baf 9d778a80 62887578 6fc85dc8 Wdf01000!imp_WdfRequestForwardToIoQueue+0x58
+1a b5b567a8 86ebcea4 70881210 62887578 00000000 msgpioclx!GpioClxEvtProcessDeviceIoControl+0x1bb
+1b b5b567ec 86ebc4f0 62887578 9d778a80 8f77ede8 Wdf01000!FxIoQueue::DispatchRequestToDriver+0x174
+1c b5b56814 86eb15ef 8f77ed00 00000000 8f7fd808 Wdf01000!FxIoQueue::DispatchEvents+0x210
+1d b5b56834 86edbaf7 9d778a80 70815fe8 b5b568a8 Wdf01000!FxIoQueue::QueueRequestFromForward+0xb5
+1e b5b56854 86f05d0f 8f7ea010 9d778a80 62887578 Wdf01000!FxPkgIo::EnqueueRequest+0x139
+1f b5b56870 95ef1458 9d778a80 70815fe8 62887578 Wdf01000!imp_WdfDeviceEnqueueRequest+0x5d
+20 (Inline) -------- -------- -------- -------- PMIC!WdfDeviceEnqueueRequest+0xe
+21 b5b568ac 86eb195a 70815fe8 62887578 8f77ede8 PMIC!PmicGpioIoInCallerContext+0x70
+22 b5b568c4 86ee182a 8f7ca804 9d778a80 9ca2f858 Wdf01000!FxPkgIo::DispathToInCallerContextCallback+0x70
+23 b5b56908 86eb1c1c 007ca7fc 00000001 8f798030 Wdf01000!FxPkgIo::DispatchStep1+0x28e3a
+24 b5b56960 812ada01 0e798030 9ca2f858 9ca2f858 Wdf01000!FxDevice::DispatchWithLock+0x1ec
+25 b5b56974 813b7156 813b70c4 8f798030 00000005 nt!IopfCallDriver+0x31
+26 b5b5698c 812983d6 86ec0940 944c7b00 b5b56a38 nt!IopPerfCallDriver+0x92
+27 b5b569a0 86ec0940 85fdedc0 00000000 b5b56c28 nt!IofCallDriver+0x66
+28 b5b569fc 86ebf212 b5b56a38 85fdedc0 00000000 Wdf01000!FxIoTarget::SubmitSync+0x140
+29 b5b56b70 86eb549e 00000000 00480004 00000000 Wdf01000!FxIoTargetSendIoctl+0x3b2
+2a b5b56b94 86f625b3 85fdeec0 6bb384f8 00000000 Wdf01000!imp_WdfIoTargetSendIoctlSynchronously+0x2a
+2b b5b56bcc 86f6151d 00000001 86f5de64 00000000 acpiex!RhpWriteGpioPins+0x42
+2c b5b56c34 86f6182b 00000001 874ff8d0 87840fa4 acpiex!RhpGpioRegionSpaceAccess+0x30f
+2d b5b56c60 86f61c2e 94e2e654 87840fa4 f4e24848 acpiex!RhpPerformRegionSpaceAccess+0x6b
+2e b5b56ca4 86f60c9a 94e2e654 85fdedc0 8f7de2d8 acpiex!RhpProcessRegionSpaceAccess+0x25a
+2f b5b56ccc 86eb63d1 70821d20 8f7de2d8 8f7de200 acpiex!RhpEvtOpRegionProcessRegionSpaceWorkItem+0xbe
+30 b5b56ce0 86ec74e5 85fde4c8 86ec74c8 b5b56d28 Wdf01000!FxWorkItem::WorkItemHandler+0x53
+31 b5b56cf0 8124d868 85fde4c8 8f7de2d8 8f79e960 Wdf01000!FxWorkItem::WorkItemThunk+0x1d
+32 b5b56d28 8127c1e5 8f79e960 00000000 c642eb40 nt!IopProcessWorkItem+0xd8
+33 b5b56d78 812edbb6 81468398 e5f4604f 00000000 nt!ExpWorkerThread+0xd5
+34 b5b56db0 81358c15 8127c110 81468398 00000000 nt!PspSystemThreadStartup+0x4a
+35 b5b56dbc 00000000 00000000 00000000 00000000 nt!KiThreadStartup+0x15
+2: kd> !wdfhandle 6fd0fbc0 
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x6fd0fbc0
+=============================
+Handle type is WDFIOTARGET
+Refcount: 2
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+Parent: !wdfhandle 0x70815fe8, type is WDFDEVICE
+Owning device: !wdfdevice 0x70815fe8
+
+!wdfobject 0x902f0438
+2: kd> !wdfobject 0x902f0438
+
+The type for object 0x902f0438 is FxIoTarget
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x6fd0fbc0
+
+dt FxIoTarget 0x902f0438
+…
+2: kd> dt FxIoTarget 0x902f0438 m_TargetDevice
+Wdf01000!FxIoTarget
+m_TargetDevice : 0x8f76be00 _DEVICE_OBJECT
+2: kd> !devstack 0x8f76be00 
+  !DevObj   !DrvObj            !DevExt   ObjectName
+> 8f76be00  \Driver\iaioi2c    8f7779c8  0000004d
+  8c083f10  \Driver\ACPI       8c013aa8  0000002a
+!DevNode 8c05f2e8 :
+  DeviceInst is "ACPI\80860F41\5"
+  ServiceName is "iaioi2c"
+
+The I2C driver owns the request but does not complete it which holds the PMIC and causes the timeout:
+2: kd> !wdfkd.wdfdriverinfo iaioi2ce
+…
+    !wdfdevice 0x708887c0 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerD0, WdfDevStatePwrPolStartedIdleCapable
+        context:  dt 0x8f7779c8 iaioi2ce!PBC_DEVICE (size is 0x260 bytes)
+        <no associated attribute callbacks>
+…
+2: kd>  !wdfdevice 0x708887c0
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x708887c0
+=================================
+
+WDM PDEVICE_OBJECTs:  self 8f76be00, attached 8c083f10, pdo 8c083f10
+…
+2: kd>  !wdfdevicequeues 0x708887c0
+Treating handle as a KMDF handle!
+
+Dumping queues of WDFDEVICE 0x708887c0
+=====================================
+Number of queues: 5
+----------------------------------
+…
+Queue: 2 !wdfqueue  0x70891218
+    Sequential, Power-managed, PowerOn, Can accept, Can dispatch, ExecutionLevelDispatch, SynchronizationScopeNone
+    Number of driver owned requests: 1
+    !wdfrequest 0x6b61cea0  !irp 0xa1f0e888
+    Number of waiting requests: 1
+!wdfrequest 0x73a08540  !irp 0xe3668008
+…
+2: kd> !irp 0xa1f0e888
+Irp is active with 3 stacks 3 is current (= 0xa1f0e940)
+ No Mdl: System buffer=91d370a0: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_DEVICE_CONTROL(e), N/A(0)]
+            0 e1 8f76be00 8f7ef390 00000000-00000000    pending
+	       \Driver\iaioi2c
+			Args: 00000000 00000034 0x41808 00000000
+
+Irp Extension present at 0xa1f0e964:
+
+	Activity ID: {00000000-0000-0000-0000-000000000000}

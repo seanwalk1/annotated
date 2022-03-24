@@ -1,0 +1,201 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22010707296
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 7F - UNEXPECTED_KERNEL_MODE_TRAP (7f) (see attached memory dump):
+0: kd> !analyze -show
+UNEXPECTED_KERNEL_MODE_TRAP (7f)
+This means a trap occurred in kernel mode, and it's a trap of a kind
+that the kernel isn't allowed to have/catch (bound trap) or that
+is always instant death (double fault).  The first number in the
+bugcheck params is the number of the trap (8 = double fault, etc)
+Consult an Intel x86 family manual to learn more about what these
+traps are. Here is a *portion* of those codes:
+If kv shows a taskGate
+        use .tss on the part before the colon, then kv.
+Else if kv shows a trapframe
+        use .trap on that value
+Else
+        .trap on the appropriate frame will show where the trap was taken
+        (on x86, this will be the ebp that goes with the procedure KiTrap)
+Endif
+kb will then show the corrected stack.
+Arguments:
+Arg1: 0000000000000008, EXCEPTION_DOUBLE_FAULT
+Arg2: fffff8065cc7ee70
+Arg3: ffff9500e65c7f90
+Arg4: fffff806584e793d
+
+The exception is a double fault abort. Looking at the callstack and switching to the frame that caused the exception:
+0: kd> kf
+ #   Memory  Child-SP          RetAddr           Call Site
+00           fffff806`5cc7ed28 fffff806`585d32e9 nt!KeBugCheckEx
+01         8 fffff806`5cc7ed30 fffff806`585ce145 nt!KiBugCheckDispatch+0x69
+02       140 fffff806`5cc7ee70 fffff806`584e793d nt!KiDoubleFaultAbort+0x2c5
+03           ffff9500`e65c7f90 fffff806`584e5129 nt!RtlpHpSegAlloc+0x3d
+04        b0 ffff9500`e65c8040 fffff806`584e49fc nt!RtlpHpSegSubAllocate+0x3d
+05        50 ffff9500`e65c8090 fffff806`584e4c23 nt!RtlpHpSegLfhAllocate+0x1c
+06        40 ffff9500`e65c80d0 fffff806`584346af nt!RtlpHpLfhSubsegmentCreate+0x15f
+07        90 ffff9500`e65c8160 fffff806`58433294 nt!RtlpHpLfhSlotAllocate+0xe6f
+08       160 ffff9500`e65c82c0 fffff806`5876f06d nt!ExAllocateHeapPool+0xb94
+09       140 ffff9500`e65c8400 fffff806`58493fb9 nt!ExAllocatePoolWithTag+0x5d
+0a        50 ffff9500`e65c8450 fffff806`58a2a042 nt!CmpAllocatePoolWithTag+0x9
+0b        30 ffff9500`e65c8480 fffff806`58a29c19 nt!CmpGetNameControlBlock+0xf2
+0c        60 ffff9500`e65c84e0 fffff806`58a27fd7 nt!CmpCreateKeyControlBlock+0x149
+0d        70 ffff9500`e65c8550 fffff806`589f226a nt!CmpWalkOneLevel+0x647
+0e       110 ffff9500`e65c8660 fffff806`589ef2d4 nt!CmpDoParseKey+0x9fa
+0f       2a0 ffff9500`e65c8900 fffff806`589ed1bf nt!CmpParseKey+0x274
+10       220 ffff9500`e65c8b20 fffff806`589eb621 nt!ObpLookupObjectName+0x78f
+11       1c0 ffff9500`e65c8ce0 fffff806`589f4b3c nt!ObOpenObjectByNameEx+0x201
+12       140 ffff9500`e65c8e20 fffff806`589f49bd nt!ObOpenObjectByName+0x5c
+13        50 ffff9500`e65c8e70 fffff806`589f69df nt!CmOpenKey+0x29d
+14       260 ffff9500`e65c90d0 fffff806`585d2d15 nt!NtOpenKeyEx+0xf
+15        40 ffff9500`e65c9110 fffff806`585c5320 nt!KiSystemServiceCopyEnd+0x25
+16       198 ffff9500`e65c92a8 fffff806`589c62a8 nt!KiServiceLinkage
+17         8 ffff9500`e65c92b0 fffff806`589c61d2 nt!_RegRtlOpenKeyTransacted+0xc0
+18        a0 ffff9500`e65c9350 fffff806`589c308e nt!SysCtxRegOpenKey+0x3a
+19        40 ffff9500`e65c9390 fffff806`589bdf9a nt!_PnpOpenPropertiesKey+0xf6
+1a       130 ffff9500`e65c94c0 fffff806`589bdc50 nt!PnpGetGenericStoreProperty+0x136
+1b       190 ffff9500`e65c9650 fffff806`589bdab0 nt!_PnpGetObjectPropertyWorker+0x124
+1c        a0 ffff9500`e65c96f0 fffff806`58aa404e nt!_PnpGetObjectProperty+0x108
+1d        d0 ffff9500`e65c97c0 fffff806`58aa3f3c nt!PnpGetDevicePropertyData+0xf6
+1e       170 ffff9500`e65c9930 fffff806`5836bfb4 nt!IoGetDevicePropertyData+0x7c
+1f        50 ffff9500`e65c9980 fffff806`583da398 hal!HalpAreDriversDmarCompatible+0x40
+20        50 ffff9500`e65c99d0 fffff806`5836bf61 hal!HalpGetAdapter+0x30
+21        30 ffff9500`e65c9a00 fffff806`58b782bc hal!HalPnpGetDmaAdapter+0x31
+22        30 ffff9500`e65c9a30 fffff806`58b781c9 nt!PiGetDmaAdapterFromBusInterface+0xa8
+23        80 ffff9500`e65c9ab0 fffff806`5ba0ea8b nt!IoGetDmaAdapter+0xa9
+24        c0 ffff9500`e65c9b70 fffff806`58b782bc pci!PciBusInterface_GetDmaAdapter+0x5b
+25        30 ffff9500`e65c9ba0 fffff806`58b781c9 nt!PiGetDmaAdapterFromBusInterface+0xa8
+26        80 ffff9500`e65c9c20 fffff806`5b7634ed nt!IoGetDmaAdapter+0xa9
+27        c0 ffff9500`e65c9ce0 fffff806`5b762c71 Wdf01000!FxDmaEnabler::InitializeResources+0x3d
+28        80 ffff9500`e65c9d60 fffff806`5b762ad4 Wdf01000!FxDmaEnabler::ConfigureDmaAdapter+0x39
+29        30 ffff9500`e65c9d90 fffff806`5b7633a0 Wdf01000!FxDmaEnabler::ConfigureBusMasterAdapters+0x3c
+2a        50 ffff9500`e65c9de0 fffff806`5b760315 Wdf01000!FxDmaEnabler::Initialize+0x3e0
+2b        b0 ffff9500`e65c9e90 fffff806`5fb1708e Wdf01000!imp_WdfDmaEnablerCreate+0x315
+2c        f0 (Inline Function) --------`-------- TbtBusDrv!WdfDmaEnablerCreate+0x4c
+2d         0 ffff9500`e65c9f80 fffff806`5faeb2f6 TbtBusDrv!kmdf_common::WdfDmaBufferFactory::Init+0xa7e
+2e       550 ffff9500`e65ca4d0 fffff806`5fad5f43 TbtBusDrv!hardware_abstraction::HardwareAbstraction::AllocateDmaBufferFactory+0x1a6
+2f       1d0 ffff9500`e65ca6a0 fffff806`5faed842 TbtBusDrv!hardware_abstraction::HardwareAbstractionYosemiteFallsTigerLake::AllocateDmaBufferFactory+0x543
+30       2e0 ffff9500`e65ca980 fffff806`5faf08e0 TbtBusDrv!hardware_abstraction::HardwareAbstraction::Init+0x462
+31       b40 ffff9500`e65cb4c0 fffff806`5fad0b8b TbtBusDrv!hardware_abstraction::IntegratedHardwareAbstraction::Init+0xf0
+32       280 ffff9500`e65cb740 fffff806`5fad68c8 TbtBusDrv!hardware_abstraction::HardwareAbstractionYosemiteFalls::Init+0x7b
+33       280 ffff9500`e65cb9c0 fffff806`5fa59462 TbtBusDrv!hardware_abstraction::HardwareAbstractionYosemiteFallsTigerLake::Init+0x218
+34       120 ffff9500`e65cbae0 fffff806`5fa530bf TbtBusDrv!tbt_bus_driver::TbtBusDriverContext::InitializeMembers1+0x692
+35       b60 ffff9500`e65cc640 fffff806`5fa47c96 TbtBusDrv!tbt_bus_driver::TbtBusDriverContext::Init+0x85f
+36       730 ffff9500`e65ccd70 fffff806`5b7871f1 TbtBusDrv!TbtBusDrvEvtDeviceAdd+0xef6
+37       5d0 (Inline Function) --------`-------- Wdf01000!FxDriverDeviceAdd::Invoke+0x64
+38         0 ffff9500`e65cd340 fffff806`5b78710c Wdf01000!FxDriver::AddDevice+0xd1
+39       420 ffff9500`e65cd760 fffff806`58574853 Wdf01000!FxDriver::AddDevice+0x2c
+3a        30 ffff9500`e65cd790 fffff806`58b35372 nt!PpvUtilCallAddDevice+0x3b
+3b        40 ffff9500`e65cd7d0 fffff806`58afab36 nt!PnpCallAddDevice+0x62
+3c        90 ffff9500`e65cd860 fffff806`58af9ddd nt!PipCallDriverAddDevice+0x816
+3d       1c0 ffff9500`e65cda20 fffff806`58b85cf8 nt!PipProcessDevNodeTree+0x1b9
+3e        c0 ffff9500`e65cdae0 fffff806`5855bbee nt!PiProcessStartSystemDevices+0x60
+3f        50 ffff9500`e65cdb30 fffff806`584bd095 nt!PnpDeviceActionWorker+0x45e
+40        c0 ffff9500`e65cdbf0 fffff806`5852a7a5 nt!ExpWorkerThread+0x105
+41        a0 ffff9500`e65cdc90 fffff806`585c8b2a nt!PspSystemThreadStartup+0x55
+42        50 ffff9500`e65cdce0 00000000`00000000 nt!KiStartSystemThread+0x2a
+
+We can see that the exception is due to the fact that stack pointer is not valid:
+0: kd> .frame /r 3
+03 ffff9500`e65c7f90 fffff806`584e5129 nt!RtlpHpSegAlloc+0x3d
+rax=0000000008000000 rbx=ffff9500e65c8160 rcx=ffff9a8ece600100
+rdx=0000000000008000 rsi=ffff9a8ece600100 rdi=0000000008000000
+rip=fffff806584e793d rsp=ffff9500e65c7f90 rbp=0000000000000000
+ r8=0000000000000008  r9=0000000000000000 r10=fffff806584e49e0
+r11=0000000000000000 r12=0000000000000000 r13=0000000008000000
+r14=ffff9a8ece601100 r15=ffff9a8ece6012ff
+iopl=0         nv up di ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040086
+nt!RtlpHpSegAlloc+0x3d:
+fffff806`584e793d 448964244c      mov     dword ptr [rsp+4Ch],r12d ss:0018:ffff9500`e65c7fdc=????????
+0: kd> !pte ffff9500e65c7f90
+                                           VA ffff9500e65c7f90
+PXE at FFFFAC562B158950    PPE at FFFFAC562B12A018    PDE at FFFFAC5625403990    PTE at FFFFAC4A80732E38
+contains 0A00000003CE9863  contains 0A00000003DEA863  contains 0A00000003E66863  contains 0000000000000000
+pfn 3ce9      ---DA--KWEV  pfn 3dea      ---DA--KWEV  pfn 3e66      ---DA--KWEV  not valid
+
+
+0: kd> !pte ffff9500e65c7f90+4c
+                                           VA ffff9500e65c7fdc
+PXE at FFFFAC562B158950    PPE at FFFFAC562B12A018    PDE at FFFFAC5625403990    PTE at FFFFAC4A80732E38
+contains 0A00000003CE9863  contains 0A00000003DEA863  contains 0A00000003E66863  contains 0000000000000000
+pfn 3ce9      ---DA--KWEV  pfn 3dea      ---DA--KWEV  pfn 3e66      ---DA--KWEV  not valid
+
+
+Dereference on an not present address would normally cause a Page fault but the processor would have to create a trap frame on the stack and since the stack pointer is invalid this fails too thus by definition causing the Double Fault Abort.
+
+The reason the stack pointer is invalid is because it is below the stack limit:
+0: kd> !thread
+THREAD ffffd303a37a2240  Cid 0004.0140  Teb: 0000000000000000 Win32Thread: 0000000000000000 RUNNING on processor 0
+Not impersonating
+Owning Process            ffffd303a1c80040       Image:         System
+Attached Process          ffffd303a1de6040       Image:         Registry
+Wait Start TickCount      293            Ticks: 0
+Context Switch Count      189            IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.187
+Win32 Start Address nt!ExpWorkerThread (0xfffff806584bcf90)
+Stack Init ffff9500e65cdd10 Current ffff9500e65cb640
+Base ffff9500e65ce000 Limit ffff9500e65c8000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+…
+
+0: kd> ??  0xffff9500e65c7f90+0x4c < 0xffff9500e65c8000
+bool true
+
+Looking at the previous frame:
+0: kd> .frame /r 4
+04 ffff9500`e65c8040 fffff806`584e49fc nt!RtlpHpSegSubAllocate+0x3d
+rax=0000000008000000 rbx=ffff9500e65c8160 rcx=ffff9a8ece600100
+rdx=0000000000008000 rsi=0000000000008000 rdi=ffff9a8ece600100
+rip=fffff806584e5129 rsp=ffff9500e65c8040 rbp=0000000000008000
+ r8=0000000000000008  r9=0000000000000000 r10=fffff806584e49e0
+r11=0000000000000000 r12=0000000000000000 r13=0000000000000000
+r14=ffff9a8ece601100 r15=ffff9a8ece6012ff
+iopl=0         nv up di ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040086
+nt!RtlpHpSegSubAllocate+0x3d:
+fffff806`584e5129 832300          and     dword ptr [rbx],0 ds:002b:ffff9500`e65c8160=ffffffff
+
+We can see that stack is already near the limit. The call to the next frame puts it well below the limit:
+0: kd> .frame /r 3
+03 ffff9500`e65c7f90 fffff806`584e5129 nt!RtlpHpSegAlloc+0x3d
+rax=0000000008000000 rbx=ffff9500e65c8160 rcx=ffff9a8ece600100
+rdx=0000000000008000 rsi=ffff9a8ece600100 rdi=0000000008000000
+rip=fffff806584e793d rsp=ffff9500e65c7f90 rbp=0000000000000000
+ r8=0000000000000008  r9=0000000000000000 r10=fffff806584e49e0
+r11=0000000000000000 r12=0000000000000000 r13=0000000008000000
+r14=ffff9a8ece601100 r15=ffff9a8ece6012ff
+iopl=0         nv up di ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040086
+nt!RtlpHpSegAlloc+0x3d:
+fffff806`584e793d 448964244c      mov     dword ptr [rsp+4Ch],r12d ss:0018:ffff9500`e65c7fdc=????????
+0: kd> u nt!RtlpHpSegAlloc nt!RtlpHpSegAlloc+0x3d
+nt!RtlpHpSegAlloc:
+fffff806`584e7900 4889542410      mov     qword ptr [rsp+10h],rdx
+fffff806`584e7905 55              push    rbp
+fffff806`584e7906 56              push    rsi
+fffff806`584e7907 57              push    rdi
+fffff806`584e7908 4154            push    r12
+fffff806`584e790a 4155            push    r13
+fffff806`584e790c 4156            push    r14
+fffff806`584e790e 4883ec78        sub     rsp,78h
+fffff806`584e7912 448bac24d0000000 mov     r13d,dword ptr [rsp+0D0h]
+fffff806`584e791a 498da9ff0f0000  lea     rbp,[r9+0FFFh]
+fffff806`584e7921 4981c0ff0f0000  add     r8,0FFFh
+fffff806`584e7928 48c1ed0c        shr     rbp,0Ch
+fffff806`584e792c 49c1e80c        shr     r8,0Ch
+fffff806`584e7930 488bf1          mov     rsi,rcx
+fffff806`584e7933 458be5          mov     r12d,r13d
+fffff806`584e7936 418bfd          mov     edi,r13d
+fffff806`584e7939 4183e404        and     r12d,4
+fffff806`584e793d 448964244c      mov     dword ptr [rsp+4Ch],r12d
+0: kd> ? ffff9500e65c8040 - 8 - 6*8 - 78
+Evaluate expression: -117643879350384 = ffff9500`e65c7f90
+
+Looking at the callstack, there is no one specific frame or a set of frames with excessive stack usage.
+The driver makes a legitimate WDF call and it is an unfortunate sequence of events that leads to this situation.
+However, when an API such as nt!NtOpenKeyEx is called from an already deep stack this kind of issue becomes inevitable.
+So perhaps stack has to be expanded – by nt!_PnpOpenPropertiesKey or nt!_RegRtlOpenKeyTransacted in order to avoid the overflow.

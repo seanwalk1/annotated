@@ -1,0 +1,188 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1405784693
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:
+
+This is Bugcheck DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1):
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If kernel debugger is available get stack backtrace.
+Arguments:
+Arg1: fffff8098c7df08b, memory referenced
+Arg2: 0000000000000002, IRQL
+Arg3: 0000000000000008, value 0 = read operation, 1 = write operation
+Arg4: fffff8098c7df08b, address which referenced memory
+…
+
+The IRQL is elevated to DISPATCH_LEVEL:
+0: kd> !irql
+Debugger saved IRQL for processor 0x0 -- 2 (DISPATCH_LEVEL)
+0: kd> r cr8
+cr8=0000000000000002
+
+But an attempt to execute code  at paged-out address was made, hence the Bugcheck:
+0: kd> r cr2
+cr2=fffff8098c7df08b
+0: kd> !pte fffff8098c7df08b
+                                           VA fffff8098c7df08b
+PXE at FFFFF2F97CBE5F80    PPE at FFFFF2F97CBF0130    PDE at FFFFF2F97E026318    PTE at FFFFF2FC04C63EF8
+contains 0000000001109063  contains 0A000000012C1863  contains 0A000000059C3863  contains DB8764FCDF980400
+pfn 1109      ---DA--KWEV  pfn 12c1      ---DA--KWEV  pfn 59c3      ---DA--KWEV  not valid
+                                                                                  Proto: FFFFDB8764FCDF98
+
+0: kd> u fffff8098c7df08b L1
+IntcAudioBus!HDAudioBusCommon::TriggerControllerReset+0x10b:
+fffff809`8c7df08b 483bdd          cmp     rbx,rbp
+
+The address is located in pageable section:
+0: kd> !dh IntcAudioBus
+
+File Type: EXECUTABLE IMAGE
+…
+
+SECTION HEADER #6
+    PAGE name
+    F5C3 virtual size
+   27000 virtual address
+    F600 size of raw data
+   22E00 file pointer to raw data
+       0 file pointer to relocation table
+       0 file pointer to line numbers
+       0 number of relocations
+       0 number of line numbers
+60000020 flags
+         Code
+         (no align specified)
+         Execute Read
+…
+0: kd> ? (@cr2 - IntcAudioBus)
+Evaluate expression: 192651 = 00000000`0002f08b
+0: kd> ?? (0x000000000002f08b >= 0x27000) && (0x000000000002f08b < (0x27000 + 0xF5C3))
+bool true
+
+The reason the IRQL is elevated is because the caller of the IntcAudioBus!HDAudioBusCommon::TriggerControllerReset():
+0: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffbc81`359b25d8 fffff800`b30070a9 nt!KeBugCheckEx
+01 ffffbc81`359b25e0 fffff800`b300567d nt!KiBugCheckDispatch+0x69
+02 ffffbc81`359b2720 fffff809`8c7df08b nt!KiPageFault+0x23d
+03 (Inline Function) --------`-------- IntcAudioBus!WdfTimerStart+0x22
+04 ffffbc81`359b28b0 fffff809`8c7c4ec2 IntcAudioBus!HDAudioBusCommon::TriggerControllerReset+0x10b
+05 ffffbc81`359b28e0 fffff809`8c7c8a3e IntcAudioBus!HDAudioBusManager::SetLinksDisabled+0xa2
+06 ffffbc81`359b2920 fffff809`8c7e26b9 IntcAudioBus!HDAudioBusSegment::TransitToD3+0x3b2
+07 ffffbc81`359b2990 fffff809`8c7c6de4 IntcAudioBus!HDAudioBusSegment::LinkPowerDown+0x205
+08 ffffbc81`359b29f0 fffff809`89ed1641 IntcAudioBus!HDAudioBusSegment::LinkEvtTimerFunc+0xb8
+09 ffffbc81`359b2a20 fffff809`89ee1aff Wdf01000!FxTimer::TimerHandler+0x89
+0a (Inline Function) --------`-------- Wdf01000!FxSystemWorkItem::WorkItemHandler+0x7d
+0b ffffbc81`359b2a60 fffff800`b2f3c7cb Wdf01000!FxSystemWorkItem::_WorkItemThunk+0x8f
+0c ffffbc81`359b2a90 fffff800`b2eaef78 nt!IopProcessWorkItem+0xfb
+0d ffffbc81`359b2b00 fffff800`b2f497e7 nt!ExpWorkerThread+0xd8
+0e ffffbc81`359b2b90 fffff800`b3001196 nt!PspSystemThreadStartup+0x47
+0f ffffbc81`359b2be0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+The IntcAudioBus!HDAudioBusManager::SetLinksDisabled() has acquired a spinlock:
+0: kd> uf IntcAudioBus!HDAudioBusManager::SetLinksDisabled
+…
+IntcAudioBus!HDAudioBusManager::SetLinksDisabled+0x62:
+fffff809`8c7c4e82 488b05cff50000  mov     rax,qword ptr [IntcAudioBus!WdfFunctions_01015 (fffff809`8c7d4458)]
+fffff809`8c7c4e89 4533f6          xor     r14d,r14d
+fffff809`8c7c4e8c 488b5348        mov     rdx,qword ptr [rbx+48h]
+fffff809`8c7c4e90 418bfe          mov     edi,r14d
+fffff809`8c7c4e93 488b0db6f50000  mov     rcx,qword ptr [IntcAudioBus!WdfDriverGlobals (fffff809`8c7d4450)]
+fffff809`8c7c4e9a ff90e0090000    call    qword ptr [rax+9E0h]
+fffff809`8c7c4ea0 66f7d6          not     si
+fffff809`8c7c4ea3 66217312        and     word ptr [rbx+12h],si
+fffff809`8c7c4ea7 66443b7312      cmp     r14w,word ptr [rbx+12h]
+fffff809`8c7c4eac 7514            jne     IntcAudioBus!HDAudioBusManager::SetLinksDisabled+0xa2 (fffff809`8c7c4ec2)  Branch
+
+IntcAudioBus!HDAudioBusManager::SetLinksDisabled+0x8e:
+fffff809`8c7c4eae 488b4b20        mov     rcx,qword ptr [rbx+20h]
+fffff809`8c7c4eb2 e8b59cffff      call    IntcAudioBus!HDAudioBusCommon::StopCommandsRingBuffer (fffff809`8c7beb6c)
+fffff809`8c7c4eb7 488b4b20        mov     rcx,qword ptr [rbx+20h]
+fffff809`8c7c4ebb 8bf8            mov     edi,eax
+fffff809`8c7c4ebd e8bea00100      call    IntcAudioBus!HDAudioBusCommon::TriggerControllerReset (fffff809`8c7def80)
+
+0: kd> u poi(poi(IntcAudioBus!WdfFunctions_01015)+9E0) L1
+Wdf01000!imp_WdfSpinLockAcquire:
+fffff809`89ed3e00 4057            push    rdi
+
+The spinlock is taken:
+0: kd> .frame /r 5
+05 ffffbc81`359b28e0 fffff809`8c7c8a3e IntcAudioBus!HDAudioBusManager::SetLinksDisabled+0xa2
+rax=0000000000000005 rbx=ffff9b8fe81fa4e0 rcx=ffff9b8fe81fa4d0
+rdx=0000000000000000 rsi=000000000000fffc rdi=0000000000000000
+rip=fffff8098c7c4ec2 rsp=ffffbc81359b28e0 rbp=fffff8098c7d4098
+ r8=0000000000000000  r9=0000000000000000 r10=fffff8098c7d4200
+r11=ffffbc81359b2918 r12=fffff8098c7d4098 r13=0000000000001000
+r14=0000000000000000 r15=0000000000000004
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000282
+IntcAudioBus!HDAudioBusManager::SetLinksDisabled+0xa2:
+fffff809`8c7c4ec2 4c8b058ff50000  mov     r8,qword ptr [IntcAudioBus!WdfFunctions_01015 (fffff809`8c7d4458)] ds:002b:fffff809`8c7d4458=fffff80989f8c138
+0: kd> dt this  m_BusManLock 
+Local var @ rbx Type HDAudioBusManager*
+   +0x048 m_BusManLock : 0x00006470`17e05be8 WDFSPINLOCK__
+0: kd> !wdfkd.wdfhandle 0x00006470`17e05be8
+Treating handle as a KMDF handle!
+
+Dumping WDFHANDLE 0x0000647017e05be8
+=============================
+Handle type is WDFSPINLOCK
+Refcount: 1
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+Parent: !wdfhandle 0x0000647016daa478, type is WDFDEVICE
+Owning device: !wdfdevice 0x0000647016daa478
+
+!wdfobject 0xffff9b8fe81fa410
+0: kd> !wdfobject 0xffff9b8fe81fa410
+
+The type for object 0xffff9b8fe81fa410 is FxSpinLock
+State: FxObjectStateCreated (0x1)
+!wdfhandle 0x0000647017e05be8
+
+dt FxSpinLock 0xffff9b8fe81fa410
+
+Contexts:
+    <no associated contexts or attribute callbacks>
+
+
+ Parent: !wdfobject  0xffff9b8fe9255b80, !wdfhandle 0x0000647016daa478, type is WDFDEVICE
+Owning device: !wdfdevice 0x0000647016daa478
+0: kd> dt FxSpinLock 0xffff9b8fe81fa410
+Wdf01000!FxSpinLock
+   +0x000 __VFN_table : 0xfffff809`89f74598 
+   +0x008 m_Type           : 0x1024
+   +0x00a m_ObjectSize     : 0x80
+   +0x00c m_Refcnt         : 0n1
+   +0x010 m_Globals        : 0xffff9b8f`ea374b90 _FX_DRIVER_GLOBALS
+   +0x018 m_ObjectFlags    : 8
+   +0x018 m_ObjectFlagsByName : FxObject::<unnamed-tag>::<unnamed-type-m_ObjectFlagsByName>
+   +0x01a m_ObjectState    : 1
+   +0x020 m_ChildListHead  : _LIST_ENTRY [ 0xffff9b8f`e81fa430 - 0xffff9b8f`e81fa430 ]
+   +0x030 m_SpinLock       : MxLock
+   +0x040 m_ParentObject   : 0xffff9b8f`e9255b80 FxObject
+   +0x048 m_ChildEntry     : _LIST_ENTRY [ 0xffff9b8f`e4e184b8 - 0xffff9b8f`ea374de8 ]
+   +0x058 m_DisposeSingleEntry : _SINGLE_LIST_ENTRY
+   +0x060 m_DeviceBase     : 0xffff9b8f`e9255b80 FxDeviceBase
+   +0x060 m_Device         : 0xffff9b8f`e9255b80 FxDevice
+   +0x068 m_SpinLock       : MxLock
+   +0x078 m_Irql           : 0 ''
+   +0x079 m_InterruptLock  : 0 ''
+0: kd> dx -id 0,0,ffff9b8fe468b040 -r1 ((Wdf01000!MxLock *)0xffff9b8fe81fa478)
+((Wdf01000!MxLock *)0xffff9b8fe81fa478)                 : 0xffff9b8fe81fa478 [Type: MxLock *]
+    [+0x000] m_DbgFlagIsInitialized : 0x1 [Type: unsigned char]
+    [+0x008] m_Lock           : 0x1 [Type: unsigned __int64]
+
+Accessing paged code at elevated IRQL leads to this crash: https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/bug-check-0xd1--driver-irql-not-less-or-equal
+

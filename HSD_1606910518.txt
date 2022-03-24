@@ -1,0 +1,87 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1606910518
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck A0 - INTERNAL_POWER_ERROR (a0) (see attached memory dump):
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+INTERNAL_POWER_ERROR (a0)
+The power policy manager experienced a fatal error.
+Arguments:
+Arg1: 0000000000000613, A driver has attempted to complete a request when no such
+	outstanding request is pending.
+Arg2: ffffc40e006628a0, POP_FX_DEVICE device
+Arg3: 0000000000000000, Component index
+Arg4: 0000000000000001, Report device powered on
+…
+
+SDBUS.SYS reported device as “Powered On”:
+2: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffc088`0d0f9278 fffff803`054da55c nt!KeBugCheckEx
+01 ffffc088`0d0f9280 fffff803`0544a2b6 nt!PopFxBugCheck+0x1c
+02 ffffc088`0d0f92c0 fffff803`0536e857 nt!PopFxCompleteDevicePowerRequired+0x14ffae
+03 ffffc088`0d0f92f0 fffff803`0db944d7 nt!PoFxReportDevicePoweredOn+0x197
+04 ffffc088`0d0f9370 fffff803`0db94c56 sdbus!SdbusFdoForwardPowerIrp+0x37
+05 ffffc088`0d0f93a0 fffff803`0db9163e sdbus!SdbusFdoSetDevicePowerState+0x19e
+06 ffffc088`0d0f9410 fffff803`0db912dc sdbus!SdbusFdoPowerDispatch+0x29e
+07 ffffc088`0d0f9460 fffff803`0536f3a6 sdbus!SdbusDispatch+0x6c
+08 ffffc088`0d0f94a0 fffff803`05252035 nt!PopIrpWorker+0x226
+09 ffffc088`0d0f9550 fffff803`053bd58c nt!PspSystemThreadStartup+0x55
+0a ffffc088`0d0f95a0 00000000`00000000 nt!KiStartSystemThread+0x1c
+
+But Power Manager did not expect it:
+2: kd> dt nt!_POP_FX_DEVICE ffffc40e006628a0 PowerReqCall
+   +0x024 PowerReqCall : 0n-1
+
+This is because device has not received “Device Power Required” or S0 IRP:
+2: kd> dt nt!_POP_FX_DEVICE ffffc40e006628a0 DevNode
+   +0x030 DevNode : 0xffffc40d`f4c419a0 _DEVICE_NODE
+2: kd> dt _DEVICE_NODE 0xffffc40d`f4c419a0 FxActivationCount FxSleepCount
+nt!_DEVICE_NODE
+   +0x078 FxActivationCount : 0n2
+   +0x07c FxSleepCount      : 0n0
+
+The device has received D0 IRP while being in D0 state:
+2: kd> !fxdevice ffffc40e006628a0
+!fxdevice 0xffffc40e006628a0
+	DevNode: 0xffffc40df4c419a0
+	UniqueId: "\_SB.PCI0.PEMC"
+	InstancePath: "PCI\VEN_8086&DEV_34C4&SUBSYS_72708086&REV_30\3&11583659&0&D0"
+	Device Power State: PowerDeviceD0
+…
+	 43  00000000279fdca5     6     4  1bc4  Power IRP type D0 dispatched to device stack
+	 44  00000000279fdca5     6     4  1bc4  Driver device power required callback pending
+	 45  0000000027abe393     4     0     0  Power IRP completed with status 0
+	 46  0000000027abe393     4     0     0  Device power state changed to D0
+	 47  0000000027abe393     4     0     0  Device powered
+	 48  0000000027abe393     4     0     0  Driver device power required callback completed
+	 49  0000000027abe70d     3     4  1bc4  Component 0 changed to idle state F0
+	 50  0000000028879202     7     4  10fc  Power IRP requested with status 0
+	 51  0000000028879202     7     4  10fc  Power IRP type D0 dispatched to device stack
+
+But system is in the middle of S3 Sleep transition, so no S0 has been dispatched yet:
+2: kd> !poaction
+PopAction: fffff8030561d8e0
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Sleeping3
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Sleeping3
+  Hiber Context..: 0000000000000000
+…
+
+Requesting D0 IRP while being in D0 state is completely legal, however comments in SDBUS.SYS POWER.C suggest that PoFxReportDevicePoweredOn should be called upon completion of *any* D0 IRP.
+This is incorrect: PoFxReportDevicePoweredOn must be called to notify OS PM that device has reached “stable D0”, meaning it will not leave D0 state anymore until allowed again.
+
+PEP-integrated devices can change device D-state only when explicitly allowed to do so. This permission comes in one of 2 forms: “Device Power Not Required” callback or Sx IRP.
+Consequently, upon receiving “Device Power Required” callback or S0 IRP such permission is revoked and driver must place device in the D0 state and report back to OS PM when “Stable D0” has been reached by calling PoFxReportDevicePoweredOn API. The subtle difficulty lies in the fact that upon receiving “Device Power Required” callback driver could be in the middle of D0 transition and about to complete D0 IRP but an outstanding Dx IRP might have been already requested. As such, upon completion of a D0 IRP driver cannot yet report “Stable D0” as there is an outstanding Dx IRP which cannot be cancelled or failed (since Set Power State IRPS cannot be cancelled or failed as OS PM ignores completion status). This means that device will have to leave D0 state when Dx IRP will be dispatched to the device stack. As a result driver must then request another D0 IRP and wait for completion of the Dx and then D0 and only then call PoFxReportDevicePoweredOn.
+
+The API description (https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/wdm/nf-wdm-pofxreportdevicepoweredon) contains misleading statement “The driver must call PoFxReportDevicePoweredOn regardless of whether no D0 IRP is required”. What it means is that PoFxReportDevicePoweredOn must be called when permission to change device power states is revoked regardless if driver had to request D0 IRP or not. But it does not mean that it must be called for every D0 IRP.

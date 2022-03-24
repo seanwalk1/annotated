@@ -1,0 +1,59 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1605286254
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck AB - SESSION_HAS_VALID_POOL_ON_EXIT (ab) – see attached memory dump:
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SESSION_HAS_VALID_POOL_ON_EXIT (ab)
+Caused by a session driver not freeing its pool allocations prior to a
+session unload.  This indicates a bug in win32k.sys, atmfd.dll,
+rdpdd.dll or a video driver.
+Arguments:
+Arg1: 000000000000000c, session ID
+Arg2: 0000000000000020, number of paged pool bytes that are leaking
+Arg3: 0000000000000000, number of nonpaged pool bytes that are leaking
+Arg4: 0000000000000001, total number of paged and nonpaged allocations that are leaking.
+	nonpaged allocations are in the upper half of this word,
+	paged allocations are in the lower half of this word.
+…
+Use !poolused 8 to dump allocation info for leaked session pooltags.
+…
+
+So this is a session memory leak and we can see leaked allocations and their tags:
+0: kd> !poolused 8 
+.
+ Sorting by Session Tag
+
+               NonPaged                  Paged
+ Tag     Allocs         Used     Allocs         Used
+
+ Ussx         0            0          1           32	UNKNOWN pooltag 'Ussx', please update pooltag.txt
+
+TOTAL         0            0          1           32
+
+Searching for the tag in win32kfull.sys, we can find the location:
+0: kd> lmvi mwin32kfull
+Browse full module list
+start             end                 module name
+ffffd79e`be600000 ffffd79e`be992000   win32kfull   (pdb symbols)          win32kfull.sys
+…
+0: kd> s ffffd79e`be600000 ffffd79e`be992000 'U' 's' 's' 'x'
+ffffd79e`be6f0466  55 73 73 78 b9 08 00 00-00 ff 15 ab e7 26 00 48  Ussx.........&.H
+
+Disassembly shows the leaked allocation was made in win32kfull!SetWindowExtendedBoundsMargin:
+0: kd> u ffffd79e`be6f0466-1 L3
+win32kfull!SetWindowExtendedBoundsMargin+0xa5:
+ffffd79e`be6f0465 ba55737378      mov     edx,78737355h
+ffffd79e`be6f046a b908000000      mov     ecx,8
+ffffd79e`be6f046f ff15abe72600    call    qword ptr [win32kfull!_imp_Win32AllocPool (ffffd79e`be95ec20)]
+0: kd> .formats 78737355h
+…
+  Chars:   ....xssU
+…

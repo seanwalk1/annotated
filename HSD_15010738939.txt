@@ -1,0 +1,300 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/15010738939
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 9F - DRIVER_POWER_STATE_FAILURE (9f) (see attached memory dump):
+10: kd> !analyze -show
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an IRP for too long a time
+Arg2: ffffcb819c111060, Physical Device Object of the stack
+Arg3: ffff838d98abf710, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffffcb81bdc1a890, The blocked IRP
+
+The D0 power IRP for GFX device timed out:
+10: kd> !irp ffffcb81bdc1a890
+Irp is active with 5 stacks 4 is current (= 0xffffcb81bdc1aa38)
+ No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  Pending has been returned
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000    
+
+			Args: 00000000 00000000 00000000 00000000
+ [IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffcb819c111060 00000000 fffff804325024f0-ffff838d98a178d8    
+	       \Driver\pci	dxgkrnl!DpiFdoPowerCompletionRoutine
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffcb81b27be030 00000000 fffff8042d39cae0-ffffcb81bfe076a0 Success Error Cancel pending
+	       \Driver\igfxnd	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000001 00000000
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffffcb81bfe076a0    
+
+			Args: 00000000 00000000 00000000 00000000
+10: kd> !devstack ffffcb81b27be030
+  !DevObj           !DrvObj            !DevExt           ObjectName
+> ffffcb81b27be030  \Driver\igfxnd     ffffcb81b27be180  
+  ffffcb819c111060  \Driver\pci        ffffcb819c1111b0  NTPNP_PCI0032
+!DevNode ffffcb8197e9ac40 :
+  DeviceInst is "PCI\VEN_8086&DEV_56A0&SUBSYS_49058086&REV_08\6&17c17d80&0&00080008"
+  ServiceName is "igfxnd"
+
+The OS PM Power worker thread working on the timed-out IRP is blocked:
+10: kd> !poaction
+PopAction: fffff8042dc22720
+  State..........: 0 - Idle
+  Updates........: 0 
+  Action.........: None
+  Lightest State.: Unspecified
+  Flags..........: 10000003 QueryApps|UIAllowed
+  Irp minor......: ??
+  System State...: Unspecified
+  Hiber Context..: 0000000000000000
+
+Allocated power irps (PopIrpList - fffff8042dc22f00)
+…
+  IRP: ffffcb81bdc1a890 (set/D0,), PDO: ffffcb819c111060, CURRENT: ffffcb81b27be030
+…
+
+Irp worker threads (PopIrpThreadList - fffff8042dc1fa10)
+  THREAD: ffffcb81928ea040 (static), IRP: ffffcb81bdc1a890, DEVICE: ffffcb81b27be030
+  THREAD: ffffcb819290a340 (static)
+…
+
+10: kd> .thread /p /r  ffffcb81928ea040
+Implicit thread is now ffffcb81`928ea040
+…
+
+10: kd> !thread ffffcb81928ea040
+THREAD ffffcb81928ea040  Cid 0004.0010  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrPushLock) KernelMode Non-Alertable
+    ffff838d98a17690  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffde07f3231c40
+Owning Process            ffffcb8192946040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      488393         Ticks: 7679 (0:00:01:59.984)
+Context Switch Count      2527           IdealProcessor: 8             
+UserTime                  00:00:00.000
+KernelTime                00:00:02.093
+Win32 Start Address nt!PopIrpWorker (0xfffff8042d3a7120)
+Stack Init ffff838d98a17bb0 Current ffff838d98a17240
+Base ffff838d98a18000 Limit ffff838d98a11000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr               : Args to Child                                                           : Call Site
+ffff838d`98a17280 fffff804`2d26371e     : ffff9681`00000000 00000000`00000000 00000000`00000000 ffffcb81`928ea040 : nt!KiSwapContext+0x76
+ffff838d`98a173c0 fffff804`2d26578a     : 00000011`cbfe24e1 00000000`00000000 ffff838d`0070009c ffffcb81`928ea040 : nt!KiSwapThread+0x2ce
+ffff838d`98a174d0 fffff804`2d25f9a4     : ffffcb81`00000000 fffff804`30828dd0 ffff838d`00000000 00000000`00000000 : nt!KiCommitThreadWait+0x14a
+ffff838d`98a17570 fffff804`2d2ecd73     : ffff838d`98a17690 005c0072`0000001c 00000069`00630000 fffff804`2d39b800 : nt!KeWaitForSingleObject+0x234
+ffff838d`98a17660 fffff804`2d25e444     : 00000000`00000000 fffff804`00000000 ffffcb81`928ea6e0 fffff804`2d39b743 : nt!ExfAcquirePushLockSharedEx+0x1c3
+ffff838d`98a17710 fffff804`324eaa6d     : ffff838d`98a17841 ffffcb81`00000000 ffffcb81`bdc1aa38 00000000`00000000 : nt!ExAcquirePushLockSharedEx+0xe4
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGPUSHLOCK_NORMAL_IMPL::AcquireSharedImpl+0x15 (Inline Function @ fffff804`324eaa6d)
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGPUSHLOCKFAST::AcquireShared+0x21 (Inline Function @ fffff804`324eaa6d)
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGADAPTER::AcquireStopResetLockShared+0x25 (Inline Function @ fffff804`324eaa6d)
+ffff838d`98a17760 fffff804`32501dd5     : ffffcb81`bfcc7000 00000000`00000001 ffffcb81`9c111060 00000000`00000000 : dxgkrnl!DXGADAPTERSTOPRESETLOCKSHARED::Acquire+0x45
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGADAPTERSTOPRESETLOCKSHARED::{ctor}+0x14 (Inline Function @ fffff804`32501dd5)
+ffff838d`98a17790 fffff804`326c51f8     : 00000000`00000000 00000000`00000000 00000000`00000000 fffff804`00000000 : dxgkrnl!DxgkReportAdapterPowerRapidHpdTrigerEvent+0x1d
+ffff838d`98a177e0 fffff804`326c5eba     : ffffcb81`bdc1a890 00000000`00000000 00000000`00000001 00000000`00000000 : dxgkrnl!DpiFdoSetAdapterPowerState+0x8c
+ffff838d`98a178a0 fffff804`326c5551     : ffffcb81`b27be030 00000000`00000000 ffff9681`1ed50000 ffffcb81`bdc1a800 : dxgkrnl!DpiFdoHandleDevicePower+0x2ea
+ffff838d`98a17940 fffff804`326c71d1     : ffffcb81`bdc1a890 ffffcb81`b27be180 ffffcb81`b27be030 00000000`00000000 : dxgkrnl!DpiFdoDispatchPower+0x21
+ffff838d`98a17970 fffff804`2d3a7327     : ffffcb81`00000000 ffffcb81`928ea040 ffffcb81`928ea040 ffffcb81`00000002 : dxgkrnl!DpiDispatchPower+0xe1
+ffff838d`98a17a90 fffff804`2d35a2b5     : 00000000`00000000 fffff804`2d3a7120 00000000`00000000 00000000`000001e6 : nt!PopIrpWorker+0x207
+ffff838d`98a17b30 fffff804`2d415104     : ffff9681`1ed40180 ffffcb81`928ea040 fffff804`2d35a260 00000000`00000000 : nt!PspSystemThreadStartup+0x55
+ffff838d`98a17b80 00000000`00000000     : ffff838d`98a18000 ffff838d`98a11000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x34
+
+The thread is waiting for the adapter Stop Reset lock to acquire SHARED:
+10: kd> .frame /r 6
+06 (Inline Function) --------`--------     dxgkrnl!DXGPUSHLOCK_NORMAL_IMPL::AcquireSharedImpl+0x15
+rax=0000000000000000 rbx=ffffcb81bfcc7000 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000000 rdi=ffff838d98a177b0
+rip=fffff804324eaa6d rsp=ffff838d98a17760 rbp=ffff838d98a17841
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000001 r13=ffffcb81b27be030
+r14=ffffcb81b27be030 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dxgkrnl!DXGPUSHLOCK_NORMAL_IMPL::AcquireSharedImpl+0x15:
+fffff804`324eaa6d c6471001        mov     byte ptr [rdi+10h],1 ds:ffff838d`98a177c0=00
+10: kd> ub
+dxgkrnl!ReferenceCountWithHistoryTracking::AcquireCookie [inlined in dxgkrnl!DXGADAPTERSTOPRESETLOCKSHARED::Acquire+0x1c]:
+fffff804`324eaa44 488309ff        or      qword ptr [rcx],0FFFFFFFFFFFFFFFFh
+fffff804`324eaa48 488b5908        mov     rbx,qword ptr [rcx+8]
+fffff804`324eaa4c 4c8b157d461400  mov     r10,qword ptr [dxgkrnl!_imp_KeEnterCriticalRegion (fffff804`3262f0d0)]
+fffff804`324eaa53 e8d856dffa      call    nt!KeEnterCriticalRegion (fffff804`2d2e0130)
+fffff804`324eaa58 33d2            xor     edx,edx
+fffff804`324eaa5a 488d8b88000000  lea     rcx,[rbx+88h]
+fffff804`324eaa61 4c8b15d0461400  mov     r10,qword ptr [dxgkrnl!_imp_ExAcquirePushLockSharedEx (fffff804`3262f138)]
+fffff804`324eaa68 e8f338d7fa      call    nt!ExAcquirePushLockSharedEx (fffff804`2d25e360)
+10: kd> .frame /r 9
+09 ffff838d`98a17760 fffff804`32501dd5     dxgkrnl!DXGADAPTERSTOPRESETLOCKSHARED::Acquire+0x45
+rax=0000000000000000 rbx=ffffcb81bfcc7000 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000000 rdi=ffff838d98a177b0
+rip=fffff804324eaa6d rsp=ffff838d98a17760 rbp=ffff838d98a17841
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000001 r13=ffffcb81b27be030
+r14=ffffcb81b27be030 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dxgkrnl!DXGADAPTERSTOPRESETLOCKSHARED::Acquire+0x45:
+fffff804`324eaa6d c6471001        mov     byte ptr [rdi+10h],1 ds:ffff838d`98a177c0=00
+10: kd> dv /V
+@rdi              @rdi                         this = 0xffff838d`98a177b0
+10: kd> dt this
+Local var @ rdi Type DXGADAPTERSTOPRESETLOCKSHARED*
+   +0x000 m_ReferenceCookie : 0xffffffff`ffffffff
+   +0x008 m_pAdapter       : 0xffffcb81`bfcc7000 DXGADAPTER
+   +0x010 m_bAcquired      : 0 ''
+10: kd>  dt  0xffffcb81`bfcc7000 DXGADAPTER  m_AdapterStopResetLock.
+dxgkrnl!DXGADAPTER
+   +0x088 m_AdapterStopResetLock  : 
+      +0x000 m_PushLock              : _EX_PUSH_LOCK
+      +0x008 m_pOwnerThread          : (null) 
+      +0x010 m_SharedOwnerCount      : 0n0
+
+The Stop Reset lock cannot be acquired SHARED because there is EXCLUSIVE waiter for it ahead:
+10: kd> !thread ffffcb81c3957040
+THREAD ffffcb81c3957040  Cid 0004.19b4  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrPushLock) KernelMode Non-Alertable
+    ffff838d9ce87760  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffde07f3231c40
+Owning Process            ffffcb8192946040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      487924         Ticks: 8148 (0:00:02:07.312)
+Context Switch Count      22527          IdealProcessor: 2             
+UserTime                  00:00:00.000
+KernelTime                00:00:01.734
+Win32 Start Address nt!ExpWorkerThread (0xfffff8042d28e2e0)
+Stack Init ffff838d9ce87bb0 Current ffff838d9ce87310
+Base ffff838d9ce88000 Limit ffff838d9ce81000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr               : Args to Child                                                           : Call Site
+ffff838d`9ce87350 fffff804`2d26371e     : ffff9681`00000000 00000000`00000000 00000000`00000000 ffffcb81`c3957040 : nt!KiSwapContext+0x76
+ffff838d`9ce87490 fffff804`2d26578a     : ffffcb81`c3957040 00000000`00000000 ffffde07`f47e0000 ffffcb81`c3957040 : nt!KiSwapThread+0x2ce
+ffff838d`9ce875a0 fffff804`2d25f9a4     : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiCommitThreadWait+0x14a
+ffff838d`9ce87640 fffff804`2d2ecb20     : ffff838d`9ce87760 00000000`0000001c 00000000`00000000 00000001`00000000 : nt!KeWaitForSingleObject+0x234
+ffff838d`9ce87730 fffff804`2d25e12f     : 00000000`00000000 ffffcb81`c3957740 ffff9681`1ed40100 fffff804`2d26578a : nt!ExfAcquirePushLockExclusiveEx+0x1a0
+ffff838d`9ce877e0 fffff804`327983b4     : 00000000`00000040 00000000`00000001 ffffcb81`bfcc7000 00000000`00000000 : nt!ExAcquirePushLockExclusiveEx+0xef
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGPUSHLOCK_NORMAL_IMPL::AcquireExclusiveImpl+0x11 (Inline Function @ fffff804`327983b4)
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGPUSHLOCKFAST::AcquireExclusive+0x1d (Inline Function @ fffff804`327983b4)
+ffff838d`9ce87820 fffff804`327e1465     : 00000000`2d340110 ffffcb81`c3957040 00000000`00000000 00000000`00000002 : dxgkrnl!DXGADAPTER::Reset+0x1d0
+ffff838d`9ce878d0 fffff804`327e15c2     : 00000000`00000000 00000000`00000000 00000000`00000300 fffff804`2dd33680 : dxgkrnl!TdrResetFromTimeout+0x15
+ffff838d`9ce87900 fffff804`2d28e42f     : ffffcb81`c3957040 ffffcb81`928c2050 ffffcb81`00000000 ffffcb81`00000000 : dxgkrnl!TdrResetFromTimeoutWorkItem+0x22
+ffff838d`9ce87940 fffff804`2d35a2b5     : ffffcb81`c3957040 ffff9681`1ede7000 ffffcb81`c3957040 000002b4`e75d4ae0 : nt!ExpWorkerThread+0x14f
+ffff838d`9ce87b30 fffff804`2d415104     : ffff9681`1edd7180 ffffcb81`c3957040 fffff804`2d35a260 000002b4`e758be70 : nt!PspSystemThreadStartup+0x55
+ffff838d`9ce87b80 00000000`00000000     : ffff838d`9ce88000 ffff838d`9ce81000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x34
+
+The Stop Reset cannot be acquired EXCLUSIVELY because there is SHARED owner already:
+10: kd> !thread ffffcb81c2d9e080
+THREAD ffffcb81c2d9e080  Cid 1de4.224c  Teb: 00000000003a8000 Win32Thread: ffffcb81c27c2020 WAIT: (WrResource) KernelMode Non-Alertable
+    ffff838d9d26f1d0  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffde07f9cc8320
+Owning Process            ffffcb81c27540c0       Image:         explorer.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      495898         Ticks: 174 (0:00:00:02.718)
+Context Switch Count      4402           IdealProcessor: 16             
+UserTime                  00:00:00.109
+KernelTime                00:00:00.125
+Win32 Start Address 0x00007ff90950ca30
+Stack Init ffff838d9d26fbb0 Current ffff838d9d26ecd0
+Base ffff838d9d270000 Limit ffff838d9d269000 Call 0000000000000000
+Priority 15 BasePriority 15 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr               : Args to Child                                                           : Call Site
+ffff838d`9d26ed10 fffff804`2d26371e     : ffff9681`00000000 00000000`00000000 00000000`00000000 ffffcb81`c2d9e080 : nt!KiSwapContext+0x76
+ffff838d`9d26ee50 fffff804`2d26578a     : ffffcb81`c2d9e080 fffff804`2d2db2c9 ffff838d`9d26ef90 ffffcb81`c2d9e080 : nt!KiSwapThread+0x2ce
+ffff838d`9d26ef60 fffff804`2d25f9a4     : ffffcb81`00000000 ffffcb81`b268f040 00000000`00000033 0000000a`85de53c8 : nt!KiCommitThreadWait+0x14a
+ffff838d`9d26f000 fffff804`2d3351e0     : ffff838d`9d26f1d0 00000000`0000001b ffffcb81`c2d9e000 00000000`00000000 : nt!KeWaitForSingleObject+0x234
+ffff838d`9d26f0f0 fffff804`2d261c64     : ffffcb81`bdda8c10 ffff838d`9d26f1b8 00000000`00010244 fffff804`2d3628f0 : nt!ExpWaitForResource+0x60
+ffff838d`9d26f170 fffff804`2d2614c9     : ffffcb81`bdda8c10 ffffcb81`c2754000 00000000`00000001 ffffcb81`bfcc7000 : nt!ExpAcquireResourceSharedLite+0x4e4
+ffff838d`9d26f220 fffff804`32654f1c     : ffffcb81`bfcc7000 ffffcb81`bfcc7000 ffffcb81`bfcc7000 ffffcb81`c2754000 : nt!ExAcquireResourceSharedLite+0x39
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGADAPTER::AcquireCoreResourceSharedWithTracking+0xf2 (Inline Function @ fffff804`32654f1c)
+ffff838d`9d26f260 fffff804`324ecccc     : 00000000`00000000 ffff838d`9d26f738 ffff838d`9d26f700 00000000`00000000 : dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x20c
+ffff838d`9d26f470 fffff804`324ecc69     : ffff838d`9d26f730 ffffde07`fad1b010 00000000`00000000 ffff838d`9d26f730 : dxgkrnl!COREACCESS::AcquireShared+0x54
+ffff838d`9d26f4b0 fffff804`326801eb     : ffffcb81`bd703cc0 00000000`00000000 00000000`00040000 00000000`00000000 : dxgkrnl!COREDEVICEACCESS::AcquireSharedUncheck+0x21
+ffff838d`9d26f4e0 fffff804`3267faea     : ffffffff`ffb3b4c0 ffffde07`fad1b010 ffff838d`9d26f730 ffffde07`fad1b101 : dxgkrnl!DXGDEVICE::FlushDeferredDestruction+0x103
+ffff838d`9d26f570 fffff804`3267ffd6     : ffffde07`fad1b010 ffff838d`9d26f730 ffffde07`fad1b101 ffff838d`9d26f730 : dxgkrnl!DXGDEVICE::DestroyDevice+0x2a
+ffff838d`9d26f5f0 fffff804`3267fa5b     : ffffde07`fad1b010 ffffde07`f9bb8750 ffffcb81`c27c2340 ffff838d`9d26f738 : dxgkrnl!DXGDEVICE::DestroyAllDeviceState+0x146
+ffff838d`9d26f660 fffff804`3267f14f     : ffffde07`fad1b010 ffffcb81`bddd28a0 ffffde07`fad1b010 00000000`0000000c : dxgkrnl!ADAPTER_RENDER::DestroyDevice+0xf3
+ffff838d`9d26f6e0 fffff804`3267efee     : ffffde07`fad1b010 ffffcb81`00000001 ffffde07`fad1b010 00000000`000001b6 : dxgkrnl!ADAPTER_RENDER::DestroyDeviceNoLocksInternal+0x83
+ffff838d`9d26f7f0 fffff804`3267eefd     : ffffde07`fad1b010 ffff838d`9d26faa0 00000000`000001b6 fffff804`32668833 : dxgkrnl!ADAPTER_RENDER::DestroyDeviceNoLocks+0x92
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGDEVICE::ReleaseReferenceNoLocks+0x1c (Inline Function @ fffff804`3267eefd)
+(Inline Function) --------`--------     : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!ENSURE_DEVICE_DEREFERENCE_NOLOCKS::{dtor}+0x1c (Inline Function @ fffff804`3267eefd)
+ffff838d`9d26f820 fffff804`3267e8ab     : ffffcb81`c2d9e080 ffffcb81`c2d9e080 00000000`2d39c080 00000000`00000020 : dxgkrnl!DxgkDestroyDeviceImpl+0x34d
+ffff838d`9d26f9f0 fffff804`2d423575     : ffffcb81`c2d9e080 ffffcb81`c2a86080 00000000`00000000 00000000`00000000 : dxgkrnl!DxgkDestroyDevice+0xb
+ffff838d`9d26fa20 00007ff9`35154d94     : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x25 (TrapFrame @ ffff838d`9d26fa20)
+00000000`2d39b3c8 00000000`00000000     : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ff9`35154d94
+
+Here the Stop Reset lock was acquired SHARED:
+10: kd> u fffff804`3267f104 L1
+dxgkrnl!DXGADAPTERSTOPRESETLOCKSHARED::{ctor}+0x19 [inlined in dxgkrnl!ADAPTER_RENDER::DestroyDeviceNoLocksInternal+0x38]:
+fffff804`3267f104 e81fb9e6ff      call    dxgkrnl!DXGADAPTERSTOPRESETLOCKSHARED::Acquire (fffff804`324eaa28)
+
+The SHARED owner is blocked waiting for the Core lock:
+10: kd> .thread /p /r ffffcb81c2d9e080
+Implicit thread is now ffffcb81`c2d9e080
+…
+10: kd> .frame /r 7
+07 (Inline Function) --------`--------     dxgkrnl!DXGADAPTER::AcquireCoreResourceSharedWithTracking+0xf2
+rax=0000000000000000 rbx=ffffcb81bfcc7000 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffffcb81c2754000 rdi=ffffcb81b2402000
+rip=fffff80432654f1c rsp=ffff838d9d26f260 rbp=ffffcb819c111060
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=00000000ffffffff r13=0000000000040002
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dxgkrnl!DXGADAPTER::AcquireCoreResourceSharedWithTracking+0xf2 [inlined in dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x20c]:
+fffff804`32654f1c 488d4c2460      lea     rcx,[rsp+60h]
+10: kd> ub
+dxgkrnl!DXGADAPTER::AcquireCoreResourceSharedWithTracking+0xcc [inlined in dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x1e6]:
+fffff804`32654ef6 440fb6c7        movzx   r8d,dil
+fffff804`32654efa 488d4c2460      lea     rcx,[rsp+60h]
+fffff804`32654eff 488bd3          mov     rdx,rbx
+fffff804`32654f02 e8412f0600      call    dxgkrnl!DXGDEADLOCK_TRACKER::DXGDEADLOCK_TRACKER (fffff804`326b7e48)
+fffff804`32654f07 488b8ba8000000  mov     rcx,qword ptr [rbx+0A8h]
+fffff804`32654f0e b201            mov     dl,1
+fffff804`32654f10 4c8b1549a2fdff  mov     r10,qword ptr [dxgkrnl!_imp_ExAcquireResourceSharedLite (fffff804`3262f160)]
+fffff804`32654f17 e874c5c0fa      call    nt!ExAcquireResourceSharedLite (fffff804`2d261490)
+10: kd> !locks poi(ffffcb81bfcc7000+a8)
+
+Resource @ 0xffffcb81bdda8c10    Exclusively owned
+    Contention Count = 237
+    NumberOfSharedWaiters = 2
+     Threads: ffffcb81b268f040-01<*> ffffcb81c2d9e080-01    ffffcb81c3bc2080-01    
+1 total locks
+10: kd> dt  0xffffcb81`bfcc7000 DXGADAPTER  m_pCoreResource
+dxgkrnl!DXGADAPTER
+   +0x0a8 m_pCoreResource : 0xffffcb81`bdda8c10 _ERESOURCE
+
+The Core lock is owned by the Power Arbiter that is waiting for D0:
+10: kd> !thread ffffcb81b268f040
+THREAD ffffcb81b268f040  Cid 0004.038c  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffcb81b27bf0e0  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffde07f3231c40
+Owning Process            ffffcb8192946040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      488324         Ticks: 7748 (0:00:02:01.062)
+Context Switch Count      239            IdealProcessor: 8             
+UserTime                  00:00:00.000
+KernelTime                00:00:06.031
+Win32 Start Address dxgkrnl!DpiPowerArbiterThread (0xfffff804326ede20)
+Stack Init ffff838d99c3fbb0 Current ffff838d99c3f6b0
+Base ffff838d99c40000 Limit ffff838d99c39000 Call 0000000000000000
+Priority 15 BasePriority 8 PriorityDecrement 112 IoPriority 2 PagePriority 5
+Child-SP          RetAddr               : Args to Child                                                           : Call Site
+ffff838d`99c3f6f0 fffff804`2d26371e     : ffff9681`00000000 00000000`00000000 00000000`00000000 ffffcb81`b268f040 : nt!KiSwapContext+0x76
+ffff838d`99c3f830 fffff804`2d26578a     : ffff1c9b`1300e556 ffffcb81`c0a61118 00000000`00000000 ffffcb81`b268f040 : nt!KiSwapThread+0x2ce
+ffff838d`99c3f940 fffff804`2d25f9a4     : ffffcb81`00000000 ffff838d`9c822300 ffffcb81`00000000 00000000`00000000 : nt!KiCommitThreadWait+0x14a
+ffff838d`99c3f9e0 fffff804`326ede87     : ffffcb81`b27bf0e0 00000000`00000000 00000000`00000000 ffffcb81`c0a61100 : nt!KeWaitForSingleObject+0x234
+ffff838d`99c3fad0 fffff804`2d35a2b5     : ffffcb81`b268f040 00000000`00000080 fffff804`326ede20 006fe47f`b19bbdff : dxgkrnl!DpiPowerArbiterThread+0x67
+ffff838d`99c3fb30 fffff804`2d415104     : fffff804`2a06d180 ffffcb81`b268f040 fffff804`2d35a260 7a695365`75657551 : nt!PspSystemThreadStartup+0x55
+ffff838d`99c3fb80 00000000`00000000     : ffff838d`99c40000 ffff838d`99c39000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x34
+
+So the D0 is blocked by the Stop Reset lock which is blocked by the Core resource which is blocked by the Power Arbiter which is waiting for D0.
+So this appears to be a deadlock in Direct X Kernel.

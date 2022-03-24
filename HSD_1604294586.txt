@@ -1,0 +1,195 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604294586/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+The reported problem is a hang (see attached dump). System is idle:
+0: kd> !running
+
+System Processors:  (000000000000000f)
+  Idle Processors:  (000000000000000f)
+
+All processors idle.
+
+Looking at the locks we can see high contention:
+0: kd> !locks
+**** DUMP OF ALL RESOURCE OBJECTS ****
+KD: Scanning for held locks.............................................................
+
+Resource @ 0xffff8d0bbe1b8f90    Shared 1 owning threads
+    Contention Count = 31
+    NumberOfSharedWaiters = 3
+    NumberOfExclusiveWaiters = 1
+     Threads: ffff8d0bbcfee080-01<*> ffff8d0bbf531700-01    ffff8d0bbe9e2380-01    ffff8d0bc008c700-01    
+     Threads Waiting On Exclusive Access:
+              ffff8d0bbf45e700       
+
+KD: Scanning for held locks..
+
+Resource @ 0xffff8d0bbd93d590    Exclusively owned
+    Contention Count = 64572
+    NumberOfSharedWaiters = 2
+    NumberOfExclusiveWaiters = 56
+     Threads: ffff8d0bbf45e700-01<*> ffff8d0bbcfee080-01    ffff8d0bbfdc84c0-01    
+     Threads Waiting On Exclusive Access:
+              ffff8d0bbe8ed080       ffff8d0bbec55580       ffff8d0bc03cd080       ffff8d0bbfd05640       
+              ffff8d0bbfe6c080       ffff8d0bbe90f2c0       ffff8d0bc0314080       ffff8d0bbff2c080       
+              ffff8d0bbfd48080       ffff8d0bbff76280       ffff8d0bbfb20080       ffff8d0bbfb5c080       
+              ffff8d0bbff19040       ffff8d0bbf2e4080       ffff8d0bc03df080       ffff8d0bc033d700       
+              ffff8d0bc03cc080       ffff8d0bbff28080       ffff8d0bc026f080       ffff8d0bbec3c4c0       
+              ffff8d0bbe25b700       ffff8d0bbe8a8080       ffff8d0bc0093700       ffff8d0bbcffd700       
+              ffff8d0bbf317080       ffff8d0bc0282700       ffff8d0bc0243700       ffff8d0bbf4e6400       
+              ffff8d0bc023a700       ffff8d0bc036c080       ffff8d0bbf194580       ffff8d0bbf76d080       
+              ffff8d0bbfd8a700       ffff8d0bc02d6080       ffff8d0bbe40c700       ffff8d0bc0281040       
+              ffff8d0bbff73700       ffff8d0bbf38b400       ffff8d0bbfe14080       ffff8d0bbec10080       
+              ffff8d0bbe914080       ffff8d0bbff18080       ffff8d0bbd376080       ffff8d0bbec8e080       
+              ffff8d0bbf9d9700       ffff8d0bbfb00700       ffff8d0bbe8ce680       ffff8d0bbf380080       
+              ffff8d0bc0273080       ffff8d0bbf3a9080       ffff8d0bbe8c3080       ffff8d0bc0140700       
+              ffff8d0bbe89e080       ffff8d0bbe915080       ffff8d0bbec3d4c0       
+
+KD: Scanning for held locks..
+
+Resource @ 0xffff8d0bbebb8aa0    Shared 1 owning threads
+     Threads: ffff8d0bbf1d7400-01<*> 
+KD: Scanning for held locks..............................................................................................................................................................................................................................................................................................
+
+Resource @ 0xffff8d0bbbf74f90    Exclusively owned
+     Threads: ffff8d0bbf45e700-01<*> 
+KD: Scanning for held locks.....
+11320 total locks, 4 locks currently held
+
+Switching to the exclusive lock owner, it is waiting for exclusive access to another lock:
+0: kd> .thread /p /r ffff8d0bbf45e700
+Implicit thread is now ffff8d0b`bf45e700
+Implicit process is now ffff8d0b`bd337600
+Loading User Symbols
+.........................................................
+*** ERROR: Symbol file could not be found.  Defaulted to export symbols for ntdll.dll - 
+0: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffc500`ecfa22c0 fffff802`33c8d58a nt!KiSwapContext+0x76
+01 ffffc500`ecfa2400 fffff802`33c8cf61 nt!KiSwapThread+0x16a
+02 ffffc500`ecfa24b0 fffff802`33c8b38b nt!KiCommitThreadWait+0x101
+03 (Inline Function) --------`-------- nt!KeWaitForSingleObject+0x1a5
+04 ffffc500`ecfa2550 fffff802`33c40a45 nt!ExpWaitForResource+0x20b
+05 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceExclusive+0x1a
+06 (Inline Function) --------`-------- nt!ExpAcquireResourceExclusiveLite+0x131
+07 ffffc500`ecfa2600 fffff802`459b2e4a nt!ExAcquireResourceExclusiveLite+0x175
+08 ffffc500`ecfa2690 fffff802`45913943 dxgkrnl!DXGADAPTER::AcquireCoreResourceExclusive+0x96
+09 ffffc500`ecfa2700 fffff802`4591379d dxgkrnl!COREACCESS::AcquireExclusive+0x4f
+0a ffffc500`ecfa2740 fffff802`4599b4f6 dxgkrnl!COREDEVICEACCESS::AcquireExclusive+0x25
+0b ffffc500`ecfa2770 ffffc3c1`8ec69a73 dxgkrnl!DxgkSetDisplayMode+0x1e6
+0c ffffc500`ecfa2b30 fffff802`33d99113 win32kbase!NtGdiDdDDISetDisplayMode+0x23
+0d ffffc500`ecfa2b80 00007ff9`17a74fe4 nt!KiSystemServiceCopyEnd+0x13
+*** ERROR: Symbol file could not be found.  Defaulted to export symbols for d3d11.dll - 
+0e 00000000`007ae5a8 00007ff9`14707e1e win32u!NtGdiDdDDISetDisplayMode+0x14
+0f 00000000`007ae5b0 00000000`00000000 d3d11!D3DKMTWaitForVerticalBlankEvent+0x1bce
+
+Getting the address of the other lock:
+0: kd> ub fffff802`459b2e4a 
+dxgkrnl!DXGADAPTER::AcquireCoreResourceExclusive+0x6b:
+fffff802`459b2e1f bf01000000      mov     edi,1
+fffff802`459b2e24 bd00000001      mov     ebp,1000000h
+fffff802`459b2e29 be00000004      mov     esi,4000000h
+fffff802`459b2e2e 41be00200000    mov     r14d,2000h
+fffff802`459b2e34 0f85f1110900    jne     dxgkrnl!DXGADAPTER::AcquireCoreResourceExclusive+0x91277 (fffff802`45a4402b)
+fffff802`459b2e3a 488b8b90000000  mov     rcx,qword ptr [rbx+90h]
+fffff802`459b2e41 408ad7          mov     dl,dil
+fffff802`459b2e44 ff15fef2fdff    call    qword ptr [dxgkrnl!_imp_ExAcquireResourceExclusiveLite (fffff802`45992148)]
+0: kd> .frame /r 8
+08 ffffc500`ecfa2690 fffff802`45913943 dxgkrnl!DXGADAPTER::AcquireCoreResourceExclusive+0x96
+rax=0000000000000000 rbx=ffff8d0bbe093010 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000004000000 rdi=0000000000000001
+rip=fffff802459b2e4a rsp=ffffc500ecfa2690 rbp=0000000001000000
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=ffffdf8609aac200 r13=0000000000000000
+r14=0000000000002000 r15=0000000000000002
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dxgkrnl!DXGADAPTER::AcquireCoreResourceExclusive+0x96:
+fffff802`459b2e4a 44382d2fcbfcff  cmp     byte ptr [dxgkrnl!bTracingEnabled (fffff802`4597f980)],r13b ds:fffff802`4597f980=00
+
+We can see it is owned by another thread:
+0: kd> !locks poi(ffff8d0bbe093010+90)
+
+Resource @ 0xffff8d0bbe1b8f90    Shared 1 owning threads
+    Contention Count = 31
+    NumberOfSharedWaiters = 3
+    NumberOfExclusiveWaiters = 1
+     Threads: ffff8d0bbcfee080-01<*> ffff8d0bbf531700-01    ffff8d0bbe9e2380-01    ffff8d0bc008c700-01    
+     Threads Waiting On Exclusive Access:
+              ffff8d0bbf45e700       
+
+1 total locks, 1 locks currently held
+
+This thread in turn is waiting for a shared access to the first lock:
+0: kd> .thread /p /r ffff8d0bbcfee080
+Implicit thread is now ffff8d0b`bcfee080
+Implicit process is now ffff8d0b`c0269600
+Loading User Symbols
+.....
+Loading Wow64 Symbols
+................................................................
+.......
+*** ERROR: Module load completed but symbols could not be loaded for ntdll.dll
+0: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffc500`eaa5fac0 fffff802`33c8d58a nt!KiSwapContext+0x76
+01 ffffc500`eaa5fc00 fffff802`33c8cf61 nt!KiSwapThread+0x16a
+02 ffffc500`eaa5fcb0 fffff802`33c8b38b nt!KiCommitThreadWait+0x101
+03 (Inline Function) --------`-------- nt!KeWaitForSingleObject+0x1a5
+04 ffffc500`eaa5fd50 fffff802`33c41116 nt!ExpWaitForResource+0x20b
+05 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceShared+0x19
+06 ffffc500`eaa5fe00 fffff802`33d075ef nt!ExpAcquireResourceSharedLite+0x456
+07 (Inline Function) --------`-------- nt!ExAcquireResourceSharedLite+0x28
+08 ffffc500`eaa5fea0 ffffc3c1`8ec0cfe8 nt!ExEnterCriticalRegionAndAcquireResourceShared+0x3f
+09 ffffc500`eaa5fee0 ffffc3c1`8ecfc089 win32kbase!UserReleaseDC+0x48
+0a ffffc500`eaa5ff20 fffff802`45a815db win32kbase!DxgkEngReleaseDCApiExt+0x29
+0b ffffc500`eaa5ff50 fffff802`45ab2278 dxgkrnl!CWin32kLocks::Unlock+0x83
+0c ffffc500`eaa5ff80 fffff802`45a460fb dxgkrnl!DXGCONTEXT::HandleVistaBltStub+0x3e0
+0d ffffc500`eaa606c0 fffff802`459f6905 dxgkrnl!DxgkSubmitCommandInternal+0x9206b
+0e ffffc500`eaa60b40 fffff802`33d99113 dxgkrnl!DxgkSubmitCommand+0x45
+0f ffffc500`eaa60b80 00000000`69d05194 nt!KiSystemServiceCopyEnd+0x13
+*** ERROR: Symbol file could not be found.  Defaulted to export symbols for wow64win.dll - 
+10 00000000`049de868 00000000`69cf6b05 wow64win+0x15194
+11 00000000`049de870 00000000`00000000 wow64win+0x6b05
+0: kd> ub ffffc3c1`8ec0cfe8
+win32kbase!UserReleaseDC+0x25:
+ffffc3c1`8ec0cfc5 740c            je      win32kbase!UserReleaseDC+0x33 (ffffc3c1`8ec0cfd3)
+ffffc3c1`8ec0cfc7 33c9            xor     ecx,ecx
+ffffc3c1`8ec0cfc9 ff1531101a00    call    qword ptr [win32kbase!_imp_KeQueryPerformanceCounter (ffffc3c1`8edae000)]
+ffffc3c1`8ec0cfcf 48894708        mov     qword ptr [rdi+8],rax
+ffffc3c1`8ec0cfd3 488bfb          mov     rdi,rbx
+ffffc3c1`8ec0cfd6 be06000000      mov     esi,6
+ffffc3c1`8ec0cfdb 488b0d263e1800  mov     rcx,qword ptr [win32kbase!gpresUser (ffffc3c1`8ed90e08)]
+ffffc3c1`8ec0cfe2 ff15483c1a00    call    qword ptr [win32kbase!_imp_ExEnterCriticalRegionAndAcquireResourceShared (ffffc3c1`8edb0c30)]
+0: kd> dq ffffc3c1`8ed90e08 L1
+ffffc3c1`8ed90e08  ffff8d0b`bd93d590
+0: kd> !locks poi(win32kbase!gpresUser)
+
+Resource @ 0xffff8d0bbd93d590    Exclusively owned
+    Contention Count = 64572
+    NumberOfSharedWaiters = 2
+    NumberOfExclusiveWaiters = 56
+     Threads: ffff8d0bbf45e700-01<*> ffff8d0bbcfee080-01    ffff8d0bbfdc84c0-01    
+     Threads Waiting On Exclusive Access:
+              ffff8d0bbe8ed080       ffff8d0bbec55580       ffff8d0bc03cd080       ffff8d0bbfd05640       
+              ffff8d0bbfe6c080       ffff8d0bbe90f2c0       ffff8d0bc0314080       ffff8d0bbff2c080       
+              ffff8d0bbfd48080       ffff8d0bbff76280       ffff8d0bbfb20080       ffff8d0bbfb5c080       
+              ffff8d0bbff19040       ffff8d0bbf2e4080       ffff8d0bc03df080       ffff8d0bc033d700       
+              ffff8d0bc03cc080       ffff8d0bbff28080       ffff8d0bc026f080       ffff8d0bbec3c4c0       
+              ffff8d0bbe25b700       ffff8d0bbe8a8080       ffff8d0bc0093700       ffff8d0bbcffd700       
+              ffff8d0bbf317080       ffff8d0bc0282700       ffff8d0bc0243700       ffff8d0bbf4e6400       
+              ffff8d0bc023a700       ffff8d0bc036c080       ffff8d0bbf194580       ffff8d0bbf76d080       
+              ffff8d0bbfd8a700       ffff8d0bc02d6080       ffff8d0bbe40c700       ffff8d0bc0281040       
+              ffff8d0bbff73700       ffff8d0bbf38b400       ffff8d0bbfe14080       ffff8d0bbec10080       
+              ffff8d0bbe914080       ffff8d0bbff18080       ffff8d0bbd376080       ffff8d0bbec8e080       
+              ffff8d0bbf9d9700       ffff8d0bbfb00700       ffff8d0bbe8ce680       ffff8d0bbf380080       
+              ffff8d0bc0273080       ffff8d0bbf3a9080       ffff8d0bbe8c3080       ffff8d0bc0140700       
+              ffff8d0bbe89e080       ffff8d0bbe915080       ffff8d0bbec3d4c0       
+
+1 total locks, 1 locks currently held
+
+So the issue appears to be a deadlock caused by lock order violation – thread A owns lock 2 and is waiting for lock 1 while thread B owns lock 1 and is waiting for lock 2.

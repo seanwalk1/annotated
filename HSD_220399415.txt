@@ -1,0 +1,157 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220399415
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+[BUGCHECK]:	0x7E
+
+
+This is SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e) – see attached memory dump:
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: ffffffffc0000005, The exception code that was not handled
+Arg2: fffff803a206ee90, The address that the exception occurred at
+Arg3: fffff6035da277d8, Exception Record Address
+Arg4: fffff6035da27020, Context Record Address
+
+Switching to the context record, this is a NULL-pointer dereference:
+0: kd> .cxr fffff6035da27020
+rax=fffff6035da27a48 rbx=ffff91827d8dc8b0 rcx=0000000000000000
+rdx=0000000000000001 rsi=0000000000000008 rdi=fffff803a2180320
+rip=fffff803a206ee90 rsp=fffff6035da27a10 rbp=fffff803a2526930
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000001
+r11=fffff6035da27968 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=fffff803a2235a00
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+nt!PoIssueCoalescingNotification+0x24:
+fffff803`a206ee90 8a4120          mov     al,byte ptr [rcx+20h] ds:002b:00000000`00000020=??
+0: kd> r cr2
+Last set context:
+cr2=0000000000000020
+
+The NULL-pointer was passed as a parameter:
+0: kd> k
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 fffff603`5da27a10 fffff803`a252699b nt!PoIssueCoalescingNotification+0x24
+01 fffff603`5da27a50 fffff803`a1e3be12 nt!PopCoalescingCallbackWorker+0x6b
+02 fffff603`5da27a80 fffff803`a1edaeb7 nt!ExpWorkerThread+0x112
+03 fffff603`5da27b10 fffff803`a1fab966 nt!PspSystemThreadStartup+0x47
+04 fffff603`5da27b60 00000000`00000000 nt!KxStartSystemThread+0x16
+0: kd> ub  fffff803`a252699b
+nt!PopCoalescingCallbackWorker+0x49:
+fffff803`a2526979 a804            test    al,4
+fffff803`a252697b 7420            je      nt!PopCoalescingCallbackWorker+0x6d (fffff803`a252699d)
+fffff803`a252697d 24fb            and     al,0FBh
+fffff803`a252697f 8805a39ac5ff    mov     byte ptr [nt!PopCoalescingState (fffff803`a2180428)],al
+fffff803`a2526985 e8a66cd1ff      call    nt!PopReleasePolicyLock (fffff803`a223d630)
+fffff803`a252698a ba03000000      mov     edx,3
+fffff803`a252698f 488b0d0a9ac5ff  mov     rcx,qword ptr [nt!PopCoalescingRegistration (fffff803`a21803a0)]
+fffff803`a2526996 e8d184b4ff      call    nt!PoIssueCoalescingNotification (fffff803`a206ee6c)
+
+And it is NULL, because nt!PopCoalescingRegistration is NULL:
+0: kd> dq nt!PopCoalescingRegistration L1
+fffff803`a21803a0  00000000`00000000
+
+The problem is that there are only 8 slots:
+0: kd> ?? sizeof(nt!PopCoalescingCallbackRoutine)/sizeof(nt!PopCoalescingCallbackRoutine[0])
+unsigned int64 8
+
+And all of them taken:
+0: kd> x nt!PopCoalescingCallbackRoutineCount
+fffff803`a21bd048 nt!PopCoalescingCallbackRoutineCount = 8
+
+Since all slots are taken, nt! PoRegisterCoalescingCallback have failed and nt!PopCoalescingRegistration was not created (see attached log how that happened).
+The slots are mostly taken by the storport.sys:
+
+0: kd> ?? sizeof(nt!PPOP_COALESCING_CALLBACK_BLOCK)
+unsigned int64 8
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*0) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff803`a201c010     void  nt!CcCoalescingCallBack+0
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*1) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff808`d619ef80     void  storport!RaidCoalescingCallback+0
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*2) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff808`d619ef80     void  storport!RaidCoalescingCallback+0
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*3) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff808`d619ef80     void  storport!RaidCoalescingCallback+0
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*4) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff808`d619ef80     void  storport!RaidCoalescingCallback+0
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*5) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff808`d619ef80     void  storport!RaidCoalescingCallback+0
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*6) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff808`d619ef80     void  storport!RaidCoalescingCallback+0
+0: kd> dt nt!_POP_COALESCING_CALLBACK_BLOCK (poi(nt!PopCoalescingCallbackRoutine+8*7) & 0xFFFFFFFFFFFFFFF0) CallbackRoutine
+   +0x018 CallbackRoutine : 0xfffff808`d64b1760     void  NTFS!NtfsCoalescingCallback+0
+
+And this is because we have so many storage controllers:
+0: kd> !devnode 0 1 stornvme
+Dumping IopRootDeviceNode (= 0xffff91827e5c1d20)
+DevNode 0xffff918280e21d20 for PDO 0xffff918280e22060
+  InstancePath is "PCI\VEN_8086&DEV_0953&SUBSYS_09538086&REV_00\a&2e4218c2&0&00080020000800E0"
+  ServiceName is "stornvme"
+  State = DeviceNodeStarted (0x308)
+  Previous State = DeviceNodeEnumerateCompletion (0x30d)
+  DevNode 0xffff918280f43940 for PDO 0xffff918280f21060
+    InstancePath is "SCSI\Disk&Ven_NVMe&Prod_Intel_Fultondale\b&28c4f389&0&000000"
+    ServiceName is "disk"
+    State = DeviceNodeStarted (0x308)
+    Previous State = DeviceNodeEnumerateCompletion (0x30d)
+DevNode 0xffff918280e35950 for PDO 0xffff918280e36060
+  InstancePath is "PCI\VEN_8086&DEV_0953&SUBSYS_370D8086&REV_01\e&3323c816&0&0008002000200020000800E0"
+  ServiceName is "stornvme"
+  State = DeviceNodeStarted (0x308)
+  Previous State = DeviceNodeEnumerateCompletion (0x30d)
+  DevNode 0xffff918280fafd20 for PDO 0xffff918280f8c060
+    InstancePath is "SCSI\Disk&Ven_NVMe&Prod_INTEL_SSDPEDMW01\f&2c244ea9&0&000000"
+    ServiceName is "disk"
+    State = DeviceNodeStarted (0x308)
+    Previous State = DeviceNodeEnumerateCompletion (0x30d)
+DevNode 0xffff918280e42d20 for PDO 0xffff918280e43060
+  InstancePath is "PCI\VEN_8086&DEV_0953&SUBSYS_370D8086&REV_01\10&1a3334d4&0&00080020002000200020000800E0"
+  ServiceName is "stornvme"
+  State = DeviceNodeStarted (0x308)
+  Previous State = DeviceNodeEnumerateCompletion (0x30d)
+  DevNode 0xffff91827edcad20 for PDO 0xffff91827edc8060
+    InstancePath is "SCSI\Disk&Ven_NVMe&Prod_INTEL_SSDPEDMW01\11&2d2b4615&0&000000"
+    ServiceName is "disk"
+    State = DeviceNodeStarted (0x308)
+    Previous State = DeviceNodeEnumerateCompletion (0x30d)
+DevNode 0xffff918280dddd20 for PDO 0xffff918280dde060
+  InstancePath is "PCI\VEN_8086&DEV_F1A5&SUBSYS_390A8086&REV_03\4&91a2562&0&00E8"
+  ServiceName is "stornvme"
+  State = DeviceNodeStarted (0x308)
+  Previous State = DeviceNodeEnumerateCompletion (0x30d)
+  DevNode 0xffff91827edd3010 for PDO 0xffff91827edd2060
+    InstancePath is "SCSI\Disk&Ven_NVMe&Prod_INTEL_SSDPEKKF51\5&1bfeb42&0&000000"
+    ServiceName is "disk"
+    State = DeviceNodeStarted (0x308)
+    Previous State = DeviceNodeEnumerateCompletion (0x30d)
+0: kd> !devnode 0 1 storahci
+Dumping IopRootDeviceNode (= 0xffff91827e5c1d20)
+DevNode 0xffff918280e2dd20 for PDO 0xffff918280e2d060
+  InstancePath is "PCI\VEN_1B21&DEV_0625&SUBSYS_10601B21&REV_01\c&23a42dcf&0&000800200020000800E0"
+  ServiceName is "storahci"
+  State = DeviceNodeStarted (0x308)
+  Previous State = DeviceNodeEnumerateCompletion (0x30d)
+  DevNode 0xffff918280eb7a60 for PDO 0xffff918280eb6060
+    InstancePath is "SCSI\Disk&Ven_INTEL&Prod_SSDSC2CW240A3\d&b3876ac&0&000000"
+    ServiceName is "disk"
+    State = DeviceNodeStarted (0x308)
+    Previous State = DeviceNodeEnumerateCompletion (0x30d)
+  DevNode 0xffff918280eb7770 for PDO 0xffff918280eb8060
+    InstancePath is "SCSI\Disk&Ven_INTEL&Prod_SSDSC2CW240A3\d&b3876ac&0&010000"
+    ServiceName is "disk"
+    State = DeviceNodeStarted (0x308)
+    Previous State = DeviceNodeEnumerateCompletion (0x30d)
+
+nt!PopCoalescingCallbackWorker has to take into account that registration might have failed.

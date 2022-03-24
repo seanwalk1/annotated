@@ -1,0 +1,340 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/2208130821
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is a debugger breakpoint due to resource acquire timeout for suspected deadlock (see attached memory dump):
+4: kd> !dbgprint
+…
+TimerDrv onecore\base\test\kernel\ke\timerobj\sys\timerdrv.c(962):TtWaitForTimerExpiration:4053: Wait for timer object failed with Status 0x102
+Possible deadlock. Use !locks FFFFF80753B31380 to determine the resource owner
+…
+
+4: kd> r
+rax=0000000000000001 rbx=fffff80753b31380 rcx=0000000000000000
+rdx=0000000000000000 rsi=fffff80753153b10 rdi=ffffb1888f62ef80
+rip=fffff80753278098 rsp=ffffb1888f62eea0 rbp=ffffb1888f62ef79
+ r8=0000000000000001  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=fffff807533a19a0
+r14=0000000000010244 r15=0000000000000097
+iopl=0         nv up ei ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040286
+nt!ExpWaitForResource+0x1df3c8:
+fffff807`53278098 cc              int     3
+4: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffb188`8f62eea0 fffff807`53025394 nt!ExpWaitForResource+0x1df3c8
+01 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceShared+0x19
+02 ffffb188`8f62ef20 fffff807`53024e04 nt!ExpAcquireResourceSharedLite+0x4d4
+03 ffffb188`8f62efe0 fffff807`533ec63b nt!ExAcquireResourceSharedLite+0x44
+04 ffffb188`8f62f020 fffff807`533e2580 nt!CmpLockRegistry+0x3b
+05 ffffb188`8f62f050 fffff807`533e4de0 nt!CmpDeleteKeyObject+0xe0
+06 ffffb188`8f62f0e0 fffff807`53023763 nt!ObpRemoveObjectRoutine+0x80
+07 (Inline Function) --------`-------- nt!ObfDereferenceObjectWithTag+0x84
+08 ffffb188`8f62f140 fffff807`5342c947 nt!ObfDereferenceObject+0x93
+09 ffffb188`8f62f180 fffff807`5352e861 nt!CmUnloadKey+0x4bb
+0a ffffb188`8f62f410 fffff807`5323d525 nt!NtUnloadKey+0x11
+0b ffffb188`8f62f440 00007ffb`330af104 nt!KiSystemServiceCopyEnd+0x25
+0c 00000049`c3aff648 00007ffb`30d0c8d6 ntdll!ZwUnloadKey+0x14
+0d 00000049`c3aff650 00000049`c3aff750 0x00007ffb`30d0c8d6
+0e 00000049`c3aff658 00000000`00000000 0x00000049`c3aff750
+
+Looking at the caller, we can see that the call was to acquire nt!CmpRegistryLock:
+4: kd> ub fffff807`533ec63b
+nt!KeGetCurrentThread [inlined in nt!CmpLockRegistry+0xd]:
+fffff807`533ec60d 65488b0c2588010000 mov   rcx,qword ptr gs:[188h]
+fffff807`533ec616 33d2            xor     edx,edx
+fffff807`533ec618 e803e3c3ff      call    nt!PsBoostThreadIo (fffff807`5302a920)
+fffff807`533ec61d 65488b042588010000 mov   rax,qword ptr gs:[188h]
+fffff807`533ec626 66ff88e4010000  dec     word ptr [rax+1E4h]
+fffff807`533ec62d b201            mov     dl,1
+fffff807`533ec62f 488d0d4a4d7400  lea     rcx,[nt!CmpRegistryLock (fffff807`53b31380)]
+fffff807`533ec636 e88587c3ff      call    nt!ExAcquireResourceSharedLite (fffff807`53024dc0)
+
+The lock is currently owned:
+4: kd> !locks nt!CmpRegistryLock
+
+Resource @ nt!CmpRegistryLock (0xfffff80753b31380)    Exclusively owned
+    Contention Count = 1282315
+    NumberOfSharedWaiters = 3
+     Threads: ffff80090f4a0080-01<*> ffff80090c948080-01    ffff80090ef52080-01<*> ffff80090de66080-01    
+1 total locks
+
+The lock owner is waiting for the storage device component activation:
+4: kd> !thread ffff80090f4a0080
+THREAD ffff80090f4a0080  Cid 1ab0.1914  Teb: 00000049c309f000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffff8008f6e66080  NotificationEvent
+IRP List:
+    ffff80091b8eaaf0: (0006,0508) Flags: 40060043  Mdl: ffff800910f99ae0
+Not impersonating
+DeviceMap                 ffff9e05af080df0
+Owning Process            ffff80090e047080       Image:         flushteststr.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      364948         Ticks: 38443 (0:00:10:00.671)
+Context Switch Count      994831         IdealProcessor: 0             
+UserTime                  00:00:02.625
+KernelTime                00:04:25.328
+*** WARNING: Unable to verify timestamp for flushteststr.exe
+*** ERROR: Module load completed but symbols could not be loaded for flushteststr.exe
+Win32 Start Address flushteststr (0x00007ff7bad81120)
+Stack Init ffffb188959affd0 Current ffffb188959ae7f0
+Base ffffb188959b0000 Limit ffffb188959a9000 Call 0000000000000000
+Priority 9 BasePriority 8 PriorityDecrement 16 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffb188`959ae830 fffff807`5309ad40 : ffffca00`0cae9180 00000000`ffffff00 00000000`ffffffff ffff8009`00000001 : nt!KiSwapContext+0x76
+ffffb188`959ae970 fffff807`53099abe : ffff8009`0f4a0080 fffff807`00000000 ffffb188`959aeb60 4d000305`00000000 : nt!KiSwapThread+0xcd0
+ffffb188`959aea20 fffff807`53098fdd : ffff8008`f4ea1000 fffff807`00000000 ffff8008`f6086a00 ffffca00`0cae9180 : nt!KiCommitThreadWait+0x14e
+ffffb188`959aeac0 fffff807`5312a73e : ffff8008`f6e66080 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KeWaitForSingleObject+0x22d
+ffffb188`959aebc0 fffff807`5312a629 : 00000000`00000000 ffff8009`1b8ecf68 ffff8008`f6be91a0 00000000`00000000 : nt!PopFxActivateComponent+0xee
+ffffb188`959aec50 fffff807`54d0afa6 : 00000000`0000003e 00000000`00000000 00000000`00000000 00000000`00000000 : nt!PoFxActivateComponent+0x49
+ffffb188`959aec80 fffff807`54ce706e : 00000000`43707249 ffff8008`f3c02340 00000000`00000000 ffffffff`ffffffff : storport!RaidAdapterPoFxActivateComponent+0x46
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : storport!RaidUnitPoFxActivateComponent+0x25 (Inline Function @ fffff807`54ce706e)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : storport!RaidUnitStartDeviceBusy+0x29 (Inline Function @ fffff807`54ce706e)
+ffffb188`959aecb0 fffff807`54ce69ec : ffff8009`232b5000 ffff8009`1b8ecdc0 ffff8009`00000000 ffff8009`0fce5320 : storport!RaidStartIoPacket+0x44e
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : storport!RaidUnitSubmitRequest+0x7d (Inline Function @ fffff807`54ce69ec)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : storport!RaUnitExecuteScsiSrb+0x7d (Inline Function @ fffff807`54ce69ec)
+ffffb188`959aedd0 fffff807`54ce678a : 00000000`00000000 00000000`00000000 ffff8009`1dd8a498 00000000`00001000 : storport!RaUnitScsiIrp+0x21c
+ffffb188`959aee70 fffff807`53196cb7 : ffff8009`1b8ecdc0 00000000`00000000 ffff8008`f6bef050 ffff8009`00000000 : storport!RaDriverScsiIrp+0x5a
+ffffb188`959aeeb0 fffff807`5379e064 : ffff8009`1b8ecdc0 ffff8008`f6bef050 ffff8009`1b8ecdc0 ffffb188`959aef68 : nt!IopfCallDriver+0x53
+ffffb188`959aeef0 fffff807`53274f9d : 00000000`00000000 ffff8009`1b8ecdc0 00000000`00000000 ffff8009`1dd8a3e0 : nt!IovCallDriver+0x260
+ffffb188`959aef30 fffff807`54dc5ba1 : ffff8008`f6f388b0 ffff8008`fe081f10 ffff8009`1b8ecdc0 00000000`00000000 : nt!IofCallDriver+0x1e730d
+ffffb188`959aef70 fffff807`5466a0c7 : ffff8009`1b8ecdc0 00000000`0000000f ffff8008`f6f388b0 00007ff7`090c7748 : EhStorClass!FilterDeviceEvtWdmIoctlIrpPreprocess+0x221
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!PreprocessIrp+0x2e (Inline Function @ fffff807`5466a0c7)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!DispatchWorker+0x17b (Inline Function @ fffff807`5466a0c7)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxDevice::Dispatch+0x199 (Inline Function @ fffff807`5466a0c7)
+ffffb188`959aefa0 fffff807`53196cb7 : 00000000`00000001 ffff8009`1dd88f78 ffff8008`f6f3ac90 ffff8009`1b8ecdc0 : Wdf01000!FxDevice::DispatchWithLock+0x267
+ffffb188`959af000 fffff807`5379e064 : ffff8009`1b8ecdc0 ffff8008`f6f3ac90 00000000`00001000 00000000`01573b70 : nt!IopfCallDriver+0x53
+ffffb188`959af040 fffff807`53274f9d : ffff8009`08a98940 00000000`00001000 00000000`00000001 ffff8009`1dd88ec0 : nt!IovCallDriver+0x260
+ffffb188`959af080 fffff807`559d70c8 : ffffb188`959af1ff ffff8009`00000008 00000000`01573b70 ffff8009`1b8eaaf0 : nt!IofCallDriver+0x1e730d
+ffffb188`959af0c0 fffff807`559d65ec : 0000000d`46d87771 fffff807`00000000 00000000`00001000 ffffb188`00000008 : CLASSPNP!SubmitTransferPacket+0x298
+ffffb188`959af110 fffff807`559d634b : ffff8009`08a98940 ffff8009`1b8eaaf0 ffff8009`1b8eaa00 ffff8008`fe027000 : CLASSPNP!ServiceTransferRequest+0x21c
+ffffb188`959af1a0 fffff807`559d83b4 : ffff8009`1b8eaaf0 00000000`00000000 ffff8008`fe037080 ffff8009`1dd88c50 : CLASSPNP!ClassReadWrite+0x14b
+ffffb188`959af1f0 fffff807`53196cb7 : 00000000`00000000 fffff807`537a9dd2 ffff8009`00000000 ffff8009`00000000 : CLASSPNP!ClassGlobalDispatch+0x24
+ffffb188`959af220 fffff807`5379e064 : ffff8009`1b8eaaf0 ffff8008`fe037080 00000000`00000000 0000000d`4e4934d6 : nt!IopfCallDriver+0x53
+ffffb188`959af260 fffff807`53274f9d : ffff8009`1b8eaaf0 ffff8008`fe01ca20 ffff8008`fe0a5a20 ffff8009`1dd88c50 : nt!IovCallDriver+0x260
+ffffb188`959af2a0 fffff807`54b03956 : ffffb188`959af368 ffff8009`1b8eaaf0 ffff8008`fe01ca20 ffff8009`1b8eadb8 : nt!IofCallDriver+0x1e730d
+ffffb188`959af2e0 fffff807`54b03bf0 : 00000001`00000001 0000000d`4e4953c7 ffff8009`1b8eaaf0 ffff8009`1dd8a240 : partmgr!PmIo+0xd6
+ffffb188`959af360 fffff807`53196cb7 : 00000000`00000000 fffff807`537a9dd2 ffff8009`00000000 ffff8009`00000000 : partmgr!PmGlobalDispatch+0x20
+ffffb188`959af390 fffff807`5379e064 : ffff8009`1b8eaaf0 ffff8008`fe01c8d0 00000000`00000016 11d2ce9c`56a3372e : nt!IopfCallDriver+0x53
+ffffb188`959af3d0 fffff807`53274f9d : 00000000`00000000 00000000`00000000 00000000`00000000 ffff8009`1dd8a240 : nt!IovCallDriver+0x260
+ffffb188`959af410 fffff807`54b034cf : ffff8009`232b5940 fffff807`537b9208 ffff8009`1b8eaaf0 ffff8009`1b8eaa00 : nt!IofCallDriver+0x1e730d
+ffffb188`959af450 fffff807`54b03bf0 : 00000000`00001000 ffff8009`1b8eae00 00000000`00000000 ffff8009`1dd897b0 : partmgr!PartitionIo+0x1cf
+ffffb188`959af500 fffff807`53196cb7 : 00000000`00000000 fffff807`537a9dd2 ffff8009`00000000 ffff8009`00000000 : partmgr!PmGlobalDispatch+0x20
+ffffb188`959af530 fffff807`5379e064 : ffff8009`1b8eaaf0 ffff8008`f6f118d0 00000000`00000000 fffff807`537a8d52 : nt!IopfCallDriver+0x53
+
+Switching to the thread:
+4: kd> .thread /p /r ffff80090f4a0080
+Implicit thread is now ffff8009`0f4a0080
+…
+4: kd> k 10
+ # Child-SP          RetAddr           Call Site
+00 ffffb188`959ae830 fffff807`5309ad40 nt!KiSwapContext+0x76
+01 ffffb188`959ae970 fffff807`53099abe nt!KiSwapThread+0xcd0
+02 ffffb188`959aea20 fffff807`53098fdd nt!KiCommitThreadWait+0x14e
+03 ffffb188`959aeac0 fffff807`5312a73e nt!KeWaitForSingleObject+0x22d
+04 ffffb188`959aebc0 fffff807`5312a629 nt!PopFxActivateComponent+0xee
+05 ffffb188`959aec50 fffff807`54d0afa6 nt!PoFxActivateComponent+0x49
+06 ffffb188`959aec80 fffff807`54ce706e storport!RaidAdapterPoFxActivateComponent+0x46
+07 (Inline Function) --------`-------- storport!RaidUnitPoFxActivateComponent+0x25
+08 (Inline Function) --------`-------- storport!RaidUnitStartDeviceBusy+0x29
+09 ffffb188`959aecb0 fffff807`54ce69ec storport!RaidStartIoPacket+0x44e
+0a (Inline Function) --------`-------- storport!RaidUnitSubmitRequest+0x7d
+0b (Inline Function) --------`-------- storport!RaUnitExecuteScsiSrb+0x7d
+0c ffffb188`959aedd0 fffff807`54ce678a storport!RaUnitScsiIrp+0x21c
+0d ffffb188`959aee70 fffff807`53196cb7 storport!RaDriverScsiIrp+0x5a
+0e ffffb188`959aeeb0 fffff807`5379e064 nt!IopfCallDriver+0x53
+0f ffffb188`959aeef0 fffff807`53274f9d nt!IovCallDriver+0x260
+
+We can see the FxDevice of the storage device:
+4: kd> .frame /r 4
+04 ffffb188`959aebc0 fffff807`5312a629 nt!PopFxActivateComponent+0xee
+rax=0000000000000000 rbx=0000000000000005 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000001 rdi=ffff8008f6bee4a0
+rip=fffff8075312a73e rsp=ffffb188959aebc0 rbp=ffff8008f6e66018
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000002 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+nt!PopFxActivateComponent+0xee:
+fffff807`5312a73e eb86            jmp     nt!PopFxActivateComponent+0x76 (fffff807`5312a6c6)
+4: kd> dv /V
+@rdi              @rdi                     FxDevice = 0xffff8008`f6bee4a0
+@rbp              @rbp                  FxComponent = 0xffff8008`f6e66018
+@ebx              @ebx                        Flags = 5
+@r14d             @r14d                InitActivate = 0x00 ''
+ffffb188`959aebf0 @rsp+0x0030       WorkInformation = struct _PEP_WORK_INFORMATION
+@sil              @sil                  DisableApcs = 0x01 ''
+@r14b             @r14b                     OldIrql = 0x00 ''
+<unavailable>     <unavailable>         KiIrqlFlags = <value unavailable>
+
+The component is idle, trying to activate and PEP is ready to continue activation – which means it has requested a workitem from PoFx to drive its state machine:
+4: kd> !fxdevice 0xffff8008`f6bee4a0
+!fxdevice 0xffff8008f6bee4a0
+	DevNode: 0xffff8008f6f85a60
+	UniqueId: "\_SB.PCI0.RP09.PXSX"
+	InstancePath: "PCI\VEN_8086&DEV_F1A5&SUBSYS_390A8086&REV_03\4&35599581&0&00E8"
+	Device Power State: PowerDeviceD0
+	PEP Owner: Platform PEP
+	Platform PEP Entry point: intelpep!PepAcceptDeviceNotification
+	Acpi Plugin: 0
+	Acpi Handle: 0
+	Device Status Flags: DevicePowerRequired 
+	Device Idle Timeout: 0x270fffffd8f0
+	Device Power On: No Activity
+	Device Power Off: No Activity
+	Device Unregister: No Activity
+	Component Count: 1
+		Component 0: F0/F2 - IDLE   (RefCount = 181)
+		Component Unsatisfied DRIPS Constraint Time: 00:10:13.307
+		Pep Component: 0xffff8008f6beea28
+			Active: 0	Latency: 2	Residency: 2	Wake: 2	Dx IRP: 2	WW IRP: 2
+			Component Idle State Change: No Activity
+			Component Activation: Ready
+			Component Active: No Activity
+…
+
+But the worker thread has hit a pagefault and also needs storage device in order to make progress:
+4: kd> dt nt!PopFxSystemWorkPool
+   +0x000 Plugin           : (null) 
+   +0x008 EmergencyWorkQueueLock : 0
+   +0x010 EmergencyWorkQueue : _LIST_ENTRY [ 0xfffff807`53a35110 - 0xfffff807`53a35110 ]
+   +0x020 WorkPoolQueues   : [2] _KSEMAPHORE
+   +0x060 WorkItemStatus   : 0n1
+   +0x068 WorkItems        : [4] _POP_FX_WORK_POOL_ITEM
+   +0x108 EmergencyWorkerThread : 0xffff8008`f4306040 _KTHREAD
+   +0x110 DynamicWorkerThreads : [4] (null) 
+4: kd> .thread /p /r 0xffff8008`f4306040 
+…
+4: kd> k
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffb188`90f1e830 fffff807`5309ad40 nt!KiSwapContext+0x76
+01 ffffb188`90f1e970 fffff807`53099abe nt!KiSwapThread+0xcd0
+02 ffffb188`90f1ea20 fffff807`53098fdd nt!KiCommitThreadWait+0x14e
+03 ffffb188`90f1eac0 fffff807`5312a73e nt!KeWaitForSingleObject+0x22d
+04 ffffb188`90f1ebc0 fffff807`5312a629 nt!PopFxActivateComponent+0xee
+05 ffffb188`90f1ec50 fffff807`54d0afa6 nt!PoFxActivateComponent+0x49
+06 ffffb188`90f1ec80 fffff807`54ce706e storport!RaidAdapterPoFxActivateComponent+0x46
+07 (Inline Function) --------`-------- storport!RaidUnitPoFxActivateComponent+0x25
+08 (Inline Function) --------`-------- storport!RaidUnitStartDeviceBusy+0x29
+09 ffffb188`90f1ecb0 fffff807`54ce69ec storport!RaidStartIoPacket+0x44e
+0a (Inline Function) --------`-------- storport!RaidUnitSubmitRequest+0x7d
+0b (Inline Function) --------`-------- storport!RaUnitExecuteScsiSrb+0x7d
+0c ffffb188`90f1edd0 fffff807`54ce678a storport!RaUnitScsiIrp+0x21c
+0d ffffb188`90f1ee70 fffff807`53196cb7 storport!RaDriverScsiIrp+0x5a
+0e ffffb188`90f1eeb0 fffff807`5379e064 nt!IopfCallDriver+0x53
+0f ffffb188`90f1eef0 fffff807`53274f9d nt!IovCallDriver+0x260
+10 ffffb188`90f1ef30 fffff807`54dc5ba1 nt!IofCallDriver+0x1e730d
+11 ffffb188`90f1ef70 fffff807`5466a0c7 EhStorClass!FilterDeviceEvtWdmIoctlIrpPreprocess+0x221
+12 (Inline Function) --------`-------- Wdf01000!PreprocessIrp+0x2e
+13 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x17b
+14 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0x199
+15 ffffb188`90f1efa0 fffff807`53196cb7 Wdf01000!FxDevice::DispatchWithLock+0x267
+16 ffffb188`90f1f000 fffff807`5379e064 nt!IopfCallDriver+0x53
+17 ffffb188`90f1f040 fffff807`53274f9d nt!IovCallDriver+0x260
+18 ffffb188`90f1f080 fffff807`559d70c8 nt!IofCallDriver+0x1e730d
+19 ffffb188`90f1f0c0 fffff807`559d65ec CLASSPNP!SubmitTransferPacket+0x298
+1a ffffb188`90f1f110 fffff807`559d634b CLASSPNP!ServiceTransferRequest+0x21c
+1b ffffb188`90f1f1a0 fffff807`559d83b4 CLASSPNP!ClassReadWrite+0x14b
+1c ffffb188`90f1f1f0 fffff807`53196cb7 CLASSPNP!ClassGlobalDispatch+0x24
+1d ffffb188`90f1f220 fffff807`5379e064 nt!IopfCallDriver+0x53
+1e ffffb188`90f1f260 fffff807`53274f9d nt!IovCallDriver+0x260
+1f ffffb188`90f1f2a0 fffff807`54b03956 nt!IofCallDriver+0x1e730d
+20 ffffb188`90f1f2e0 fffff807`54b03bf0 partmgr!PmIo+0xd6
+21 ffffb188`90f1f360 fffff807`53196cb7 partmgr!PmGlobalDispatch+0x20
+22 ffffb188`90f1f390 fffff807`5379e064 nt!IopfCallDriver+0x53
+23 ffffb188`90f1f3d0 fffff807`53274f9d nt!IovCallDriver+0x260
+24 ffffb188`90f1f410 fffff807`54b034cf nt!IofCallDriver+0x1e730d
+25 ffffb188`90f1f450 fffff807`54b03bf0 partmgr!PartitionIo+0x1cf
+26 ffffb188`90f1f500 fffff807`53196cb7 partmgr!PmGlobalDispatch+0x20
+27 ffffb188`90f1f530 fffff807`5379e064 nt!IopfCallDriver+0x53
+28 ffffb188`90f1f570 fffff807`53274f9d nt!IovCallDriver+0x260
+29 ffffb188`90f1f5b0 fffff807`54bf1104 nt!IofCallDriver+0x1e730d
+2a ffffb188`90f1f5f0 fffff807`53196cb7 volmgr!VmReadWrite+0xf4
+2b ffffb188`90f1f630 fffff807`5379e064 nt!IopfCallDriver+0x53
+2c ffffb188`90f1f670 fffff807`53274f9d nt!IovCallDriver+0x260
+2d ffffb188`90f1f6b0 fffff807`557c43d1 nt!IofCallDriver+0x1e730d
+2e (Inline Function) --------`-------- fvevol!FveRequestPassThrough+0xb3
+2f (Inline Function) --------`-------- fvevol!FveReadWrite+0x101
+30 ffffb188`90f1f6f0 fffff807`557c40a7 fvevol!FveFilterRundownReadWrite+0x311
+31 ffffb188`90f1f800 fffff807`53196cb7 fvevol!FveFilterRundownRead+0x27
+32 ffffb188`90f1f830 fffff807`5379e064 nt!IopfCallDriver+0x53
+33 ffffb188`90f1f870 fffff807`53274f9d nt!IovCallDriver+0x260
+34 ffffb188`90f1f8b0 fffff807`55983c92 nt!IofCallDriver+0x1e730d
+35 ffffb188`90f1f8f0 fffff807`55984f12 iorate!IoRateIssueAndRecordIo+0x7a
+36 ffffb188`90f1f930 fffff807`559850df iorate!IoRateProcessIrpWrapper+0x19a
+37 ffffb188`90f1fa70 fffff807`53196cb7 iorate!IoRateDispatchReadWrite+0x5f
+38 ffffb188`90f1fab0 fffff807`5379e064 nt!IopfCallDriver+0x53
+39 ffffb188`90f1faf0 fffff807`53274f9d nt!IovCallDriver+0x260
+3a ffffb188`90f1fb30 fffff807`55901230 nt!IofCallDriver+0x1e730d
+3b ffffb188`90f1fb70 fffff807`55901099 rdyboost!SmdProcessReadWrite+0x150
+3c ffffb188`90f1fc50 fffff807`53196cb7 rdyboost!SmdDispatchReadWrite+0x89
+3d ffffb188`90f1fc80 fffff807`5379e064 nt!IopfCallDriver+0x53
+3e ffffb188`90f1fcc0 fffff807`53274f9d nt!IovCallDriver+0x260
+3f ffffb188`90f1fd00 fffff807`5588102e nt!IofCallDriver+0x1e730d
+40 ffffb188`90f1fd40 fffff807`53196cb7 volume!VolumePassThrough+0x1e
+41 ffffb188`90f1fd70 fffff807`5379e064 nt!IopfCallDriver+0x53
+42 ffffb188`90f1fdb0 fffff807`53274f9d nt!IovCallDriver+0x260
+43 ffffb188`90f1fdf0 fffff807`5589122b nt!IofCallDriver+0x1e730d
+44 ffffb188`90f1fe30 fffff807`558911a9 volsnap!VolSnapReadFilter+0x6b
+45 ffffb188`90f1fe60 fffff807`53196cb7 volsnap!VolSnapRead+0x19
+46 ffffb188`90f1fe90 fffff807`5379e064 nt!IopfCallDriver+0x53
+47 ffffb188`90f1fed0 fffff807`53274f9d nt!IovCallDriver+0x260
+48 ffffb188`90f1ff10 fffff807`54ee1967 nt!IofCallDriver+0x1e730d
+49 ffffb188`90f1ff50 fffff807`5322f57e Ntfs!NtfsStorageDriverCallout+0x17
+4a ffffb188`90f1ff80 fffff807`5322f53c nt!KySwitchKernelStackCallout+0x2e
+4b ffffb188`8de26940 fffff807`530e79ae nt!KiSwitchKernelStackContinue
+4c ffffb188`8de26960 fffff807`530e77bd nt!KiExpandKernelStackAndCalloutOnStackSegment+0x18e
+4d ffffb188`8de26a00 fffff807`530e7633 nt!KiExpandKernelStackAndCalloutSwitchStack+0xdd
+4e ffffb188`8de26a70 fffff807`530e75ed nt!KeExpandKernelStackAndCalloutInternal+0x33
+4f ffffb188`8de26ae0 fffff807`54ee2d66 nt!KeExpandKernelStackAndCalloutEx+0x1d
+50 ffffb188`8de26b20 fffff807`54ee2c8e Ntfs!NtfsCallStorageDriver+0x86
+51 ffffb188`8de26b90 fffff807`54ede920 Ntfs!NtfsPagingFileIo+0x316
+52 ffffb188`8de26ca0 fffff807`53196cb7 Ntfs!NtfsFsdRead+0x380
+53 ffffb188`8de26d60 fffff807`5379e064 nt!IopfCallDriver+0x53
+54 ffffb188`8de26da0 fffff807`53274f9d nt!IovCallDriver+0x260
+55 ffffb188`8de26de0 fffff807`542562ba nt!IofCallDriver+0x1e730d
+56 ffffb188`8de26e20 fffff807`54253f93 FLTMGR!FltpLegacyProcessingAfterPreCallbacksCompleted+0x1aa
+57 ffffb188`8de26ea0 fffff807`53196cb7 FLTMGR!FltpDispatch+0xa3
+58 ffffb188`8de26f00 fffff807`5379e064 nt!IopfCallDriver+0x53
+59 ffffb188`8de26f40 fffff807`53274f9d nt!IovCallDriver+0x260
+5a ffffb188`8de26f80 fffff807`530f1948 nt!IofCallDriver+0x1e730d
+5b ffffb188`8de26fc0 fffff807`530f2849 nt!IoPageReadEx+0x1e4
+5c (Inline Function) --------`-------- nt!MiPageRead+0x32
+5d ffffb188`8de27030 fffff807`530f1fb6 nt!MiIssueHardFaultIo+0xc1
+5e ffffb188`8de27080 fffff807`53033e22 nt!MiIssueHardFault+0x3c6
+5f ffffb188`8de27180 fffff807`53239d20 nt!MmAccessFault+0x322
+60 ffffb188`8de27320 fffff807`534b0449 nt!KiPageFault+0x360
+61 ffffb188`8de274b0 fffff807`53599d97 nt!PopFxProcessWorkPool+0xed
+62 ffffb188`8de27520 fffff807`5314cd05 nt!PopFxEmergencyWorker+0x27
+63 ffffb188`8de27550 fffff807`532332fa nt!PspSystemThreadStartup+0x55
+64 ffffb188`8de275a0 00000000`00000000 nt!KiStartSystemThread+0x2a
+
+This is because nt!PopFxProcessWorkPool is in pageable section:
+4: kd> !dh nt
+
+File Type: EXECUTABLE IMAGE
+…
+SECTION HEADER #9
+    PAGE name
+  3B4FBE virtual size
+  5A3000 virtual address
+  3B5000 size of raw data
+  4EC400 file pointer to raw data
+       0 file pointer to relocation table
+       0 file pointer to line numbers
+       0 number of relocations
+       0 number of line numbers
+60000020 flags
+         Code
+         (no align specified)
+         Execute Read
+…
+4: kd> ? nt!PopFxProcessWorkPool - nt
+Evaluate expression: 6943580 = 00000000`0069f35c
+4: kd> ? 5A3000 + 3B4FBE 
+Evaluate expression: 9797566 = 00000000`00957fbe
+4: kd> ? 5A3000 < 0069f35c
+Evaluate expression: 1 = 00000000`00000001
+4: kd> ?  5A3000 + 3B4FBE  > 0069f35c
+Evaluate expression: 1 = 00000000`00000001

@@ -1,0 +1,368 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22010683385
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 14F - PDC_WATCHDOG_TIMEOUT (14f):
+2: kd> !analyze -show
+PDC_WATCHDOG_TIMEOUT (14f)
+A system component failed to respond within the allocated time period,
+preventing the system from exiting connected standby.
+Arguments:
+Arg1: 0000000000000004, Client ID of the hung component.
+Arg2: 0000000000000002, A resiliency client failed to respond.
+Arg3: fffff8002523e5d0, Pointer to the resiliency client (pdc!_PDC_RESILIENCY_CLIENT).
+Arg4: ffffcf888dd8f490, Pointer to a pdc!PDC_14F_TRIAGE structure.
+
+A PDC resiliency client failed to respond within allowed timeframe:
+2: kd> dt ffffcf888dd8f490 pdc!_PDC_14F_TRIAGE
+   +0x000 ClientProcess    : (null) 
+   +0x008 CallbackThread   : 0xffffe401`2e29b040 _ETHREAD
+
+The resiliency client is the Desktop Activity Moderator (DAM), and it is waiting for a mutex:
+2: kd> .thread /p /r 0xffffe401`2e29b040
+Implicit thread is now ffffe401`2e29b040
+…
+2: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffcf88`903ee980 fffff800`2246aad4 nt!KiSwapContext+0x76
+01 ffffcf88`903eeac0 fffff800`224657ca nt!KiSwapThread+0x190
+02 ffffcf88`903eeb30 fffff800`22466fb0 nt!KiCommitThreadWait+0x13a
+03 ffffcf88`903eebe0 fffff800`224c93c6 nt!KeWaitForSingleObject+0x140
+04 ffffcf88`903eec80 fffff800`2248d3c8 nt!ExpAcquireFastMutexContended+0x7a
+05 ffffcf88`903eecc0 fffff800`27d2d668 nt!ExAcquireFastMutexUnsafe+0x58
+06 ffffcf88`903eecf0 fffff800`27d349a8 dam!DampPdcResiliencyCallback+0xc8
+07 ffffcf88`903eeda0 fffff800`2524b542 dam!PdcpResiliencyClientCallback+0x158
+08 ffffcf88`903ef140 fffff800`2241a349 pdc!PdcPortMessageWorkerThread+0xe2
+09 ffffcf88`903ef4b0 fffff800`2240b1b5 nt!ExpWorkerThread+0xf9
+0a ffffcf88`903ef550 fffff800`225a4eb8 nt!PspSystemThreadStartup+0x55
+0b ffffcf88`903ef5a0 00000000`00000000 nt!KiStartSystemThread+0x28
+
+Switching to the frame and disassembling the call, we can determine the mutex address - dam!DamStateMutex:
+2: kd> .frame /r 6
+06 ffffcf88`903eecf0 fffff800`27d349a8 dam!DampPdcResiliencyCallback+0xc8
+rax=0000000000000000 rbx=0000000000000000 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000001 rdi=0000000000000000
+rip=fffff80027d2d668 rsp=ffffcf88903eecf0 rbp=ffffcf88903eed39
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000001363 r13=0000000000000000
+r14=0000000000000002 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dam!DampPdcResiliencyCallback+0xc8:
+fffff800`27d2d668 48391d6176ffff  cmp     qword ptr [dam!DampState (fffff800`27d24cd0)],rbx ds:fffff800`27d24cd0=0000000000000000
+2: kd> ub
+dam!DampPdcResiliencyCallback+0x9b:
+fffff800`27d2d63b 41be02000000    mov     r14d,2
+fffff800`27d2d641 3bfe            cmp     edi,esi
+fffff800`27d2d643 0f872c030000    ja      dam!DampPdcResiliencyCallback+0x3d5 (fffff800`27d2d975)
+fffff800`27d2d649 4c8b15e0aaffff  mov     r10,qword ptr [dam!_imp_KeEnterCriticalRegion (fffff800`27d28130)]
+fffff800`27d2d650 e8cb6a73fa      call    nt!KeEnterCriticalRegion (fffff800`22464120)
+fffff800`27d2d655 488d0d648fffff  lea     rcx,[dam!DamStateMutex (fffff800`27d265c0)]
+fffff800`27d2d65c 4c8b15d5aaffff  mov     r10,qword ptr [dam!_imp_ExAcquireFastMutexUnsafe (fffff800`27d28138)]
+fffff800`27d2d663 e808fd75fa      call    nt!ExAcquireFastMutexUnsafe (fffff800`2248d370)
+
+This allows to determine mutex owner:
+2: kd> dt nt!_FAST_MUTEX fffff800`27d265c0 Owner
+   +0x008 Owner : 0xffffe401`2eb87040 Void
+
+The dam!DamStateMutex mutex owner thread is waiting for a executive resource (lock):
+2: kd> .thread /p /r 0xffffe401`2eb87040
+Implicit thread is now ffffe401`2eb87040
+…
+2: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # Child-SP          RetAddr           Call Site
+00 ffffcf88`8ea85750 fffff800`2246aad4 nt!KiSwapContext+0x76
+01 ffffcf88`8ea85890 fffff800`224657ca nt!KiSwapThread+0x190
+02 ffffcf88`8ea85900 fffff800`22466fb0 nt!KiCommitThreadWait+0x13a
+03 ffffcf88`8ea859b0 fffff800`224daee0 nt!KeWaitForSingleObject+0x140
+04 ffffcf88`8ea85a50 fffff800`2246b347 nt!ExpWaitForResource+0x60
+05 ffffcf88`8ea85ad0 fffff800`2246b023 nt!ExpAcquireResourceSharedLite+0x27b
+06 ffffcf88`8ea85b70 fffff800`27585c69 nt!ExAcquireResourceSharedLite+0x53
+07 ffffcf88`8ea85bb0 fffff800`27497c71 dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x2d9
+08 ffffcf88`8ea85d50 fffff800`275be998 dxgkrnl!COREDEVICEACCESS::AcquireShared+0x71
+09 ffffcf88`8ea85d90 fffff800`275be880 dxgkrnl!DXGDEVICE::NotifyProcessFreeze+0xa4
+0a ffffcf88`8ea85ed0 fffff800`275be174 dxgkrnl!DXGPROCESS::NotifyProcessFreeze+0x11c
+0b ffffcf88`8ea85f50 ffffa42a`7aa1330b dxgkrnl!DxgkNotifyProcessFreezeCallout+0xb4
+…
+
+Similarly, switching to the frame and disassembling backwards, we can determine the address of the executive resource (lock):
+2: kd> .frame /r 7
+07 ffffcf88`8ea85bb0 fffff800`27497c71 dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x2d9
+rax=0000000000000000 rbx=ffffe40126c99000 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffffe4012cb69080 rdi=0000000000000000
+rip=fffff80027585c69 rsp=ffffcf888ea85bb0 rbp=ffffe4011e49e360
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000001 r13=ffffe4012eb87001
+r14=0000000000000000 r15=ffffbe035e280e60
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x2d9:
+fffff800`27585c69 488d4c2440      lea     rcx,[rsp+40h]
+2: kd> ub
+dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x2b5:
+fffff800`27585c45 eb81            jmp     dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x238 (fffff800`27585bc8)
+fffff800`27585c47 488bd3          mov     rdx,rbx
+fffff800`27585c4a 488d4c2440      lea     rcx,[rsp+40h]
+fffff800`27585c4f e86ce60400      call    dxgkrnl!DXGDEADLOCK_TRACKER::DXGDEADLOCK_TRACKER (fffff800`275d42c0)
+fffff800`27585c54 488b8ba8000000  mov     rcx,qword ptr [rbx+0A8h]
+fffff800`27585c5b b201            mov     dl,1
+fffff800`27585c5d 4c8b15ec54fdff  mov     r10,qword ptr [dxgkrnl!_imp_ExAcquireResourceSharedLite (fffff800`2755b150)]
+fffff800`27585c64 e86753eefa      call    nt!ExAcquireResourceSharedLite (fffff800`2246afd0)
+
+This, again, allows us to determine the owner of the lock:
+2: kd> !locks poi(ffffe40126c99000+a8)
+
+Resource @ 0xffffe40125eab910    Exclusively owned
+    Contention Count = 1294
+    NumberOfSharedWaiters = 2
+     Threads: ffffe40121171040-01<*> ffffe4012eb87040-01    ffffe4012bcf6340-01    
+1 total locks
+
+The owner of the lock is the Direct X Kernel Power Arbiter Thread:
+2: kd> !thread ffffe40121171040
+THREAD ffffe40121171040  Cid 0004.01b4  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffe401211210d8  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffbe0358a35c00
+Owning Process            ffffe40116cbd100       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      1243665        Ticks: 6657 (0:00:01:44.015)
+Context Switch Count      2914           IdealProcessor: 2             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.171
+Win32 Start Address dxgkrnl!DpiPowerArbiterThread (0xfffff80027609220)
+Stack Init ffffcf888d1ba5d0 Current ffffcf888d1ba1b0
+Base ffffcf888d1bb000 Limit ffffcf888d1b4000 Call 0000000000000000
+Priority 12 BasePriority 8 PriorityDecrement 64 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffcf88`8d1ba1f0 fffff800`2246aad4 : 00000000`00000000 ffff9300`51d00180 ffffcf88`00000000 ffffe401`21171040 : nt!KiSwapContext+0x76
+ffffcf88`8d1ba330 fffff800`224657ca : ffffe401`00000000 fffff800`00000000 ffffe401`21171040 fffff800`1e1c9140 : nt!KiSwapThread+0x190
+ffffcf88`8d1ba3a0 fffff800`22466fb0 : ffffe401`211210d8 ffffe401`00000000 ffffcf88`00000000 ffffe401`211210d8 : nt!KiCommitThreadWait+0x13a
+ffffcf88`8d1ba450 fffff800`27609287 : ffffe401`21121000 00000000`00000000 00000000`00000000 ffff9300`51d00100 : nt!KeWaitForSingleObject+0x140
+ffffcf88`8d1ba4f0 fffff800`2240b1b5 : ffffe401`21171040 00000000`00000080 fffff800`27609220 001fa4ff`bd9bbfff : dxgkrnl!DpiPowerArbiterThread+0x67
+ffffcf88`8d1ba550 fffff800`225a4eb8 : ffff9300`51d00180 ffffe401`21171040 fffff800`2240b160 512ee804`24548957 : nt!PspSystemThreadStartup+0x55
+ffffcf88`8d1ba5a0 00000000`00000000 : ffffcf88`8d1bb000 ffffcf88`8d1b4000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+The Direct X Kernel Power Arbiter thread holds the lock thus preventing a Direct X thread from obtaining it and making progress thus preventing that thread from releasing the fast mutex the DAM resiliency client needs to progress further and respond to the PDC. The Power Arbiter thread takes the lock when GFX device leaves D0 and returns the lock back when GFX device returns back to D0.
+
+To determine GFX device power state, we can find it on the PCI bus:
+2: kd> !pcitree
+Bus 0x0 (FDO Ext ffffe40116c7d190)
+  (d=0,  f=0) 80869a14 devext 0xffffe4011e1df1f0 devstack 0xffffe4011e1df0a0 0600 Bridge/HOST to PCI
+  (d=2,  f=0) 80869a49 devext 0xffffe4011e49e4b0 devstack 0xffffe4011e49e360 0300 Display Controller/VGA
+…
+
+From the device stack we can obtain device node:
+2: kd> !devstack ffffe4011e49e360
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffe40121120030  \Driver\igfxn      ffffe40121120180  
+  ffffe40116ff0850  \Driver\ACPI       ffffe40116c7ea20  
+> ffffe4011e49e360  \Driver\pci        ffffe4011e49e4b0  NTPNP_PCI0001
+!DevNode ffffe4011e3b6ca0 :
+  DeviceInst is "PCI\VEN_8086&DEV_9A49&SUBSYS_22128086&REV_01\3&11583659&0&10"
+  ServiceName is "igfxn"
+
+Device node allows us to double-check that this is indeed GFX:
+2: kd> dt nt!_DEVICE_NODE ffffe4011e3b6ca0 UniqueId
+   +0x080 UniqueId : _UNICODE_STRING "\_SB.PC00.GFX0"
+
+And since it is registered with PEP, we can see that it has Power IRP in flight:
+2: kd> dt nt!_DEVICE_NODE ffffe4011e3b6ca0 FxDevice
+   +0x050 FxDevice : 0xffffe401`25b76b20 _POP_FX_DEVICE
+2: kd> dt 0xffffe401`25b76b20 _POP_FX_DEVICE Status.IrpInUse
+nt!_POP_FX_DEVICE
+   +0x020 Status          : 
+      +0x000 IrpInUse        : 0y1
+
+The IRP is pended by the ACPI driver:
+2: kd> dt 0xffffe401`25b76b20 _POP_FX_DEVICE Irp
+nt!_POP_FX_DEVICE
+   +0x010 Irp : 0xffffe401`25e24010 _IRP
+2: kd> !irp  0xffffe401`25e24010
+Irp is active with 6 stacks 4 is current (= 0xffffe40125e241b8)
+…
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe40116ff0850 00000000 fffff800274af010-ffffcf888ca1f2f8 Success Error Cancel pending
+	       \Driver\ACPI	dxgkrnl!DpiFdoPowerCompletionRoutine
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe40121120030 00000000 fffff8002252b550-ffffe40126de97b0 Success Error Cancel pending
+	       \Driver\igfxn	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000001 00000000
+…
+2: kd> !devstack ffffe40116ff0850
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffe40121120030  \Driver\igfxn      ffffe40121120180  
+> ffffe40116ff0850  \Driver\ACPI       ffffe40116c7ea20  
+  ffffe4011e49e360  \Driver\pci        ffffe4011e49e4b0  NTPNP_PCI0001
+!DevNode ffffe4011e3b6ca0 :
+  DeviceInst is "PCI\VEN_8086&DEV_9A49&SUBSYS_22128086&REV_01\3&11583659&0&10"
+  ServiceName is "igfxn"
+
+From the Power Manager state, we can see that the IRP is D0 so GFX device is powering up and until D0 is completed the Power Arbiter thread will not release the lock.
+Power Manager worker thread that was processing the IRP is blocked:
+2: kd> !poaction
+PopAction: fffff80022e23380
+…
+  IRP: ffffe40125e24010 (set/D0,), PDO: ffffe4011e49e360, CURRENT: ffffe40116ff0850
+
+Irp worker threads (PopIrpThreadList - fffff80022e20b10)
+  THREAD: ffffe40116ccb040 (static), IRP: ffffe40125e24010, DEVICE: ffffe40121120030
+…
+
+The worker thread is waiting for the event:
+2: kd> !thread ffffe40116ccb040
+THREAD ffffe40116ccb040  Cid 0004.0014  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffcf888ca1f2f8  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffbe0358a35c00
+Owning Process            ffffe40116cbd100       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      1246095        Ticks: 4227 (0:00:01:06.046)
+Context Switch Count      64977          IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:32.078
+Win32 Start Address nt!PopIrpWorker (0xfffff80022541c70)
+Stack Init ffffcf888ca1f5d0 Current ffffcf888ca1ef80
+Base ffffcf888ca20000 Limit ffffcf888ca19000 Call 0000000000000000
+Priority 13 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffcf88`8ca1efc0 fffff800`2246aad4 : 00000000`00000000 ffff9300`51ac2180 ffffcf88`00000000 ffffe401`16ccb040 : nt!KiSwapContext+0x76
+ffffcf88`8ca1f100 fffff800`224657ca : 00000000`00000000 ffffe401`25e24200 ffffe401`16ccb040 00000000`00000000 : nt!KiSwapThread+0x190
+ffffcf88`8ca1f170 fffff800`22466fb0 : ffffcf88`8ca1f2f8 ffffcf88`00000000 ffffcf88`00000000 ffffcf88`8ca1f2f8 : nt!KiCommitThreadWait+0x13a
+ffffcf88`8ca1f220 fffff800`275e5ee6 : ffffe401`00000000 00000000`00000000 000000a0`00000000 ffff9300`51ac2100 : nt!KeWaitForSingleObject+0x140
+ffffcf88`8ca1f2c0 fffff800`275e5401 : 00000000`00000000 00000000`00000000 ffff9300`51d0e000 ffffe401`25e24200 : dxgkrnl!DpiFdoHandleDevicePower+0x226
+ffffcf88`8ca1f360 fffff800`275e6951 : ffffe401`25e24010 ffffe401`21120180 ffffe401`21120030 00000000`00000000 : dxgkrnl!DpiFdoDispatchPower+0x21
+ffffcf88`8ca1f390 fffff800`22541e4b : ffffe401`16ccb040 ffffe401`00000000 ffffe401`16ccb040 ffffe401`00000000 : dxgkrnl!DpiDispatchPower+0xe1
+ffffcf88`8ca1f4b0 fffff800`2240b1b5 : 00000000`00000000 fffff800`22541c70 00000000`00000000 00000000`000006de : nt!PopIrpWorker+0x1db
+ffffcf88`8ca1f550 fffff800`225a4eb8 : ffff9300`51d00180 ffffe401`16ccb040 fffff800`2240b160 90840f00`32f51b0d : nt!PspSystemThreadStartup+0x55
+ffffcf88`8ca1f5a0 00000000`00000000 : ffffcf88`8ca20000 ffffcf88`8ca19000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x28
+
+The event will be set by the Direct X completion routine when IRP will be completed:
+2: kd> !irp  0xffffe401`25e24010
+Irp is active with 6 stacks 4 is current (= 0xffffe40125e241b8)
+…
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe40116ff0850 00000000 fffff800274af010-ffffcf888ca1f2f8 Success Error Cancel pending
+	       \Driver\ACPI	dxgkrnl!DpiFdoPowerCompletionRoutine
+			Args: 00000000 00000001 00000001 00000000
+ [IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe40121120030 00000000 fffff8002252b550-ffffe40126de97b0 Success Error Cancel pending
+	       \Driver\igfxn	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000001 00000000
+…
+
+The ACPI driver will need to run _STA method, so the IRP is in the list of devices to run the _STA on:
+2: kd> !list -t acpi!_ACPI_POWER_REQUEST.ListEntry.Flink -x "dt" -a "acpi!_ACPI_POWER_REQUEST RequestType Context" poi(ACPI!AcpiPowerPhase0List)
+   +0x030 RequestType : 0 ( AcpiPowerRequestDevice )
+   +0x0c8 Context     : 0xffffe401`1e4e9920 Void
+
+   +0x030 RequestType : 0 ( AcpiPowerRequestDevice )
+   +0x0c8 Context     : 0xffffe401`25e24010 Void
+
+But there is another device in front – it will have to have it’s _STA evaluated first. From its IRP, we can see it is \_SB.PC00.PEG0:
+2: kd> !irp 0xffffe401`1e4e9920 
+Irp is active with 6 stacks 5 is current (= 0xffffe4011e4e9b10)
+…
+ [IRP_MJ_POWER(16), IRP_MN_WAIT_WAKE(0)]
+            0  0 ffffe4011e4a2360 00000000 fffff80024fb11a0-fffff80024f8de40    
+	       \Driver\pci	ACPI!ACPIDeviceIrpDeviceFilterRequest
+			Args: 00000000 00000000 00000000 00000000
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffffe40116c78e10 00000000 fffff8002252b550-ffffe4011e4e9200 Success Error Cancel pending
+	       \Driver\ACPI	nt!PopRequestCompletion
+			Args: 00000000 00000001 00000004 00000000
+…
+2: kd> !devstack ffffe40116c78e10
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffe4011e2d3040  \Driver\pci        ffffe4011e2d3190  
+> ffffe40116c78e10  \Driver\ACPI       ffffe40116cc6a20  
+  ffffe4011e4a2360  \Driver\pci        ffffe4011e4a24b0  NTPNP_PCI0004
+!DevNode ffffe4011e3bfca0 :
+  DeviceInst is "PCI\VEN_8086&DEV_9A09&SUBSYS_72708086&REV_01\3&11583659&0&30"
+  ServiceName is "pci"
+2: kd> dt nt!_device_node ffffe4011e3bfca0 UniqueId
+   +0x080 UniqueId : _UNICODE_STRING "\_SB.PC00.PEG0"
+
+Looking at the AML Interpreter state we can see that there are a number of outstanding contexts to run (including \_SB.PC00.PEG0._STA):
+2: kd> dt acpi!_ctxt listCtxt
+   +0x010 listCtxt : _LIST_ENTRY
+2: kd> !list -t acpi!_ctxt.listCtxt.Flink -x "dt" -a "acpi!_ctxt MethodName" poi(ACPI!glistCtxtHead)-10
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.LPCB.H_EC.TFN1._FSL"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.XHCI.RHUB._PS2"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.PEG0.PEGP._PS3"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.TXHC._DSW"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.TDM1._DSW"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.TDM0._DSW"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.LPCB.H_EC.BAT0._BST"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PC00.PEG0._STA"
+
+   +0x1b8 MethodName : _UNICODE_STRING "\_SB.PEPD._DSM"
+
+The current context, however, that keeps the AML Interpreter busy is "\_SB.PC00.LPCB.H_EC.TFN1._FSL:
+2: kd> !amli lc
+ Ctxt=ffffe4012f8b1010, ThID=0000000000000000, Flgs=---C-----, pbOp=ffffe4011f735b27, Obj=\_SB.PC00.LPCB.H_EC.TFN1._FSL
+AMLI_DBGERR: SIG_CTXT does not match (2fed7770)
+
+\_SB.PC00.LPCB.H_EC.TFN1._FSL invokes  \_SB_.PC00.LPCB.H_EC.ECMD:
+2: kd> !amli u \_SB.PC00.LPCB.H_EC.TFN1._FSL
+ffffe4011f855e42:[\_SB.PC00.LPCB.H_EC.TFN1._FSL]
+ffffe4011f855e42 : If(\_SB_.PC00.LPCB.H_EC.ECAV)
+ffffe4011f855e5c : {
+ffffe4011f855e5c : | If(LNot(LEqual(Arg0, \_SB_.PC00.LPCB.H_EC.ECRD(RefOf(\_SB_.PC00.LPCB.H_EC.PENV)))))
+ffffe4011f855e91 : | {
+ffffe4011f855e91 : | | \_SB_.PC00.LPCB.H_EC.ECWT(One, RefOf(\_SB_.PC00.LPCB.H_EC.PPSL))
+ffffe4011f855ec1 : | | \_SB_.PC00.LPCB.H_EC.ECWT(Zero, RefOf(\_SB_.PC00.LPCB.H_EC.PPSH))
+ffffe4011f855ef1 : | | \_SB_.PC00.LPCB.H_EC.ECWT(\_SB_.PC00.LPCB.H_EC.ECRD(RefOf(\_SB_.PC00.LPCB.H_EC.PENV)), RefOf(\_SB_.PC00.LPCB.H_EC.PINV))
+ffffe4011f855f4f : | | \_SB_.PC00.LPCB.H_EC.ECWT(Arg0, RefOf(\_SB_.PC00.LPCB.H_EC.PENV))
+ffffe4011f855f7f : | | \_SB_.PC00.LPCB.H_EC.ECWT(0x64, RefOf(\_SB_.PC00.LPCB.H_EC.PSTP))
+ffffe4011f855fb0 : | | \_SB_.PC00.LPCB.H_EC.ECMD(0x1a)
+ffffe4011f855fc9 : | }
+ffffe4011f855fc9 : }
+
+ \_SB_.PC00.LPCB.H_EC.ECMD invokes \_SB.PC00.LPCB.H_EC.ECRD:
+2: kd> !amli u  \_SB_.PC00.LPCB.H_EC.ECMD
+ffffe4011f735ea2:[\_SB.PC00.LPCB.H_EC.ECMD]
+ffffe4011f735ea2 : If(ECTK)
+ffffe4011f735ea8 : {
+ffffe4011f735ea8 : | If(LNot(LLess(_REV, 0x2)))
+ffffe4011f735eb2 : | {
+ffffe4011f735eb2 : | | Store(One, ECAV)
+ffffe4011f735eb8 : | }
+ffffe4011f735eb8 : | Store(Zero, ECTK)
+ffffe4011f735ebe : }
+ffffe4011f735ebe : If(ECAV)
+ffffe4011f735ec4 : {
+ffffe4011f735ec4 : | While(ECRD(RefOf(CMDR)))
+ffffe4011f735ecf : | {
+ffffe4011f735ecf : | | Stall(0x14)
+ffffe4011f735ed3 : | }
+ffffe4011f735ed3 : | ECWT(Arg0, RefOf(CMDR))
+ffffe4011f735edd : | Return(Zero)
+ffffe4011f735edf : }
+ffffe4011f735edf : Return(0xff)
+
+And this is where the AML Interpreter currently is:
+2: kd> !amli ln ffffe4011f735b27
+ffffe4011f735b27:[\_SB.PC00.LPCB.H_EC.ECRD+0x55]
+
+The loop inside \_SB_.PC00.LPCB.H_EC.ECMD causes AML to invoke ECRD repeatedly:
+2: kd> !amli u  \_SB_.PC00.LPCB.H_EC.ECMD
+…
+ffffe4011f735ec4 : | While(ECRD(RefOf(CMDR)))
+ffffe4011f735ecf : | {
+ffffe4011f735ecf : | | Stall(0x14)
+ffffe4011f735ed3 : | }
+…
+
+Therefore, based on observed evidence, the PDC timeout reported here is caused by the ACPI BIOS continuously looping inside \_SB_.PC00.LPCB.H_EC.ECMD method.
+This issue should be dispatched to the BIOS owners for further analysis – why the lop is not resolved. In addition, this kind of unbounded loop in AML is an unsafe design as it can cause timeouts and System crashes – similar to the one observed here.

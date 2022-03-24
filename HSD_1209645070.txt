@@ -1,0 +1,127 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209645070/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	DRIVER_POWER_STATE_FAILURE
+[BUGCHECK]:	0x9F
+
+This is DRIVER_POWER_STATE_FAILURE (9f):
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffff8d8329ee0260, Physical Device Object of the stack
+Arg3: ffffc3815a2f78e0, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: ffff8d8324bfabd0, The blocked IRP 
+…
+
+D3 IRP:
+2: kd> !poaction
+…
+Allocated power irps (PopIrpList - fffff80138120a30)
+…
+  IRP: ffff8d8324bfabd0 (set/D3,), PDO: ffff8d8329ee0260, CURRENT: ffff8d832f2fb3b0
+
+Irp worker threads (PopIrpThreadList - fffff8013811f670)
+  THREAD: ffff8d8320b0b800 (static)
+  THREAD: ffff8d8320afe800 (static)
+  THREAD: ffff8d832f42c800 (dynamic)
+  THREAD: ffff8d83225b4800 (dynamic)
+  THREAD: ffff8d8327fbd800 (dynamic)
+  THREAD: ffff8d8322104800 (dynamic)
+  THREAD: ffff8d832fbcc800 (dynamic)
+  THREAD: ffff8d8322f18040 (dynamic)
+  THREAD: ffff8d832d505800 (dynamic)
+  THREAD: ffff8d832813d800 (dynamic)
+  THREAD: ffff8d8321ed7800 (dynamic)
+  THREAD: ffff8d8321705040 (dynamic), IRP: ffff8d8324bfabd0, DEVICE: ffff8d83219324e0
+  THREAD: ffff8d832129f040 (dynamic)
+  THREAD: ffff8d8325310800 (dynamic)
+  THREAD: ffff8d832cfb7800 (dynamic)
+…
+
+Irp processing is stuck in Audio driver for nearly 5 minutes – explicit wait:
+2: kd> !thread ffff8d8321705040
+THREAD ffff8d8321705040  Cid 0004.1cec  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffff8d832a158500  NotificationEvent
+Not impersonating
+DeviceMap                 ffffb383cb416ac0
+Owning Process            ffff8d8320a7f040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      23123725       Ticks: 19098 (0:00:04:58.406)
+Context Switch Count      29             IdealProcessor: 2             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address nt!PopIrpWorker (0xfffff80137f38e04)
+Stack Init ffffc38167c52c10 Current ffffc38167c523f0
+Base ffffc38167c53000 Limit ffffc38167c4c000 Call 0000000000000000
+Priority 14 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffc381`67c52430 fffff801`37e84d7c : fffff805`07011cd8 fffff805`00000000 fffff805`07014130 00000000`00000000 : nt!KiSwapContext+0x76
+ffffc381`67c52570 fffff801`37e8481f : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSwapThread+0x17c
+ffffc381`67c52620 fffff801`37e865e7 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiCommitThreadWait+0x14f
+ffffc381`67c526c0 fffff805`0706907f : ffff8d83`2a158500 00001f80`00000000 ffff6be4`00000000 0000a865`00000000 : nt!KeWaitForSingleObject+0x377
+ffffc381`67c52770 fffff805`07055e8f : 00000000`00000000 ffff8d83`2a145d00 00000000`00000000 00000000`00000010 : IntcDAud+0x6907f
+ffffc381`67c527b0 fffff805`0707d28d : 00000000`00000000 ffff8d83`2f717b30 00000000`00000000 fffff801`38070000 : IntcDAud+0x55e8f
+ffffc381`67c527f0 fffff805`0707acda : 00000000`00000000 00000000`00000004 00000000`00000004 fffff805`0591e102 : IntcDAud+0x7d28d
+ffffc381`67c52840 fffff805`0707a8ff : 00000000`c0000001 00000000`00000106 fffff805`0701c048 00000000`00000004 : IntcDAud+0x7acda
+ffffc381`67c528f0 fffff805`070952b7 : ffff8d83`21627b98 00000000`00000000 00000000`00000002 00000000`00000005 : IntcDAud+0x7a8ff
+ffffc381`67c52960 fffff805`0590279e : ffff8d83`2f2fb500 ffff8d83`24bfabd0 00000000`00000005 ffff8d83`2f2fb500 : IntcDAud+0x952b7
+ffffc381`67c529c0 fffff805`05931782 : ffff8d83`21627b98 00000000`00000004 00000000`00000023 00000000`00000000 : portcls!iPowerChangeState+0x72
+ffffc381`67c52a00 fffff805`032d15f1 : ffff8d83`2a24d060 ffff8d83`24bfaee0 00000000`00000000 00000000`00000001 : portcls!DispatchPower+0x282
+ffffc381`67c52a90 fffff801`37f38fe2 : ffff8d83`21705040 fffff801`3811f600 ffffc381`00000000 ffff8d83`219324e0 : ksthunk!CKernelFilterDevice::DispatchIrp+0x239
+ffffc381`67c52af0 fffff801`37e21729 : ffffffff`fa0a1f00 fffff801`37f38e04 ffff8d83`28a906e0 00000000`000000b6 : nt!PopIrpWorker+0x1de
+ffffc381`67c52b90 fffff801`37f6e9d6 : ffffc381`5a30b180 ffff8d83`21705040 fffff801`37e216e8 ffff8d83`2a3586e8 : nt!PspSystemThreadStartup+0x41
+ffffc381`67c52be0 00000000`00000000 : ffffc381`67c53000 ffffc381`67c4c000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+It seems that Audio driver is waiting for unregistration of a physical connection that was registered by a previous call to PcRegisterPhysicalConnection:
+2: kd> !thread ffff8d8320cc1800
+THREAD ffff8d8320cc1800  Cid 0004.4464  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffff8d832f2fb5b8  Mutant - owning thread ffff8d8321705040
+Not impersonating
+DeviceMap                 ffffb383cb416ac0
+Owning Process            ffff8d8320a7f040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      23123758       Ticks: 19065 (0:00:04:57.890)
+Context Switch Count      15095          IdealProcessor: 0  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:02.828
+Win32 Start Address nt!ExpWorkerThread (0xfffff80137eb5ef0)
+Stack Init ffffc381666e9c10 Current ffffc381666e9140
+Base ffffc381666ea000 Limit ffffc381666e3000 Call 0000000000000000
+Priority 14 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffc381`666e9180 fffff801`37e84d7c : 00000000`00000000 fffff801`00000000 ffff8d83`27e1e858 00000000`00000018 : nt!KiSwapContext+0x76
+ffffc381`666e92c0 fffff801`37e8481f : ffff8d83`20cc1800 ffff8d83`20cc1940 fffff801`381dc550 00000000`00000000 : nt!KiSwapThread+0x17c
+ffffc381`666e9370 fffff801`37e865e7 : 00000000`00000000 ffffc381`666e94f0 00000000`00000000 00000000`00000000 : nt!KiCommitThreadWait+0x14f
+ffffc381`666e9410 fffff805`05901337 : ffff8d83`2f2fb5b8 00000000`00000000 00000000`00000000 ffffc381`00000000 : nt!KeWaitForSingleObject+0x377
+ffffc381`666e94c0 fffff805`059411f2 : 00000000`00000000 ffff8d83`2f320010 00000000`00000000 00000000`00000000 : portcls!AcquireDevice+0x37
+ffffc381`666e9510 fffff805`05941591 : 00000000`00000100 00000000`00000000 00000000`00000100 fffff805`00000001 : portcls!SubdeviceIndex+0x5a
+ffffc381`666e9580 fffff805`0708f164 : ffff8d83`2a14fb70 ffff8d83`2f320010 00000000`00000000 fffff805`0701c048 : portcls!PcUnregisterPhysicalConnection+0x31
+ffffc381`666e95d0 fffff805`0708c2f3 : ffff8d83`2a14fb70 fffff805`0701c048 ffff8d83`2f320038 fffff805`0701c048 : IntcDAud+0x8f164
+ffffc381`666e9640 fffff805`0708b4de : ffff8d83`2a14fb70 00000000`00000101 00000000`00000000 fffff805`0701c048 : IntcDAud+0x8c2f3
+ffffc381`666e9690 fffff805`0708afc1 : ffff8d83`2a14fb70 fffff805`00000000 fffff805`0701c001 00000000`00000000 : IntcDAud+0x8b4de
+ffffc381`666e96e0 fffff805`07089f51 : ffff8d83`2a14fb70 fffff805`0701c000 00000000`00000100 ffff8d83`2a158028 : IntcDAud+0x8afc1
+ffffc381`666e9730 fffff805`07089b39 : ffff8d83`2a14fb70 ffff8d83`2a14fb70 00000000`00000100 00000000`00000000 : IntcDAud+0x89f51
+ffffc381`666e9790 fffff805`070252c9 : ffff8d83`2a14fb70 00000000`00000100 fffff805`0701c000 00000000`00000000 : IntcDAud+0x89b39
+ffffc381`666e97f0 fffff805`07091462 : ffff8d83`2a14fb70 fffff805`0701c048 00000000`00000000 fffff805`07015120 : IntcDAud+0x252c9
+ffffc381`666e9830 fffff805`07094149 : ffff8d83`2a14fa10 00000000`00000000 00000000`00000000 00000000`00000000 : IntcDAud+0x91462
+ffffc381`666e9870 fffff805`0709324a : ffff8d83`2a14fa18 00000000`00000000 00000000`00000000 00000000`00000000 : IntcDAud+0x94149
+ffffc381`666e98a0 fffff805`07067f90 : ffff8d83`2a14fa18 ffffc381`666e9970 ffff8d83`2a158028 fffff805`0701c048 : IntcDAud+0x9324a
+ffffc381`666e9900 fffff805`070677de : ffff8d83`2a158028 ffff8d83`28a8f010 ffffc381`666e9a30 ffff8d83`2a158028 : IntcDAud+0x67f90
+ffffc381`666e99b0 fffff805`07068354 : ffff8d83`2a158028 00000000`00000000 00000000`00000000 00000000`00000001 : IntcDAud+0x677de
+ffffc381`666e9a20 fffff805`070691e1 : ffff8d83`2a158028 00000000`00000000 00000000`00000000 fffff801`381dc550 : IntcDAud+0x68354
+ffffc381`666e9a60 fffff801`37e73b80 : ffff8d83`28f07910 ffff8d83`291d1e20 00000000`00000000 00000000`00000000 : IntcDAud+0x691e1
+ffffc381`666e9a90 fffff801`37eb5fd9 : fffff801`381dc100 ffff8d83`20cc1800 fffff801`37e73a90 00000000`00000000 : nt!IopProcessWorkItem+0xf0
+ffffc381`666e9b00 fffff801`37e21729 : 00000001`00000000 00000000`00000080 ffff8d83`20a7f040 ffff8d83`20cc1800 : nt!ExpWorkerThread+0xe9
+ffffc381`666e9b90 fffff801`37f6e9d6 : fffff801`38161180 ffff8d83`20cc1800 fffff801`37e216e8 00300030`0030002d : nt!PspSystemThreadStartup+0x41
+ffffc381`666e9be0 00000000`00000000 : ffffc381`666ea000 ffffc381`666e3000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x16
+
+But this creates a deadlock as portcls.sys has to acquire device lock which is taken by the power management thread.
+So this looks like a deadlock caused by the audio driver.

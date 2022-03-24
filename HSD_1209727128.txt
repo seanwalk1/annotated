@@ -1,0 +1,140 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209727128/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a race condition in iaPreciseTouch.sys. 
+This is Bugcheck 7E - SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e) (see memory dump):
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: ffffffffc0000005, The exception code that was not handled
+Arg2: fffff80b57e0ece2, The address that the exception occurred at
+Arg3: ffff8001ebada6c8, Exception Record Address
+Arg4: ffff8001ebad9ef0, Context Record Address
+…
+
+Switching to the context record, we can see that iaPreciseTouch!WaitForAnyStat attempted to dreference the NULL pointer:
+1: kd> .cxr ffff8001ebad9ef0
+rax=0000000000000018 rbx=0000000000000000 rcx=0000000000000722
+rdx=ffff97094b79b340 rsi=ffffdc012d06c4e0 rdi=ffff97094b79b350
+rip=fffff80b57e0ece2 rsp=ffff8001ebada900 rbp=ffff8001ebada988
+r8=ffff8001e61a4000  r9=0000000000000000 r10=0000000000000801
+r11=0000000000000001 r12=00000000000001f4 r13=fffff80079511140
+r14=0000000000000002 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0000  ds=002b  es=002b  fs=0053  gs=002b             efl=00010202
+iaPreciseTouch!WaitForAnyState+0x52:
+fffff80b`57e0ece2 498b8cc7e8080000 mov     rcx,qword ptr [r15+rax*8+8E8h] ds:002b:00000000`000009a8=????????????????
+1: kd> rcr2
+Last set context:
+cr2=00000000000009a8
+1: kd> ? @rax*8+8e8
+Evaluate expression: 2472 = 00000000`000009a8
+
+The NULL pointer is the pointer to the State Machine Context passed as a parameter:
+1: kd> dv /V
+@r15              @r15                          pSM = 0x00000000`00000000
+@r14d             @r14d                      nCount = 2
+@rbp              @rbp                          psh = 0xffff8001`ebada988
+@r12d             @r12d                   msTimeout = 0x1f4
+<unavailable>     <unavailable>              status = <value unavailable>
+@rdi              @rdi                         pweh = 0xffff9709`4b79b350
+@rbx              @rbx                            i = 0
+1: kd> x iaPreciseTouch!WaitForAnyState
+fffff80b`57e0ec90 iaPreciseTouch!WaitForAnyState (struct _StateMachineContext *, unsigned long, _StateHandle *, unsigned long)
+
+The pSM pointer in the device context is NULL:
+1: kd> k 2
+ # Child-SP          RetAddr           Call Site
+00 ffff8001`ebada900 fffff80b`57e077d5 iaPreciseTouch!WaitForAnyState+0x52 [c:\tcag1\work\abe13827cd6a0b74\src\smframework\framework\smcontext.c @ 144] 
+01 ffff8001`ebada940 fffff80b`57e09106 iaPreciseTouch!ChangeSensorPowerState+0x10d [c:\tcag1\work\abe13827cd6a0b74\src\power.c @ 78] 
+1: kd> ub fffff80b`57e077d5 
+iaPreciseTouch!ChangeSensorPowerState+0xdc [c:\tcag1\work\abe13827cd6a0b74\src\power.c @ 77]:
+fffff80b`57e077a4 c744244818000000 mov     dword ptr [rsp+48h],18h
+fffff80b`57e077ac c744244c0d000000 mov     dword ptr [rsp+4Ch],0Dh
+fffff80b`57e077b4 41b9f4010000    mov     r9d,1F4h
+fffff80b`57e077ba 4c8d442448      lea     r8,[rsp+48h]
+fffff80b`57e077bf ba02000000      mov     edx,2
+fffff80b`57e077c4 488b442428      mov     rax,qword ptr [rsp+28h]
+fffff80b`57e077c9 488b88282e0100  mov     rcx,qword ptr [rax+12E28h]
+fffff80b`57e077d0 e8bb740000      call    iaPreciseTouch!WaitForAnyState (fffff80b`57e0ec90)
+1: kd> .frame /r 1
+01 ffff8001`ebada940 fffff80b`57e09106 iaPreciseTouch!ChangeSensorPowerState+0x10d [c:\tcag1\work\abe13827cd6a0b74\src\power.c @ 78] 
+rax=0000000000000018 rbx=ffffdc012d06c4ec rcx=0000000000000722
+rdx=ffff97094b79b340 rsi=ffffdc012d06c4e0 rdi=ffffdc012a5075f0
+rip=fffff80b57e077d5 rsp=ffff8001ebada940 rbp=ffffdc012a5075f0
+r8=ffff8001e61a4000  r9=0000000000000000 r10=0000000000000801
+r11=0000000000000001 r12=0000000000000800 r13=fffff80079511140
+r14=0000000000000001 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0010  ss=0000  ds=002b  es=002b  fs=0053  gs=002b             efl=00010202
+iaPreciseTouch!ChangeSensorPowerState+0x10d:
+fffff80b`57e077d5 89442420        mov     dword ptr [rsp+20h],eax ss:ffff8001`ebada960=00000000
+1: kd> dv /V
+ffff8001`ebada988 @rsp+0x0048          statesToWaitFor = _StateHandle [2]
+ffff8001`ebada9b0 @rsp+0x0070                  Context = 0xffff9709`3f5d22f0
+ffff8001`ebada9b8 @rsp+0x0078       touchPanelNewState = TOUCHPANEL_OFF (0n0)
+ffff8001`ebada960 @rsp+0x0020                   status = 0n0
+ffff8001`ebada968 @rsp+0x0028              pdevContext = 0xffff9709`3f5d22f0
+1: kd> dt pDevContext pSM
+Local var @ 0xffff8001ebada968 Type _DEVICE_EXTENSION*
+0xffff9709`3f5d22f0 
+   +0x12e28 pSM : (null)
+
+The pSM is updated in 2 places in the driver:
+E:\DUMPS\ww08\1209727128>link -dump -headers iaPreciseTouch.sys | findstr image | findstr base
+       140000000 image base (0000000140000000 to 00000001400BBFFF)
+
+E:\DUMPS\ww08\1209727128>link -dump -disasm iaPreciseTouch.sys | findstr /i +12e28h], | findstr mov
+  0000000140045CC5: 48 89 81 28 2E 01  mov         qword ptr [rcx+12E28h],rax
+  00000001400462D9: 48 C7 80 28 2E 01  mov         qword ptr [rax+12E28h],0
+
+It is assigned in D0Entry and set to NULL in D0Exit:
+1: kd> u iaPreciseTouch+0000000140045CC5-140000000 L1
+iaPreciseTouch!IntTouchEvtDeviceD0Entry+0x229 [c:\tcag1\work\abe13827cd6a0b74\src\pci.c @ 305]:
+fffff80b`57e05cc5 488981282e0100  mov     qword ptr [rcx+12E28h],rax
+1: kd> u iaPreciseTouch+00000001400462D9-140000000 L1
+iaPreciseTouch!IntTouchEvtDeviceD0Exit+0x339 [c:\tcag1\work\abe13827cd6a0b74\src\pci.c @ 378]:
+fffff80b`57e062d9 48c780282e010000000000 mov qword ptr [rax+12E28h],0
+
+The device have exited D0:
+1: kd> !wdfkd.wdfdriverinfo iaPreciseTouch
+…
+
+    !wdfdevice 0x000068f6c0a2dff8 ff (Filter)
+        Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerDxNP, WdfDevStatePwrPolDx
+        context:  dt 0xffff97093f5d22f0 iaPreciseTouch!DEVICE_EXTENSION (size is 0x12e38 bytes)
+        <no associated attribute callbacks>
+        !wdfdevicequeues 0x000068f6c0a2dff8
+
+…
+1: kd> !wdfdevice 0x000068f6c0a2dff8 ff
+…
+
+Power state history:
+[0] WdfDevStatePowerD0StartingDmaEnable (0x311)
+[1] WdfDevStatePowerD0StartingStartSelfManagedIo (0x312)
+[2] WdfDevStatePowerDecideD0State (0x313)
+[3] WdfDevStatePowerD0NP (0x8308)
+[4] WdfDevStatePowerGotoDxNP (0x831b)
+[5] WdfDevStatePowerNotifyingD0ExitToWakeInterruptsNP (0x835b)
+[6] WdfDevStatePowerGotoDxIoStoppedNP (0x831d)
+[7] WdfDevStatePowerDxNP (0x8320)
+…
+
+Unregistering power settings callback in D0Exit creates a race condition as invocation of the callback is not synchronized with device power state changes and also because device can exit D0 for PnP transitions.
+This design creates race condition in the driver which leads to this crash. Recommended design outlined in MSDN:
+“Typically, Kernel-Mode Driver Framework (KMDF) drivers should call PoRegisterPowerSettingCallback from their EvtDeviceSelfManagedIoInit callback function, and should call PoUnregisterPowerSettingCallback from their EvtDeviceSelfManagedIoCleanup callback function.”
+https://msdn.microsoft.com/en-us/library/windows/hardware/ff559727(v=vs.85).aspx#power_setting_callback
+
+

@@ -1,0 +1,77 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/2207392535
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is Bugcheck C7 - TIMER_OR_DPC_INVALID (c7) (see attached memory dump):
+3: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+TIMER_OR_DPC_INVALID (c7)
+Kernel timer or DPC used incorrectly.
+Arguments:
+Arg1: 0000000000000000, Timer object found in memory which must not contain such items.
+Arg2: ffffbb0fe25d12f0, Address of the timer object.
+Arg3: ffffbb0fe25d12f0, Start of memory range being checked.
+Arg4: ffffbb0fe25d1330, End of memory range being checked.
+…
+
+SDBUS is trying to initialize timer object:
+3: kd> k
+ # Child-SP          RetAddr           Call Site
+00 fffff289`96c8a648 fffff805`69aa82b9 nt!KeBugCheckEx
+01 fffff289`96c8a650 fffff805`6a17c1c2 nt!KeCheckForTimer+0x259
+02 fffff289`96c8a6d0 fffff805`6a17c17b nt!VerifierKeInitializeTimerEx+0x32
+03 fffff289`96c8a700 fffff804`d75fd110 nt!VerifierKeInitializeTimer+0xb
+04 fffff289`96c8a730 fffff804`d762f1fe sdbus!SdbusWorkerInitialize+0x18
+05 fffff289`96c8a760 fffff804`d763011e sdbus!SdbusFdoStartDevice+0x24a
+06 fffff289`96c8a9d0 fffff805`698c4e92 sdbus!SdbusFdoStartDeviceWorker+0x1e
+07 fffff289`96c8aa00 fffff805`698b5835 nt!IopProcessWorkItem+0x92
+08 fffff289`96c8aa70 fffff805`69937925 nt!ExpWorkerThread+0x105
+09 fffff289`96c8ab10 fffff805`699cad5a nt!PspSystemThreadStartup+0x55
+0a fffff289`96c8ab60 00000000`00000000 nt!KiStartSystemThread+0x2a
+3: kd> .frame /r 4
+04 fffff289`96c8a730 fffff804`d762f1fe sdbus!SdbusWorkerInitialize+0x18
+rax=0000000000000000 rbx=0000000000000000 rcx=00000000000000c7
+rdx=0000000000000000 rsi=ffffbb0fe16b01a0 rdi=ffffbb0fe25d12a0
+rip=fffff804d75fd110 rsp=fffff28996c8a730 rbp=fffff28996c8a860
+ r8=ffffbb0fe25d12f0  r9=ffffbb0fe25d12f0 r10=ffffbb0fe25d12b0
+r11=0000000000000002 r12=0000000000000001 r13=0000000000000098
+r14=0000000000000000 r15=ffffbb0fe16b0050
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040246
+sdbus!SdbusWorkerInitialize+0x18:
+fffff804`d75fd110 0f1f440000      nop     dword ptr [rax+rax]
+3: kd> ub
+sdbus!SdbusSynchronousWorkCompletion+0x26:
+fffff804`d75fd0f6 cc              int     3
+fffff804`d75fd0f7 cc              int     3
+sdbus!SdbusWorkerInitialize:
+fffff804`d75fd0f8 48895c2408      mov     qword ptr [rsp+8],rbx
+fffff804`d75fd0fd 57              push    rdi
+fffff804`d75fd0fe 4883ec20        sub     rsp,20h
+fffff804`d75fd102 488bf9          mov     rdi,rcx
+fffff804`d75fd105 4883c150        add     rcx,50h
+fffff804`d75fd109 48ff1520f00200  call    qword ptr [sdbus!_imp_KeInitializeTimer (fffff804`d762c130)]
+
+The address of the timer:
+3: kd> ? ffffbb0fe25d12a0+50
+Evaluate expression: -75798080056592 = ffffbb0f`e25d12f0
+
+But the timer is already in the timer table:
+3: kd> !timer
+Dump system timers
+
+Interrupt time: 3f0a75c3 00000000 [ 4/11/2019 23:09:06.669]
+
+List Timer    Interrupt Low/High     Fire Time              DPC/thread
+PROCESSOR 0 (nt!_KTIMER_TABLE fffff805683ef800)
+…
+199 ffffbb0fe25d12f0    00000000 00000000 [ 4/11/2019 23:07:20.904]  Unable to get contents of DPC @ 6f7225fe625e7547
+…
+
+Verifier has caught an attempt to use timer incorrectly.

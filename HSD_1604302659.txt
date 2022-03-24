@@ -1,0 +1,268 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604302659/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a live dump - WIN32K_CALLOUT_WATCHDOG_LIVEDUMP (1a1):
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+WIN32K_CALLOUT_WATCHDOG_LIVEDUMP (1a1)
+A callout to Win32k did not return promptly.
+Arguments:
+Arg1: ffff930d27c8d700, Thread blocking prompt return from a Win32k callout.
+Arg2: 0000000000000000, Reserved.
+Arg3: 0000000000000000, Reserved.
+Arg4: 0000000000000000, Reserved.
+…
+
+The thread blocking Win32k callout is waiting over for power request to complete: 
+0: kd> !thread ffff930d27c8d700
+THREAD ffff930d27c8d700  Cid 0004.0228  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrUserRequest) KernelMode Non-Alertable
+    ffff930d2994b810  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffa38eef216bb0
+Owning Process            ffff930d278bd500       Image:         System
+Attached Process          ffff930d29492640       Image:         csrss.exe
+Wait Start TickCount      121989         Ticks: 527 (0:00:00:08.234)
+Context Switch Count      2266           IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.078
+Win32 Start Address nt!ExpWorkerThread (0xfffff80212c39720)
+Stack Init ffffb601d5ec8d10 Current ffffb601d5ec8400
+Base ffffb601d5ec9000 Limit ffffb601d5ec3000 Call 0000000000000000
+Priority 13 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffb601`d5ec8440 fffff802`12c2be86 : ffff930d`27c8d700 ffffb601`d3900180 00000000`00000000 00000000`00000000 : nt!KiSwapContext+0x76
+ffffb601`d5ec8580 fffff802`12c2b861 : ffff930d`27c8d700 ffff930d`27c8d840 ffff930d`27c8d700 fffff802`11b2f180 : nt!KiSwapThread+0x166
+ffffb601`d5ec8630 fffff802`12c2b258 : ffff930d`2984d1c0 00000000`00000000 fffff802`11b2f100 ffff930d`2994b810 : nt!KiCommitThreadWait+0x101
+ffffb601`d5ec86d0 ffffdb5d`abc0906a : ffff930d`2994b810 00000000`0000000d 00000000`00000000 ffff930d`2957d900 : nt!KeWaitForSingleObject+0x398
+ffffb601`d5ec87a0 ffffdb5d`abc08db5 : 00000000`00000000 ffff930d`27858e00 ffffb601`d5ec8ae8 ffffb601`00000000 : win32kbase!QueuePowerRequest+0x13a
+ffffb601`d5ec87e0 fffff802`130d36f5 : 00000000`00000000 ffff930d`27858ea0 ffff930d`29492640 00000000`c000000d : win32kbase!UserPowerStateCallout+0xc1
+ffffb601`d5ec8830 fffff802`13086925 : 00000000`00000010 00000000`00000082 ffffb601`d5ec8918 00000000`00000000 : nt!ExCallSessionCallBack+0x91
+ffffb601`d5ec88f0 fffff802`130cbf88 : ffffb601`d5ec8ae8 ffffb601`d5ec8999 00000000`00000000 ffff930d`29492640 : nt!PsInvokeWin32Callout+0xd5
+ffffb601`d5ec8920 fffff802`130d5703 : 00000000`00000004 ffffb601`d5ec8ae8 ffffb601`d5ec8ae8 fffff802`12d18373 : nt!PopInvokeWin32Callout+0x118
+ffffb601`d5ec8a00 fffff802`1317537c : ffffb601`d5ec8ae8 fffff80c`4b846668 ffffb601`d5ec8ae8 00000000`00000000 : nt!PopDispatchStateCallout+0x4f
+ffffb601`d5ec8a70 fffff802`13175909 : 00000000`00000000 00000000`8000000a 00000000`00000000 00000000`00000000 : nt!PopSuspendServices+0x38
+ffffb601`d5ec8aa0 fffff802`131754b9 : 00000000`00000000 ffff930d`2b8743b0 fffff802`13009380 00000000`00000000 : nt!PopIssueActionRequest+0x1e5
+ffffb601`d5ec8b60 fffff802`12cafa9f : 00000000`00000001 00000000`00000002 fffff802`12f59900 00000000`00000000 : nt!PopPolicyWorkerAction+0x69
+ffffb601`d5ec8bd0 fffff802`12c397f8 : ffff930d`27c8d700 fffff802`12cafa10 fffff802`12f59980 ffff930d`2b8743b0 : nt!PopPolicyWorkerThread+0x8f
+ffffb601`d5ec8c00 fffff802`12cb9187 : 00000000`00000000 00000000`00000080 ffff930d`278bd500 ffff930d`27c8d700 : nt!ExpWorkerThread+0xd8
+ffffb601`d5ec8c90 fffff802`12d82166 : ffffb601`d3900180 ffff930d`27c8d700 fffff802`12cb9140 00000000`00000000 : nt!PspSystemThreadStartup+0x47
+ffffb601`d5ec8ce0 00000000`00000000 : ffffb601`d5ec9000 ffffb601`d5ec3000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16
+
+The Win32k Power Thread is waiting for an ALPC message reply from SVCHOST:
+0: kd> !thread poi(win32kbase!gpPowerThread)
+THREAD ffff930d2984d080  Cid 0234.0274  Teb: 0000005b67621000 Win32Thread: ffff930d29966280 WAIT: (WrLpcReply) KernelMode Non-Alertable
+    ffff930d2984d6c8  Semaphore Limit 0x1
+Waiting for reply to ALPC Message ffffa38ef7fadce0 : queued at port ffff930d299c9e20 : owned by process ffff930d299d9080
+Not impersonating
+DeviceMap                 ffffa38eef216bb0
+Owning Process            ffff930d29492640       Image:         csrss.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      121989         Ticks: 527 (0:00:00:08.234)
+Context Switch Count      41             IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address 0x00007ffa77022a40
+Stack Init ffffb601d6bf4d10 Current ffffb601d6bf3440
+Base ffffb601d6bf5000 Limit ffffb601d6bef000 Call 0000000000000000
+Priority 14 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffb601`d6bf3480 fffff802`12c2be86 : ffff930d`2984d080 fffff802`11b2f180 00000000`00000000 fffff802`00000000 : nt!KiSwapContext+0x76
+ffffb601`d6bf35c0 fffff802`12c2b861 : 00000000`1641e4d1 00000000`00000000 00000000`00000001 00000000`00175a23 : nt!KiSwapThread+0x166
+ffffb601`d6bf3670 fffff802`12c2b258 : 00000000`00000000 ffff930d`00000000 00000000`00000000 ffff930d`2984d6c8 : nt!KiCommitThreadWait+0x101
+ffffb601`d6bf3710 fffff802`12c281cf : ffff930d`2984d6c8 00000000`00000011 ffff930d`299c9e00 ffff930d`299c9e01 : nt!KeWaitForSingleObject+0x398
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!AlpcpWaitForSingleObject+0x2e (Inline Function @ fffff802`12c281cf)
+ffffb601`d6bf37e0 fffff802`13043aa6 : 00000000`00000000 ffff930d`2984d6c8 00000000`00000011 ffff930d`2984d080 : nt!AlpcpSignalAndWait+0x17f
+ffffb601`d6bf3880 fffff802`1304359d : ffffffff`00000001 ffffffff`ffffffff ffffb601`d6bf3d90 ffffb601`d6bf3cf0 : nt!AlpcpReceiveSynchronousReply+0x56
+ffffb601`d6bf38e0 fffff802`1303edad : ffff930d`299c9bd0 00000000`00020000 ffffb601`d6bf3d90 00000000`00000000 : nt!AlpcpProcessSynchronousRequest+0x32d
+ffffb601`d6bf39d0 fffff802`12d87c13 : ffff930d`2984d080 ffffb601`d6bf3b80 ffffb601`d6bf3cb8 ffffb601`d6bf3aa8 : nt!NtAlpcSendWaitReceivePort+0x1ed
+ffffb601`d6bf3a90 fffff802`12d7fec0 : fffff802`12cb0bf0 00000000`00000048 ffffb601`00000000 00000000`00000002 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffb601`d6bf3b00)
+ffffb601`d6bf3c98 fffff802`12cb0bf0 : 00000000`00000048 ffffb601`00000000 00000000`00000002 ffffb601`d6bf4a01 : nt!KiServiceLinkage
+ffffb601`d6bf3ca0 fffff802`131761cf : fffff80c`4b846be0 00000000`00000000 ffffb601`d6bf4a38 ffffb601`d6bf4a38 : nt!PopUmpoSendPowerMessage+0x140
+ffffb601`d6bf3fc0 fffff802`130a9795 : 00000000`00000000 ffffb601`d6bf4998 00000000`00000000 00000000`00000000 : nt!PopUmpoSendLegacyEvent+0x33
+ffffb601`d6bf4040 fffff802`12d87c13 : ffffdb07`c0800000 00000000`00000014 00000000`00000000 fffff802`12cf7441 : nt!NtPowerInformation+0x1109
+ffffb601`d6bf4770 fffff802`12d7fec0 : ffffdb5d`abc467bf 00000000`00000000 ffffb601`d6bf4a02 00000000`00000001 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffb601`d6bf47e0)
+ffffb601`d6bf4978 ffffdb5d`abc467bf : 00000000`00000000 ffffb601`d6bf4a02 00000000`00000001 ff000001`00000000 : nt!KiServiceLinkage
+ffffb601`d6bf4980 ffffdb5d`abc091e9 : ffff930d`2994b800 00000000`00000001 00000000`00000001 ffffdb5d`abc2042f : win32kbase!xxxUserPowerStateCalloutWorker+0x5f3
+ffffb601`d6bf4af0 ffffdb5d`ab87fbff : 00000000`00000025 00000000`00000000 00000000`00000020 00000000`00000000 : win32kbase!xxxUserPowerCalloutWorker+0x129
+ffffb601`d6bf4b50 fffff802`12d87c13 : ffff930d`2984d080 00000000`00000000 00000000`00000000 ffff930d`2957bae0 : win32kfull!NtUserCallNoParam+0x2f
+ffffb601`d6bf4b80 00007ffa`778f1124 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffb601`d6bf4b80)
+0000005b`6793f798 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ffa`778f1124
+
+0: kd> !alpc /m ffffa38ef7fadce0
+
+Message ffffa38ef7fadce0
+  MessageID             : 0x0B1C (2844)
+  CallbackID            : 0x22BE7 (142311)
+  SequenceNumber        : 0x00000022 (34)
+  Type                  : LPC_REQUEST
+  DataLength            : 0x0048 (72)
+  TotalLength           : 0x0070 (112)
+  Canceled              : No
+  Release               : No
+  ReplyWaitReply        : No
+  Continuation          : Yes
+  OwnerPort             : ffff930d299c9bd0 [ALPC_SERVER_COMMUNICATION_PORT]
+  WaitingThread         : ffff930d2984d080
+  QueueType             : ALPC_MSGQUEUE_PENDING
+  QueuePort             : ffff930d299c9e20 [ALPC_CLIENT_COMMUNICATION_PORT]
+  QueuePortOwnerProcess : ffff930d299d9080 (svchost.exe)
+  ServerThread          : ffff930d2bff9040
+  QuotaCharged          : No
+  CancelQueuePort       : 0000000000000000
+  CancelSequencePort    : 0000000000000000
+  CancelSequenceNumber  : 0x00000000 (0)
+  ClientContext         : 0000000000000000
+  ServerContext         : 0000000000000000
+  PortContext           : 000000000000015c
+  CancelPortContext     : 0000000000000000
+  SecurityData          : 0000000000000000
+  View                  : 0000000000000000
+  HandleData            : 0000000000000000
+
+The SVCHOST thread is waiting for an ALPC message reply from Service Control Manager:
+0: kd> !thread ffff930d2bff9040
+THREAD ffff930d2bff9040  Cid 03bc.0fbc  Teb: 000000d6d776d000 Win32Thread: ffff930d2c18a0b0 WAIT: (WrLpcReply) UserMode Non-Alertable
+    ffff930d2bff9688  Semaphore Limit 0x1
+Waiting for reply to ALPC Message ffffa38ef587cce0 : queued at port ffff930d299e9640 : owned by process ffff930d298fe380
+Not impersonating
+DeviceMap                 ffffa38eef216bb0
+Owning Process            ffff930d299d9080       Image:         svchost.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      122389         Ticks: 127 (0:00:00:01.984)
+Context Switch Count      2034           IdealProcessor: 0             
+UserTime                  00:00:00.125
+KernelTime                00:00:00.093
+Win32 Start Address 0x00007ffa7ac68af0
+Stack Init ffffb601d8449d10 Current ffffb601d84494c0
+Base ffffb601d844a000 Limit ffffb601d8444000 Call 0000000000000000
+Priority 9 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffb601`d8449500 fffff802`12c2be86 : ffff930d`2bff9040 ffffb601`d3900180 00000000`00000000 ffff930d`299d9580 : nt!KiSwapContext+0x76
+ffffb601`d8449640 fffff802`12c2b861 : 00000000`1ef6a22f 00000000`00000000 00000000`00000001 00000000`164a8fc4 : nt!KiSwapThread+0x166
+ffffb601`d84496f0 fffff802`12c2b258 : 00000252`d50ed850 ffff930d`00000000 00000000`00000000 ffff930d`2bff9688 : nt!KiCommitThreadWait+0x101
+ffffb601`d8449790 fffff802`12c281cf : ffff930d`2bff9688 00000000`00000011 ffff930d`299e9601 ffff930d`299e9601 : nt!KeWaitForSingleObject+0x398
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!AlpcpWaitForSingleObject+0x2e (Inline Function @ fffff802`12c281cf)
+ffffb601`d8449860 fffff802`13043aa6 : 00000000`00000000 ffff930d`2bff9688 a46a1129`00000011 ffff930d`2bff9040 : nt!AlpcpSignalAndWait+0x17f
+ffffb601`d8449900 fffff802`1304359d : 00000000`00000000 ffffffff`ffffffff 00000252`d508b070 00000252`d50ed978 : nt!AlpcpReceiveSynchronousReply+0x56
+ffffb601`d8449960 fffff802`1303edad : ffff930d`299be710 ffffb601`00020000 00000252`d508b070 00000252`d50ed978 : nt!AlpcpProcessSynchronousRequest+0x32d
+ffffb601`d8449a50 fffff802`12d87c13 : ffff930d`2bff9040 ffffb601`d8449c00 000000d6`d90feda8 ffffb601`d8449b28 : nt!NtAlpcSendWaitReceivePort+0x1ed
+ffffb601`d8449b10 00007ffa`7ace5e94 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffb601`d8449b80)
+000000d6`d90fed88 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ffa`7ace5e94
+
+0: kd> !alpc /m ffffa38ef587cce0
+
+Message ffffa38ef587cce0
+  MessageID             : 0x05FC (1532)
+  CallbackID            : 0x230AA (143530)
+  SequenceNumber        : 0x0000060A (1546)
+  Type                  : LPC_REQUEST
+  DataLength            : 0x0070 (112)
+  TotalLength           : 0x0098 (152)
+  Canceled              : No
+  Release               : No
+  ReplyWaitReply        : No
+  Continuation          : Yes
+  OwnerPort             : ffff930d299be710 [ALPC_CLIENT_COMMUNICATION_PORT]
+  WaitingThread         : ffff930d2bff9040
+  QueueType             : ALPC_MSGQUEUE_PENDING
+  QueuePort             : ffff930d299e9640 [ALPC_CONNECTION_PORT]
+  QueuePortOwnerProcess : ffff930d298fe380 (services.exe)
+  ServerThread          : ffff930d29987700
+  QuotaCharged          : No
+  CancelQueuePort       : 0000000000000000
+  CancelSequencePort    : 0000000000000000
+  CancelSequenceNumber  : 0x00000000 (0)
+  ClientContext         : 00000252d50ed850
+  ServerContext         : 0000000000000000
+  PortContext           : 00000240b484b820
+  CancelPortContext     : 0000000000000000
+  SecurityData          : 0000000000000000
+  View                  : 0000000000000000
+  HandleData            : 0000000000000000
+
+Service Control Manager is waiting for SystemScopeHostService.exe service to reply to service control command:
+0: kd> !thread ffff930d29987700
+THREAD ffff930d29987700  Cid 02c8.042c  Teb: 0000007c391e8000 Win32Thread: 0000000000000000 WAIT: (UserRequest) UserMode Non-Alertable
+    ffff930d2a855f60  SynchronizationEvent
+    ffff930d2a269640  ProcessObject
+Not impersonating
+DeviceMap                 ffffa38eef216bb0
+Owning Process            ffff930d298fe380       Image:         services.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      122389         Ticks: 127 (0:00:00:01.984)
+Context Switch Count      4226           IdealProcessor: 0             
+UserTime                  00:00:00.078
+KernelTime                00:00:00.281
+Win32 Start Address 0x00007ffa7ac68af0
+Stack Init ffffb601d712ad10 Current ffffb601d7129f90
+Base ffffb601d712b000 Limit ffffb601d7125000 Call 0000000000000000
+Priority 9 BasePriority 9 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffb601`d7129fd0 fffff802`12c2be86 : ffff930d`29987700 ffffb601`d3900180 00000000`00000002 00000000`00000000 : nt!KiSwapContext+0x76
+ffffb601`d712a110 fffff802`12c2b861 : ffff930d`29987700 ffff930d`29987800 ffff930d`278763e0 00000000`00000000 : nt!KiSwapThread+0x166
+ffffb601`d712a1c0 fffff802`12c2a369 : 00000000`0000006d 00000000`00000000 ffffa38e`f2991e01 ffff930d`2a269640 : nt!KiCommitThreadWait+0x101
+ffffb601`d712a260 fffff802`13044351 : ffffb601`00000002 ffffb601`d712a440 ffff930d`2a269640 00000000`00000006 : nt!KeWaitForMultipleObjects+0x209
+ffffb601`d712a370 fffff802`13044059 : fffff802`12f649a8 ffffa38e`f78a6650 ffffb601`d712a8d8 ffff930d`2dcb61f0 : nt!ObWaitForMultipleObjects+0x2c1
+ffffb601`d712a890 fffff802`12d87c13 : ffff930d`29987700 ffffb601`d712ac00 ffff930d`29987700 0000007c`395fe3f8 : nt!NtWaitForMultipleObjects+0xf9
+ffffb601`d712ab10 00007ffa`7ace58d4 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffb601`d712ab80)
+0000007c`395fe3d8 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ffa`7ace58d4
+
+The SystemScopeHostService.exe is delaying execution:
+0: kd> !process ffff930d2a269640
+PROCESS ffff930d2a269640
+    SessionId: 0  Cid: 07e4    Peb: f0dec88000  ParentCid: 02c8
+    DirBase: 1516b3000  ObjectTable: ffffa38ef770ac00  HandleCount:  89.
+    Image: SystemScopeHostService.exe
+    VadRoot ffff930d2c23a600 Vads 50 Clone 0 Private 277. Modified 43. Locked 0.
+    DeviceMap ffffa38eef216bb0
+    Token                             ffffa38ef7c48060
+    ElapsedTime                       00:29:36.271
+    UserTime                          00:00:00.000
+    KernelTime                        00:00:00.000
+    QuotaPoolUsage[PagedPool]         71184
+    QuotaPoolUsage[NonPagedPool]      7856
+    Working Set Sizes (now,min,max)  (1525, 50, 345) (6100KB, 200KB, 1380KB)
+    PeakWorkingSetSize                1516
+    VirtualSize                       36 Mb
+    PeakVirtualSize                   39 Mb
+    PageFaultCount                    1589
+    MemoryPriority                    BACKGROUND
+    BasePriority                      8
+    CommitCharge                      342
+    Job                               ffff930d29102040
+
+        THREAD ffff930d2dcb6080  Cid 07e4.07f0  Teb: 000000f0dec89000 Win32Thread: ffff930d2bf405d0 WAIT: (DelayExecution) UserMode Non-Alertable
+            ffffffffffffffff  NotificationEvent
+        Not impersonating
+        DeviceMap                 ffffa38eef216bb0
+        Owning Process            ffff930d2a269640       Image:         SystemScopeHostService.exe
+        Attached Process          N/A            Image:         N/A
+        Wait Start TickCount      122390         Ticks: 126 (0:00:00:01.968)
+        Context Switch Count      26             IdealProcessor: 0             
+        UserTime                  00:00:00.015
+        KernelTime                00:00:00.000
+        Win32 Start Address 0x00007ff7a16d1828
+        Stack Init ffffb601d8be8d10 Current ffffb601d8be87f0
+        Base ffffb601d8be9000 Limit ffffb601d8be3000 Call 0000000000000000
+        Priority 9 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+        Child-SP          RetAddr           Call Site
+        ffffb601`d8be8830 fffff802`12c2be86 nt!KiSwapContext+0x76
+        ffffb601`d8be8970 fffff802`12c2b861 nt!KiSwapThread+0x166
+        ffffb601`d8be8a20 fffff802`12c3dc5c nt!KiCommitThreadWait+0x101
+        ffffb601`d8be8ac0 fffff802`1305022f nt!KeDelayExecutionThread+0x10c
+        ffffb601`d8be8b50 fffff802`12d87c13 nt!NtDelayExecution+0x5f
+        ffffb601`d8be8b80 00007ffa`7ace5404 nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffb601`d8be8b80)
+        000000f0`deeff5f8 00000000`00000000 0x00007ffa`7ace5404
+…
+
+So SystemScopeHostService.exe is indirectly blocking Win32k callout and causing the live dump.
+I recommend to dispatch this issue to the System Scope owners.

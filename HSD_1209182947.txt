@@ -1,0 +1,257 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209182947
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	DRIVER_POWER_STATE_FAILURE (9f)
+[BUGCHECK]:	0x9F
+
+Here we have DRIVER_POWER_STATE_FAILURE (9f):
+1: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000004, The power transition timed out waiting to synchronize with the Pnp
+     subsystem.
+Arg2: 000000000000012c, Timeout in seconds.
+Arg3: ffffcf012d49d040, The thread currently holding on to the Pnp lock.
+Arg4: ffffe50071178890, nt!TRIAGE_9F_PNP on Win7 and higher
+
+1: kd> ? 12c / 0n60
+Evaluate expression: 5 = 00000000`00000005
+ 
+Switching to the thread currently holding the PnP lock:
+1: kd> .thread /p /r ffffcf012d49d040
+Implicit thread is now ffffcf01`2d49d040
+Implicit process is now ffffcf01`2d49a040
+Loading User Symbols
+
+
+************* Symbol Loading Error Summary **************
+Module name            Error
+SharedUserData         No error - symbol load deferred
+
+You can troubleshoot most symbol related issues by turning on symbol loading diagnostics (!sym noisy) and repeating the command that caused symbols to be loaded.
+You should also verify that your symbol search path (.sympath) is correct.
+1: kd> !thread ffffcf012d49d040
+THREAD ffffcf012d49d040  Cid 0004.00d4  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffcf0133d3d080  NotificationEvent
+Not impersonating
+DeviceMap                 ffffbc09a82020e0
+Owning Process            ffffcf012d49a040       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      87636          Ticks: 19200 (0:00:05:00.000)
+Context Switch Count      2028           IdealProcessor: 3  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:03.062
+Win32 Start Address nt!ExpWorkerThread (0xfffff800ba461140)
+Stack Init ffffe50071807c10 Current ffffe50071807320
+Base ffffe50071808000 Limit ffffe50071801000 Call 0000000000000000
+Priority 15 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffe500`71807360 fffff800`ba44ab4a : ffffcf01`00000000 ffffcf01`2d49d040 ffffe500`71276180 ffffbc09`b01e58b0 : nt!KiSwapContext+0x76
+ffffe500`718074a0 fffff800`ba44a590 : ffffcf01`2d49d040 ffffcf01`2d49d180 00000000`00000000 00000000`00000001 : nt!KiSwapThread+0x16a
+ffffe500`71807550 fffff800`ba449de8 : ffffbc09`b01e58a0 fffff800`00000000 ffffe500`711aac00 ffffcf01`33d3d080 : nt!KiCommitThreadWait+0x160
+ffffe500`718075f0 fffff800`ba41b16d : ffffcf01`33d3d080 ffffcf01`00000000 00000000`00000000 ffffcf01`2fcb2d00 : nt!KeWaitForSingleObject+0x2b8
+ffffe500`718076c0 fffff800`ba41b043 : ffffcf01`336ce450 ffffcf01`2fcb2d58 ffffcf01`2fcb2d30 00000000`00000001 : nt!PopFxActivateDevice+0x11d
+ffffe500`71807700 fffff800`ba836f77 : ffffcf01`336ce450 ffffcf01`336ce450 ffffcf01`2fcb2d30 00000000`00000000 : nt!PoFxActivateDevice+0xb
+ffffe500`71807730 fffff800`ba8cc3d1 : ffffcf01`2fcb2d30 ffffe500`71807860 00000000`00000002 00000000`00000000 : nt!PipEnumerateDevice+0xab
+ffffe500`71807760 fffff800`ba96a6c3 : ffffcf01`3334a5c0 ffffe500`71807a99 00000000`00000010 fffff800`ba96a618 : nt!PipProcessDevNodeTree+0x2b1
+ffffe500`718079e0 fffff800`ba523443 : ffffcf01`00000003 00000000`00000000 ffffcf01`3334a5c0 00000000`00000000 : nt!PiProcessReenumeration+0xab
+ffffe500`71807a30 fffff800`ba46122f : ffffcf01`2d49d040 fffff800`ba768e80 fffff800`ba8003c0 fffff800`ba8003c0 : nt!PnpDeviceActionWorker+0x1b3
+ffffe500`71807b00 fffff800`ba4090c7 : 00000000`00000000 00000000`00000080 ffffcf01`2d49a040 ffffcf01`2d49d040 : nt!ExpWorkerThread+0xef
+ffffe500`71807b90 fffff800`ba5825b6 : fffff800`b9576180 ffffcf01`2d49d040 fffff800`ba409080 00000000`00000000 : nt!PspSystemThreadStartup+0x47
+ffffe500`71807be0 00000000`00000000 : ffffe500`71808000 ffffe500`71801000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16 
+
+The thread is trying to activate PEP-integrated device, let’s see which one:
+1: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 ffffe500`71807360 fffff800`ba44ab4a nt!KiSwapContext+0x76
+01 ffffe500`718074a0 fffff800`ba44a590 nt!KiSwapThread+0x16a
+02 ffffe500`71807550 fffff800`ba449de8 nt!KiCommitThreadWait+0x160
+03 ffffe500`718075f0 fffff800`ba41b16d nt!KeWaitForSingleObject+0x2b8
+04 ffffe500`718076c0 fffff800`ba41b043 nt!PopFxActivateDevice+0x11d
+05 ffffe500`71807700 fffff800`ba836f77 nt!PoFxActivateDevice+0xb
+06 ffffe500`71807730 fffff800`ba8cc3d1 nt!PipEnumerateDevice+0xab
+07 ffffe500`71807760 fffff800`ba96a6c3 nt!PipProcessDevNodeTree+0x2b1
+08 ffffe500`718079e0 fffff800`ba523443 nt!PiProcessReenumeration+0xab
+09 ffffe500`71807a30 fffff800`ba46122f nt!PnpDeviceActionWorker+0x1b3
+0a ffffe500`71807b00 fffff800`ba4090c7 nt!ExpWorkerThread+0xef
+0b ffffe500`71807b90 fffff800`ba5825b6 nt!PspSystemThreadStartup+0x47
+0c ffffe500`71807be0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+1: kd> .frame /r 6
+06 ffffe500`71807730 fffff800`ba8cc3d1 nt!PipEnumerateDevice+0xab
+rax=0000000000000000 rbx=ffffcf01336ce450 rcx=0000000000000000
+rdx=0000000000000000 rsi=ffffcf012fcb2d30 rdi=0000000000000001
+rip=fffff800ba836f77 rsp=ffffe50071807730 rbp=ffffcf012fcb2d58
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+nt!PipEnumerateDevice+0xab:
+fffff800`ba836f77 488b4e20        mov     rcx,qword ptr [rsi+20h] ds:ffffcf01`2fcb2d50=ffffcf012fca6060
+1: kd> ub
+nt!PipEnumerateDevice+0x86:
+fffff800`ba836f52 488bd5          mov     rdx,rbp
+fffff800`ba836f55 488d0d6c96e6ff  lea     rcx,[nt!KMPnPEvt_DeviceEnum_Start (fffff800`ba6a05c8)]
+fffff800`ba836f5c e85b42beff      call    nt!PnpDiagnosticTraceObject (fffff800`ba41b1bc)
+fffff800`ba836f61 ba08000000      mov     edx,8
+fffff800`ba836f66 488bce          mov     rcx,rsi
+fffff800`ba836f69 e86a390d00      call    nt!PipClearDevNodeFlags (fffff800`ba90a8d8)
+fffff800`ba836f6e 488b4e20        mov     rcx,qword ptr [rsi+20h]
+fffff800`ba836f72 e8c140beff      call    nt!PoFxActivateDevice (fffff800`ba41b038)
+ 
+This is HECI device:
+1: kd> dt nt!_device_node ffffcf012fcb2d30 uniqueid fxdevice
+   +0x050 FxDevice : 0xffffcf01`33d3b2a0 _POP_FX_DEVICE
+   +0x118 UniqueId : _UNICODE_STRING "\_SB.PCI0.HECI"
+ 
+We can see that device is not active because a component is in the middle of an Idle state change and device driver has not reported back to PoFx that Idle state change is complete:
+1: kd> dt 0xffffcf01`33d3b2a0 _POP_FX_DEVICE Components[0]
+nt!_POP_FX_DEVICE
+   +0x278 Components    : [0] 0xffffcf01`33d3d018 _POP_FX_COMPONENT
+1: kd> dt 0xffffcf01`33d3d018 _POP_FX_COMPONENT
+nt!_POP_FX_COMPONENT
+   +0x000 Id               : _GUID {00000000-0000-0000-0000-000000000000}
+   +0x010 Index            : 0
+   +0x018 WorkOrder        : _POP_FX_WORK_ORDER
+   +0x050 Device           : 0xffffcf01`33d3b2a0 _POP_FX_DEVICE
+   +0x058 Flags            : _POP_FX_COMPONENT_FLAGS
+   +0x060 Resident         : 0n0
+   +0x068 ActiveEvent      : _KEVENT
+   +0x080 IdleLock         : 0
+   +0x088 IdleConditionComplete : 0n0
+   +0x08c IdleStateComplete : 0n1
+   +0x090 IdleStamp        : 0x00000003`2730df4b
+   +0x098 CurrentIdleState : 1
+   +0x09c IdleStateCount   : 2
+   +0x0a0 IdleStates       : 0xffffcf01`33d3d118 _POP_FX_IDLE_STATE
+   +0x0a8 DeepestWakeableIdleState : 0
+   +0x0ac ProviderCount    : 0
+   +0x0b0 Providers        : (null) 
+   +0x0b8 IdleProviderCount : 0
+   +0x0bc DependentCount   : 0
+   +0x0c0 Dependents       : (null) 
+   +0x0c8 Accounting       : _POP_FX_ACCOUNTING
+   +0x0f8 Performance      : (null) 
+
+1: kd> !fxdevice 0xffffcf01`33d3b2a0
+!fxdevice 0xffffcf0133d3b2a0
+     DevNode: 0xffffcf012fcb2d30
+     UniqueId: "\_SB.PCI0.HECI"
+     InstancePath: "PCI\VEN_8086&DEV_9D3A&SUBSYS_19998086&REV_21\3&11583659&0&B0"
+     Device Power State: PowerDeviceD0
+     PEP Owner: Default PEP
+     Acpi Plugin: 0
+     Acpi Handle: 0
+     Device Status Flags: DevicePowerRequired 
+     Device Idle Timeout: 0x270fffffd8f0
+     Device Power On: No Activity
+     Device Power Off: No Activity
+     Device Unregister: No Activity
+     Component Count: 1
+          Component 0: F1/F1 - IDLE   (RefCount = 2)
+          Pep Component: 0xffffcf0133d3de90
+              Active: 0 Latency: 1    Residency: 1  Wake: 1   Dx IRP: 1 WW IRP: 1
+              Component Idle State Change: Pending Running
+              Component Activation: Pending
+              Component Active: No Activity
+     Log has 98 entries starting at 34:
+       #      IntTime       CPU   Cid   Tid 
+     ---  ----------------  ----  ----  ----
+     34  0000000283e4d968     0     4   7f0  Power not required from default PEP
+     35  00000002841ac72d     1     4  1db4  Power required from default PEP
+     36  00000002841ac72d     1     4  1db4  Device powered
+     37  00000002841ac72d     1     4  1db4  Component 0 changed to idle state F0
+     38  0000000284845029     2     4   16c  Driver component 0 idle state callback pending
+     39  0000000284845029     0   364   3b4  Driver component 0 idle state callback completed
+     40  0000000284845029     0   364   3b4  Component 0 changed to idle state F1
+     41  0000000284845029     0   364   3b4  Power not required from default PEP
+     42  00000002848dda47     3     4  1708  Power required from default PEP
+     43  00000002848dda47     3     4  1708  Device powered
+     44  00000002848dda47     3     4  1708  Component 0 changed to idle state F0
+     45  0000000284d390d3     1     4   afc  Driver component 0 idle state callback pending
+     46  0000000284d390d3     1     0     0  Driver component 0 idle state callback completed
+     47  0000000284d390d3     1     0     0  Component 0 changed to idle state F1
+     48  0000000284d390d3     1     0     0  Power not required from default PEP
+     49  000000028919f237     0     4  1e94  Power required from default PEP
+     50  000000028919f237     0     4  1e94  Device powered
+     51  000000028919f237     0     4  1e94  Component 0 changed to idle state F0
+     52  0000000289694ab0     1     4  1d7c  Power IRP requested with status 0
+     53  0000000289694ab0     1     4  1d7c  Power IRP type D3 dispatched to device stack
+     54  00000002897536e8     0     4    f0  Power IRP completed with status 0
+     55  00000002897536e8     0     4    f0  Device power state changed to D3
+     56  00000002b80c7d22     3     4   430  Power IRP requested with status 0
+     57  00000002b80c7d22     3     4   430  Power IRP type D0 dispatched to device stack
+     58  00000002bc233ccd     0     4  1db4  Device power state changed to D0
+     59  00000002bc233ccd     3     4  1db4  Power IRP completed with status 0
+     60  00000002bdfdad83     1     4  1e94  Driver component 0 idle state callback pending
+     61  00000002bdfdad83     0     0     0  Driver component 0 idle state callback completed
+     62  00000002bdfdad83     0     0     0  Component 0 changed to idle state F1
+     63  00000002bdfdad83     0     0     0  Power not required from default PEP
+       0  00000002c1c8a5b1     1     4   d94  Power required from default PEP
+       1  00000002c1c8a5b1     1     4   d94  Device powered
+       2  00000002c1c8a5b1     1     4   d94  Component 0 changed to idle state F0
+       3  00000002c1f84a87     0     4   324  Power IRP requested with status 0
+       4  00000002c1f84a87     0     4   324  Power IRP type D3 dispatched to device stack
+       5  00000002c2102278     0     4    f0  Power IRP completed with status 0
+       6  00000002c2102278     0     4    f0  Device power state changed to D3
+       7  00000002ef93080b     1     4  1fb4  Power IRP requested with status 0
+       8  00000002ef93080b     2     4  1fb4  Power IRP type D0 dispatched to device stack
+       9  00000002f3deaafc     1     4  1c2c  Device power state changed to D0
+     10  00000002f3deaafc     3     4  1c2c  Power IRP completed with status 0
+     11  00000002f42e0092     0     4  16fc  Driver component 0 idle state callback pending
+     12  00000002f42e0092     1     4   110  Driver component 0 idle state callback completed
+     13  00000002f42e0092     1     4   110  Component 0 changed to idle state F1
+     14  00000002f42e0092     1     4   110  Power not required from default PEP
+     15  00000002f43062fe     1     4   b10  Power required from default PEP
+     16  00000002f43062fe     1     4   b10  Device powered
+     17  00000002f43062fe     1     4   b10  Component 0 changed to idle state F0
+     18  00000002f4db46ad     0     4   16c  Driver component 0 idle state callback pending
+     19  00000002f4db46ad     1     4  1e00  Driver component 0 idle state callback completed
+     20  00000002f4db46ad     1     4  1e00  Component 0 changed to idle state F1
+     21  00000002f4db46ad     1     4  1e00  Power not required from default PEP
+     22  00000002f965e3ce     0     4   16c  Power required from default PEP
+     23  00000002f965e3ce     0     4   16c  Device powered
+     24  00000002f965e3ce     0     4   16c  Component 0 changed to idle state F0
+     25  00000002f9a048aa     1     4  15f0  Power IRP requested with status 0
+     26  00000002f9a048aa     1     4  15f0  Power IRP type D3 dispatched to device stack
+     27  00000002f9a9cf1a     0     4    f0  Power IRP completed with status 0
+     28  00000002f9a9cf1a     0     4    f0  Device power state changed to D3
+     29  0000000326f2e415     1     4  1d54  Power IRP requested with status 0
+     30  0000000326f2e415     1     4  1d54  Power IRP type D0 dispatched to device stack
+     31  00000003272e7ad5     2     4  1e00  Device power state changed to D0
+     32  00000003272e7ad5     2     4  1e00  Power IRP completed with status 0
+     33  00000003277d2a85     2     4   b14  Driver component 0 idle state callback pending 
+ 
+This is the issue in the HECI driver (TeeDriver) – driver is required to call PoFxCompleteIdleState in order to complete F-state change.
+1: kd> !devstack poi(ffffcf012fcb2d30+20)
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffcf01333af480  \DRIVER\VERIFIER_FILTERffffcf01333af5d0  
+  ffffcf013340cd10  \Driver\MEIx64     ffffcf013343bc80  
+  ffffcf01332bfd60  \DRIVER\VERIFIER_FILTERffffcf01332bfeb0  
+  ffffcf012fca7a40  \Driver\ACPI       ffffcf012f1f9010  
+> ffffcf012fca6060  \Driver\pci        ffffcf012fca61b0  NTPNP_PCI0010
+!DevNode ffffcf012fcb2d30 :
+  DeviceInst is "PCI\VEN_8086&DEV_9D3A&SUBSYS_19998086&REV_21\3&11583659&0&B0"
+  ServiceName is "MEIx64" 
+
+1: kd> lmvi mTeeDriverW8x64
+Browse full module list
+start             end                 module name
+fffff80d`c7550000 fffff80d`c7584000   TeeDriverW8x64   (private pdb symbols)  TeeDriverW8x64.sys
+    Symbol file: e:\symcache\TEEDriverW8x64.pdb\DAC2D5E1C5FB4429955EEAEED4A1BDCF1\TEEDriverW8x64.pdb
+    Image path: \SystemRoot\System32\drivers\TeeDriverW8x64.sys
+    Image name: TeeDriverW8x64.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Tue Mar 14 06:00:13 2017 (58C7E95D)
+    CheckSum:         0003C71E
+    ImageSize:        00034000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4 

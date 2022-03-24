@@ -1,0 +1,124 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604313933/main
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is a double-free in iaStorA – see debug analysis below. This causes pool corruption.
+
+This is where we crashed with PAGE_FAULT_IN_NONPAGED_AREA (50) – iaStorA is calling Storport to free memory:
+3: kd> .thread
+Implicit thread is now ffff970d`2948a5c0
+3: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffa780`015a01a8 fffff801`9839c78a nt!KeBugCheckEx
+01 ffffa780`015a01b0 fffff801`982a97ba nt! ?? ::FNODOBFM::`string'+0x41bfa
+02 ffffa780`015a02a0 fffff801`98354cfc nt!MmAccessFault+0x9ca
+03 ffffa780`015a04a0 fffff801`9826b3de nt!KiPageFault+0x13c
+04 ffffa780`015a0630 fffff801`9844d4f5 nt!ExFreeLargePool+0x76e
+05 ffffa780`015a0700 fffff809`32e48de0 nt!ExFreePoolWithTag+0x4f5
+06 ffffa780`015a07e0 fffff801`98903464 VerifierExt!ExFreePoolWithTag_wrapper+0x10
+07 ffffa780`015a0810 fffff809`333b78ce nt!VerifierExFreePoolWithTag+0x44
+08 ffffa780`015a0840 fffff809`3447dd84 storport!StorPortExtendedFunction+0x14e
+09 (Inline Function) --------`-------- iaStorA!StorPortFreePool+0x11
+0a (Inline Function) --------`-------- iaStorA!Wcdl::wrapper::storPortFreePool+0x11
+0b ffffa780`015a0910 fffff809`344839b0 iaStorA!Wcdl::Allocator::free+0x30
+0c ffffa780`015a0940 fffff809`34483f5a iaStorA!Wcdl::Driver::~Driver+0x54
+0d ffffa780`015a0970 fffff809`3440b4a4 iaStorA!Wcdl::DriverList::remove+0x5e
+0e ffffa780`015a09a0 fffff809`3440ba2a iaStorA!volport::Request::complete+0x14
+0f (Inline Function) --------`-------- iaStorA!VpiNotificationRequestComplete+0x13
+10 ffffa780`015a09d0 fffff809`3442177e iaStorA!VpiNotification+0x7a
+11 (Inline Function) --------`-------- iaStorA!AdapterPnpRequest::{dtor}+0x14
+12 ffffa780`015a0a00 fffff809`344121ab iaStorA!AdapterPnpRequest::`scalar deleting destructor'+0x1e
+13 ffffa780`015a0a30 fffff809`344124da iaStorA!Raidport::removeComplete+0x3b
+14 ffffa780`015a0a60 fffff801`98255d11 iaStorA!Raidport::removeWorkItem+0x16
+15 ffffa780`015a0a90 fffff801`982981b9 nt!IopProcessWorkItem+0x81
+16 ffffa780`015a0b00 fffff801`98203729 nt!ExpWorkerThread+0xe9
+17 ffffa780`015a0b90 fffff801`98350bb6 nt!PspSystemThreadStartup+0x41
+18 ffffa780`015a0be0 00000000`00000000 nt!KiStartSystemThread+0x16
+
+The memory buffer to free is mCrashHiberAllocatorMemory:
+3: kd> ub fffff809`344839b0
+iaStorA!Wcdl::Driver::~Driver+0x28:
+fffff809`34483984 488d8ba0000000  lea     rcx,[rbx+0A0h]
+fffff809`3448398b e8c4a3ffff      call    iaStorA!Wcdl::Allocator::free (fffff809`3447dd54)
+fffff809`34483990 4883a3f000000000 and     qword ptr [rbx+0F0h],0
+fffff809`34483998 488b93f8000000  mov     rdx,qword ptr [rbx+0F8h]
+fffff809`3448399f 4885d2          test    rdx,rdx
+fffff809`344839a2 7414            je      iaStorA!Wcdl::Driver::~Driver+0x5c (fffff809`344839b8)
+fffff809`344839a4 488d8ba0000000  lea     rcx,[rbx+0A0h]
+fffff809`344839ab e8a4a3ffff      call    iaStorA!Wcdl::Allocator::free (fffff809`3447dd54)
+3: kd> .frame /r c
+0c ffffa780`015a0940 fffff809`34483f5a iaStorA!Wcdl::Driver::~Driver+0x54
+rax=0000004b86951000 rbx=fffff80934f329b0 rcx=fffffe8000000000
+rdx=ffffa780015a0740 rsi=0000000000000000 rdi=ffff970d2a000010
+rip=fffff809344839b0 rsp=ffffa780015a0940 rbp=0000000000000000
+ r8=0000000000000000  r9=0000000000000000 r10=ffff970d2a200000
+r11=ffff970d2a200000 r12=0000000000000000 r13=0000000000000000
+r14=fffff809344124c4 r15=fffff801985be100
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+iaStorA!Wcdl::Driver::~Driver+0x54:
+fffff809`344839b0 4883a3f800000000 and     qword ptr [rbx+0F8h],0 ds:002b:fffff809`34f32aa8=ffff970d2a200000
+3: kd> dt this mCrashHiberAllocatorMemory
+Local var @ rbx Type Wcdl::Driver*
+   +0x0f8 mCrashHiberAllocatorMemory : 0xffff970d`2a200000 Void
+
+But this buffer was already freed earlier on the same thread:
+3: kd> !verifier 80  0xffff970d`2a200000
+
+Log of recent kernel pool Allocate and Free operations:
+
+There are up to 0x10000 entries in the log.
+
+Parsing 0x0000000000010000 log entries, searching for address 0xffff970d2a200000.
+
+
+======================================================================
+Pool block ffff970d2a200000, Size 0000000000a39000, Thread ffff970d2948a5c0
+fffff801989119f5 nt!VfFreePoolNotification+0x5d
+fffff80198386e89 nt! ?? ::FNODOBFM::`string'+0x2c2f9
+fffff8019844d4f5 nt!ExFreePoolWithTag+0x4f5
+fffff80932e48de0 VerifierExt!ExFreePoolWithTag_wrapper+0x10
+fffff80198903464 nt!VerifierExFreePoolWithTag+0x44
+fffff809333b78ce storport!StorPortExtendedFunction+0x14e
+fffff8093447dd84 iaStorA!Wcdl::Allocator::free+0x30
+fffff8093440f585 iaStorA!Raidport::~Raidport+0xe1
+fffff80934412191 iaStorA!Raidport::removeComplete+0x21
+fffff809344124da iaStorA!Raidport::removeWorkItem+0x16
+fffff80198255d11 nt!IopProcessWorkItem+0x81
+fffff801982981b9 nt!ExpWorkerThread+0xe9
+fffff80198203729 nt!PspSystemThreadStartup+0x41
+
+So this is double-free and it causes pool corruption.
+void __fastcall Raidport::~Raidport(Raidport *this)
+{
+…
+  if ( Wcdl::Library::getDriverMode() != 3 )
+  {
+    driver = this->mDriver;
+    if ( driver->mCrashHiberMemoryDescriptor.mAllocatorMemorySize )
+      Wcdl::Allocator::free(pAllocator, driver->mCrashHiberMemoryDescriptor.mAllocatorMemory);
+  }
+…
+
+void __fastcall Wcdl::Driver::~Driver(Wcdl::Driver *this)
+{
+…
+
+  if ( Wcdl::Library::getDriverMode() != 3 && this->mOsVersion >= 3 )
+  {
+    pContextBuffer = this->mDriverDumpContextBuffer;
+    if ( pContextBuffer )
+    {
+      Wcdl::Allocator::free(&this->mAllocator, pContextBuffer);
+      this->mDriverDumpContextBuffer = NULL;
+    }
+    pCrashMemmory = this->mCrashHiberAllocatorMemory;
+    if ( pCrashMemmory )
+    {
+      Wcdl::Allocator::free(&this->mAllocator, pCrashMemmory);
+      this->mCrashHiberAllocatorMemory = NULL;
+    }
+  }
+ …
+}

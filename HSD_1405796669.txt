@@ -1,0 +1,229 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1405796669
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is WIN32K_POWER_WATCHDOG_TIMEOUT (19c) crash – see attached memory dump:
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+WIN32K_POWER_WATCHDOG_TIMEOUT (19c)
+Win32k did not turn the monitor on in a timely manner.
+Arguments:
+Arg1: 0000000000000040, Calling DWM to render.
+Arg2: ffff8304386bb080, Pointer to the power request worker thread.
+Arg3: 0000000000000000
+Arg4: 0000000000000000
+…
+
+
+The CSRSS power request thread is waiting for ALPC message reply:
+2: kd> !thread ffff8304386bb080
+THREAD ffff8304386bb080  Cid 02f4.032c  Teb: 000000fc39269000 Win32Thread: ffff830435322260 WAIT: (WrLpcReply) UserMode Non-Alertable
+    ffff8304386bb6c8  Semaphore Limit 0x1
+Waiting for reply to ALPC Message ffffc103d22bd740 : queued at port ffff8304387ba4b0 : owned by process ffff830439beb440
+Not impersonating
+DeviceMap                 ffffc103ca4020e0
+Owning Process            ffff83043868b5c0       Image:         csrss.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      44155          Ticks: 1921 (0:00:00:30.015)
+Context Switch Count      495            IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:01.093
+Win32 Start Address 0x00007ffd758e2a40
+Stack Init ffffd880fb340c10 Current ffffd880fb33ff30
+Base ffffd880fb341000 Limit ffffd880fb33a000 Call 0000000000000000
+Priority 14 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd880`fb33ff70 fffff800`d1496430 : ffffd880`fb340450 ffff8304`386bb080 00000000`00000000 fffff800`d19253ad : nt!KiSwapContext+0x76
+ffffd880`fb3400b0 fffff800`d1495e1b : ffff8304`387ba4b0 ffff8304`387ba4b0 ffff8304`387ba4b0 fffff800`d1924fdd : nt!KiSwapThread+0x160
+ffffd880`fb340160 fffff800`d1497bf9 : ffff8304`387ba4b0 00000000`00000000 00000000`00000000 ffff8304`386bb6c8 : nt!KiCommitThreadWait+0x11b
+ffffd880`fb340200 fffff800`d14ac9ff : ffff8304`386bb6c8 ffffd880`00000011 00000000`00000001 00000000`00000000 : nt!KeWaitForSingleObject+0x2c9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!AlpcpWaitForSingleObject+0x2e (Inline Function @ fffff800`d14ac9ff)
+ffffd880`fb3402e0 fffff800`d1923596 : 00000000`00000000 ffff8304`386bb6c8 00000000`00000011 ffff8304`386bb080 : nt!AlpcpSignalAndWait+0x17f
+ffffd880`fb340380 fffff800`d192308d : ffff8304`387ba4b0 ffffffff`ffffffff 00000000`00000001 00000000`00000000 : nt!AlpcpReceiveSynchronousReply+0x56
+ffffd880`fb3403e0 fffff800`d186bc8e : ffff8304`387ba4b0 fffff800`00020002 ffffd880`fb340590 00000000`00000000 : nt!AlpcpProcessSynchronousRequest+0x32d
+ffffd880`fb3404d0 fffff800`d186bb59 : 00000000`00000000 00000000`00000001 ffff8304`387ba4b0 00000000`00010246 : nt!LpcpRequestWaitReplyPort+0x86
+ffffd880`fb340530 ffffeab8`2de377cb : 00000000`00000000 00000000`00000000 00000000`00000000 ffffd880`fb340720 : nt!LpcRequestWaitReplyPortEx+0x29
+ffffd880`fb340570 ffffeab8`2e1fbac4 : 00000000`00000000 00000000`00000001 00000000`00000000 00000000`00000001 : win32kfull!DwmSyncFlushForceRenderAndWaitForBatch+0x9b
+ffffd880`fb340860 ffffeab8`2e1fb1d3 : 00000000`00000000 ffffd880`fb340989 00000000`00000019 00000000`00000001 : win32kbase!PowerOnMonitor+0x174
+ffffd880`fb3408e0 ffffeab8`2e1faef0 : ffff8304`3a68fd40 ffff8304`3a68fd40 00000000`00000001 ffffeab8`2e20f97f : win32kbase!xxxUserPowerEventCalloutWorker+0x1b3
+ffffd880`fb3409f0 ffffeab8`2dec358f : ffff8304`386bb080 00000000`00000000 00000000`00000025 00000000`00000000 : win32kbase!xxxUserPowerCalloutWorker+0xb0
+ffffd880`fb340a50 fffff800`d1590613 : ffff8304`386bb080 00000000`00000000 00000000`00000000 ffff8304`386909b0 : win32kfull!NtUserCallNoParam+0x2f
+ffffd880`fb340a80 00007ffd`75cb1124 : 00007ffd`758e2a9a 00000000`000000fe 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffd880`fb340a80)
+000000fc`395ffd98 00007ffd`758e2a9a : 00000000`000000fe 00000000`00000000 00000000`00000000 00000000`00000000 : win32u!ZwUserCallNoParam+0x14
+000000fc`395ffda0 00000000`000000fe : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ffd`758e2a9a
+000000fc`395ffda8 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00007ffd`7957facf : 0xfe
+
+The server thread in DWM however had an exception and is waiting for the WER to reply:
+2: kd> !thread ffff8304324ad700
+THREAD ffff8304324ad700  Cid 15d4.0598  Teb: 000000aa19f05000 Win32Thread: ffff83043a513910 WAIT: (WrLpcReply) KernelMode Alertable
+FreezeCount 1
+    ffff8304324add48  Semaphore Limit 0x1
+Waiting for reply to ALPC Message ffffc103d1d05620 : queued at port ffff83043b434d40 : owned by process ffff8304354875c0
+Not impersonating
+DeviceMap                 ffffc103d069b770
+Owning Process            ffff830439beb440       Image:         dwm.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      35408          Ticks: 10668 (0:00:02:46.687)
+Context Switch Count      156            IdealProcessor: 1             
+UserTime                  00:00:00.109
+KernelTime                00:00:00.046
+Win32 Start Address dwmcore!CConnection::CompositionThreadEntryPoint (0x00007ffd72c1b770)
+Stack Init ffffd880fc737c10 Current ffffd880fc735ef0
+Base ffffd880fc738000 Limit ffffd880fc731000 Call 0000000000000000
+Priority 15 BasePriority 15 PriorityDecrement 0 IoPriority 2 PagePriority 5
+*** ERROR: Symbol file could not be found.  Defaulted to export symbols for KERNEL32.DLL - 
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd880`fc735f30 fffff800`d1496430 : ffff8304`324ad798 ffff8304`324ad700 fffff800`d14321f0 00000000`00000000 : nt!KiSwapContext+0x76
+ffffd880`fc736070 fffff800`d1495e1b : 00000000`000f6633 00000000`00000000 ffffc103`d1d05620 00000000`0fc2f8eb : nt!KiSwapThread+0x160
+ffffd880`fc736120 fffff800`d1497bf9 : ffff8304`324adb40 ffff8304`00000000 00000000`00000000 ffff8304`324add48 : nt!KiCommitThreadWait+0x11b
+ffffd880`fc7361c0 fffff800`d14ac9ff : ffff8304`324add48 00000000`00000011 00008007`00000000 00000000`00000000 : nt!KeWaitForSingleObject+0x2c9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!AlpcpWaitForSingleObject+0x2e (Inline Function @ fffff800`d14ac9ff)
+ffffd880`fc7362a0 fffff800`d1923596 : ffffc103`d1226270 ffff8304`324add48 00000000`00000011 ffff8304`324ad700 : nt!AlpcpSignalAndWait+0x17f
+ffffd880`fc736340 fffff800`d192308d : ffffd880`fc7365d0 ffffffff`ffffffff ffffd880`fc7368f0 00000000`00000000 : nt!AlpcpReceiveSynchronousReply+0x56
+ffffd880`fc7363a0 fffff800`d192149d : ffff8304`3a4de380 00000000`00220000 ffffd880`fc7368f0 ffffd880`fc7367d0 : nt!AlpcpProcessSynchronousRequest+0x32d
+ffffd880`fc736490 fffff800`d1590613 : ffff8304`324ad700 ffffd880`fc736640 ffffd880`fc736778 ffffd880`fc736568 : nt!NtAlpcSendWaitReceivePort+0x1ed
+ffffd880`fc736550 fffff800`d1588740 : fffff800`d1a96fbe 00000000`00000000 00000000`00000000 ffffc103`d0e447f0 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffd880`fc7365c0)
+ffffd880`fc736758 fffff800`d1a96fbe : 00000000`00000000 00000000`00000000 ffffc103`d0e447f0 ffff8304`354875c0 : nt!KiServiceLinkage
+ffffd880`fc736760 fffff800`d1a21a9f : ffff8304`386894b0 ffff8304`386894b0 ffff8304`386894b0 ffff8304`39beb440 : nt!DbgkpSendErrorMessage+0x3ae
+ffffd880`fc7368c0 fffff800`d15ab438 : ffffd880`fc737840 ffffd880`fc737840 ffffd880`fc737a80 00000000`00000001 : nt!DbgkForwardException+0x177e4f
+ffffd880`fc736a40 fffff800`d1456bf1 : 00000000`0010000f ffffd880`fc737320 ffffd880`fc737408 fffff800`00000001 : nt!KiDispatchException+0x153bb8
+ffffd880`fc7372f0 fffff800`d1585e9b : ffff8304`3aa5f260 00000000`00000000 ffff8304`324ad700 ffffd880`f7c78180 : nt!KiRaiseException+0x1b1
+ffffd880`fc737940 fffff800`d1590613 : ffff8304`324ad700 00000000`00000000 ffff8304`324ad700 000001c3`1798a5a0 : nt!NtRaiseException+0x7b
+ffffd880`fc737a80 00007ffd`75e002d4 : 000000aa`1a28eb00 00000000`00000690 ffffffff`f70f2e80 000000aa`1a28e590 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffd880`fc737a80)
+000000aa`1a28e4b0 00007ffd`75e61d7d : 000000aa`1a28e7d4 00000000`00000004 00000000`00000000 00000000`0635f000 : KERNELBASE!RaiseFailFastException+0x74
+000000aa`1a28ea80 00007ffd`72ccedd6 : ffffffff`8007000e 00000000`00000418 00000000`00000000 00000000`00000000 : KERNELBASE!TerminateProcessOnMemoryExhaustion+0x15d
+000000aa`1a28ed10 00007ffd`72ccafe1 : 00000000`00000014 00000000`00000000 00000000`00000001 00000003`00000070 : dwmcore!MilFailFastForHR+0x26
+000000aa`1a28ede0 00007ffd`72c17fa2 : 00000000`00000000 00007ffd`74737698 003d6d00`0e64ff60 00000000`00000001 : dwmcore!ModuleFailFastForHRESULT+0x9
+000000aa`1a28ee10 00007ffd`72be48c2 : 00000000`80070000 00000000`00000000 000001c3`0f6237b0 000001c3`0c9ec700 : dwmcore!MilInstrumentationHandleFailure_MaybeFailFast+0x62
+000000aa`1a28ee40 00007ffd`72bc64d2 : 00000000`8007000e 000000aa`1a28ef70 00000000`00000418 000000aa`1a28eeb0 : dwmcore!MilInstrumentationCheckHR_MaybeFailFast+0x82
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dwmcore!MilInstrumentationCallHRCheckFunction+0x18 (Inline Function @ 00007ffd`72bc64d2)
+000000aa`1a28ee70 00007ffd`72beff8f : 00000000`00000418 00007ffd`72bf1d64 00000000`00000000 00000000`00000418 : dwmcore!CD3DDeviceLevel1::CreateSwapChain+0x6ba
+000000aa`1a28f060 00007ffd`72c199e3 : 00000000`00000418 000000aa`1a28f119 000000aa`1a28f1b0 00000000`00000000 : dwmcore!CHwFullScreenRenderTarget::Init+0x6f
+000000aa`1a28f0b0 00007ffd`72bf1bda : 000001c3`0c9ff214 00007ffd`00010001 00000000`00000418 000001c3`00000001 : dwmcore!CHwDisplayRenderTarget::Create+0x123
+000000aa`1a28f180 00007ffd`72bf2463 : 00000000`00000418 000001c3`0c9de320 000001c3`0f1db8a0 00000000`00000000 : dwmcore!CDisplay::CreateHwRenderTarget+0x2a
+000000aa`1a28f1d0 00007ffd`72bed335 : 00000000`00000001 00007ffd`72b8644b 000001c3`0f1db8a0 000001c3`0f1dba3c : dwmcore!CDisplay::EnsureHwRenderTarget+0x73
+000000aa`1a28f250 00007ffd`72bed1be : 00000000`00000418 00000000`00000000 000001c3`0c9ff0a0 00000000`00000400 : dwmcore!CHwndRenderTarget::EnsureHwRenderTarget+0x35
+000000aa`1a28f290 00007ffd`72beb2e6 : 000000aa`1a28f3a0 000001c3`0f265da0 00000000`00000000 00000000`00000000 : dwmcore!CHwndRenderTarget::EnsureRenderTarget+0x1ce
+000000aa`1a28f2e0 00007ffd`72b9af3d : 00000000`00000000 000001c3`0c9f9eb0 00000000`00000000 00000000`00000000 : dwmcore!CDesktopRenderTarget::EnsureRenderTargets+0x156
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dwmcore!CRenderTargetManager::EnsureDesktopRenderTargets+0x26 (Inline Function @ 00007ffd`72b9af3d)
+000000aa`1a28f3a0 00007ffd`72be6b2f : 00000000`00000000 00000000`00000401 000000aa`1a01f600 00000000`000004e9 : dwmcore!CCrossThreadComposition::PreRender+0x15ed
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dwmcore!CComposition::ProcessComposition+0x55 (Inline Function @ 00007ffd`72be6b2f)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dwmcore!CComposition::Compose+0x72 (Inline Function @ 00007ffd`72be6b2f)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dwmcore!CPartitionVerticalBlankScheduler::Render+0xba (Inline Function @ 00007ffd`72be6b2f)
+000000aa`1a28f670 00007ffd`72be8477 : 00000000`00000000 000001c3`0c9df9b0 00000000`00000000 00000000`000002bc : dwmcore!CPartitionVerticalBlankScheduler::ProcessFrame+0x74f
+000000aa`1a28fa80 00007ffd`72be4a31 : 000001c3`0c9ad6e0 000001c3`0c9ad6e0 00000000`00000000 000001c3`0c9df450 : dwmcore!CPartitionVerticalBlankScheduler::ScheduleAndProcessFrame+0x77
+000000aa`1a28fc00 00007ffd`792531e4 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : dwmcore!CConnection::RunCompositionThread+0xd1
+
+The WER service is waiting for the WerFault to reply:
+2: kd> !thread ffff830435482700
+THREAD ffff830435482700  Cid 1f1c.1b00  Teb: 000000ca885bf000 Win32Thread: 0000000000000000 WAIT: (UserRequest) UserMode Non-Alertable
+    ffff830436ba8210  SynchronizationEvent
+    ffff83043a84c260  NotificationEvent
+    ffff8304325865c0  ProcessObject
+Not impersonating
+DeviceMap                 ffffc103ca4020e0
+Owning Process            ffff8304354875c0       Image:         svchost.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      35409          Ticks: 10667 (0:00:02:46.671)
+Context Switch Count      2              IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+*** ERROR: Symbol file could not be found.  Defaulted to export symbols for wersvc.dll - 
+Win32 Start Address wersvc!SvchostPushServiceGlobals (0x00007ffd5140ba10)
+Stack Init ffffd880fd11dc10 Current ffffd880fd11cec0
+Base ffffd880fd11e000 Limit ffffd880fd117000 Call 0000000000000000
+Priority 9 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+*** ERROR: Symbol file could not be found.  Defaulted to export symbols for KERNELBASE.dll - 
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd880`fd11cf00 fffff800`d1496430 : 00000001`00000000 ffff8304`35482700 00000000`00000000 00000000`00000000 : nt!KiSwapContext+0x76
+ffffd880`fd11d040 fffff800`d1495e1b : 00000000`00000000 00000000`00000000 ffff8304`35482800 00000000`00000000 : nt!KiSwapThread+0x160
+ffffd880`fd11d0f0 fffff800`d1492d57 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiCommitThreadWait+0x11b
+ffffd880`fd11d190 fffff800`d1906901 : ffffd880`00000003 ffffd880`fd11d340 ffff8304`325865c0 fffff800`00000006 : nt!KeWaitForMultipleObjects+0x217
+ffffd880`fd11d270 fffff800`d1906449 : 00000000`00000000 ffff80e0`81e73288 00000000`00000000 ffffd880`f733d000 : nt!ObWaitForMultipleObjects+0x2c1
+ffffd880`fd11d790 fffff800`d1590613 : ffff80c0`602fffa8 ffff80c0`603017f8 ffff8304`35482700 000000ca`889ff338 : nt!NtWaitForMultipleObjects+0xf9
+ffffd880`fd11da10 00007ffd`795cd534 : 00007ffd`75dd15d0 00000000`00000000 000000ca`885b4000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffd880`fd11da80)
+000000ca`889ff318 00007ffd`75dd15d0 : 00000000`00000000 000000ca`885b4000 00000000`00000000 00007ffd`795a72e8 : ntdll!ZwWaitForMultipleObjects+0x14
+000000ca`889ff320 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : KERNELBASE!WaitForMultipleObjectsEx+0xf0
+
+WerFault however is in the process of GDI initialization:
+2: kd> !thread ffff830432588700
+THREAD ffff830432588700  Cid 1944.194c  Teb: 0000005847f64000 Win32Thread: 0000000000000000 WAIT: (UserRequest) KernelMode Non-Alertable
+    ffff830434ffb110  Semaphore Limit 0x7fffffff
+Not impersonating
+DeviceMap                 ffffc103d069b770
+Owning Process            ffff8304325865c0       Image:         WerFault.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      35410          Ticks: 10666 (0:00:02:46.656)
+Context Switch Count      7              IdealProcessor: 3             
+UserTime                  00:00:00.015
+KernelTime                00:00:00.000
+Win32 Start Address WerFault (0x00007ff7c4b446c0)
+Stack Init ffffd880fda5cc10 Current ffffd880fda5c480
+Base ffffd880fda5d000 Limit ffffd880fda56000 Call 0000000000000000
+Priority 9 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd880`fda5c4c0 fffff800`d1496430 : 00000000`00000000 ffff8304`32588700 00000000`00000000 ffffd880`fda5c908 : nt!KiSwapContext+0x76
+ffffd880`fda5c600 fffff800`d1495e1b : 00000000`00000000 ffffd880`fda5c908 ffffd880`fda5c910 00000000`00000000 : nt!KiSwapThread+0x160
+ffffd880`fda5c6b0 fffff800`d1497bf9 : 00000000`00000000 0000c843`00000000 ffffc103`d0b0f500 ffff8304`34ffb110 : nt!KiCommitThreadWait+0x11b
+ffffd880`fda5c750 ffffeab8`2e1dfa8a : ffff8304`34ffb110 fffff800`00000006 00000000`00000000 ffff80c0`60301800 : nt!KeWaitForSingleObject+0x2c9
+ffffd880`fda5c830 ffffeab8`2e1e00f2 : 00000000`00000001 ffffeadc`00342c00 00000000`4000001b 00000000`00000000 : win32kbase!EnterCritAvoidingDitHitTestHazard+0xc2
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : win32kbase!PrivateAPI::EnterCrit+0x28 (Inline Function @ ffffeab8`2e1e00f2)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : win32kbase!EnterLeaveCrit::{ctor}+0x28 (Inline Function @ ffffeab8`2e1e00f2)
+ffffd880`fda5c870 ffffeab8`2deeb115 : ffffeadc`00342c00 ffffd880`00000000 ffffc103`00000002 00000000`00000000 : win32kbase!xxxUserProcessCallout+0x72
+ffffd880`fda5c900 ffffeab8`2e1df490 : ffffd880`fda5ca20 00000000`00000000 fffff800`d17474d0 00000000`00000000 : win32kfull!W32pProcessCallout+0x75
+ffffd880`fda5c930 ffffeab8`2ebf101a : 00000000`00000000 00000000`00000000 ffff8304`386a0290 00000000`00000000 : win32kbase!W32CalloutDispatch+0x320
+ffffd880`fda5c9a0 fffff800`d192b8dd : 00000000`00000001 ffffd880`fda5ca20 ffff8304`356821b0 ffff80c0`603017f8 : win32k!W32CalloutDispatchThunk+0xa
+ffffd880`fda5c9d0 fffff800`d18c6fd3 : ffff8304`32588700 ffffd880`fda5cb00 00000000`00000001 ffff80c0`603017f8 : nt!ExCallCallBack+0x3d
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!PsInvokeWin32Callout+0x14 (Inline Function @ fffff800`d18c6fd3)
+ffffd880`fda5ca00 fffff800`d1588729 : 00000000`0000000c ffff8304`32588700 00000000`00000001 00007ffd`788af730 : nt!PsConvertToGuiThread+0x93
+ffffd880`fda5ca50 fffff800`d159092a : ffff8304`000002a6 0223ded4`c4670000 00000000`00000000 00000058`4807ab88 : nt!KiConvertToGuiThread+0x9
+ffffd880`fda5ca80 00007ffd`75cb64e4 : 00007ffd`768d7d8d 0000d8c8`43a66d84 c9411b5b`b607c43b 00007ffd`788a0000 : nt!KiSystemServiceExitPico+0x113 (TrapFrame @ ffffd880`fda5ca80)
+00000058`4807ace8 00007ffd`768d7d8d : 0000d8c8`43a66d84 c9411b5b`b607c43b 00007ffd`788a0000 00000000`00000000 : win32u!ZwGdiInit+0x14
+00000058`4807acf0 0000d8c8`43a66d84 : c9411b5b`b607c43b 00007ffd`788a0000 00000000`00000000 00000000`00000000 : gdi32full!GdiDllInitialize+0x4d
+00000058`4807acf8 c9411b5b`b607c43b : 00007ffd`788a0000 00000000`00000000 00000000`00000000 00007ffd`788afb10 : 0x0000d8c8`43a66d84
+00000058`4807ad00 00007ffd`788a0000 : 00000000`00000000 00000000`00000000 00007ffd`788afb10 00007ffd`7893fe10 : 0xc9411b5b`b607c43b
+00000058`4807ad08 00000000`00000000 : 00000000`00000000 00007ffd`788afb10 00007ffd`7893fe10 00007ffd`7893fe10 : user32!Ordinal2686
+
+But since original Monitor Power On thread is in user callout too, this causes deadlock:
+2: kd> !thread ffff8304386bb080
+THREAD ffff8304386bb080  Cid 02f4.032c  Teb: 000000fc39269000 Win32Thread: ffff830435322260 WAIT: (WrLpcReply) UserMode Non-Alertable
+    ffff8304386bb6c8  Semaphore Limit 0x1
+Waiting for reply to ALPC Message ffffc103d22bd740 : queued at port ffff8304387ba4b0 : owned by process ffff830439beb440
+Not impersonating
+DeviceMap                 ffffc103ca4020e0
+Owning Process            ffff83043868b5c0       Image:         csrss.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      44155          Ticks: 1921 (0:00:00:30.015)
+Context Switch Count      495            IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:01.093
+Win32 Start Address 0x00007ffd758e2a40
+Stack Init ffffd880fb340c10 Current ffffd880fb33ff30
+Base ffffd880fb341000 Limit ffffd880fb33a000 Call 0000000000000000
+Priority 14 BasePriority 13 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffd880`fb33ff70 fffff800`d1496430 : ffffd880`fb340450 ffff8304`386bb080 00000000`00000000 fffff800`d19253ad : nt!KiSwapContext+0x76
+ffffd880`fb3400b0 fffff800`d1495e1b : ffff8304`387ba4b0 ffff8304`387ba4b0 ffff8304`387ba4b0 fffff800`d1924fdd : nt!KiSwapThread+0x160
+ffffd880`fb340160 fffff800`d1497bf9 : ffff8304`387ba4b0 00000000`00000000 00000000`00000000 ffff8304`386bb6c8 : nt!KiCommitThreadWait+0x11b
+ffffd880`fb340200 fffff800`d14ac9ff : ffff8304`386bb6c8 ffffd880`00000011 00000000`00000001 00000000`00000000 : nt!KeWaitForSingleObject+0x2c9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!AlpcpWaitForSingleObject+0x2e (Inline Function @ fffff800`d14ac9ff)
+ffffd880`fb3402e0 fffff800`d1923596 : 00000000`00000000 ffff8304`386bb6c8 00000000`00000011 ffff8304`386bb080 : nt!AlpcpSignalAndWait+0x17f
+ffffd880`fb340380 fffff800`d192308d : ffff8304`387ba4b0 ffffffff`ffffffff 00000000`00000001 00000000`00000000 : nt!AlpcpReceiveSynchronousReply+0x56
+ffffd880`fb3403e0 fffff800`d186bc8e : ffff8304`387ba4b0 fffff800`00020002 ffffd880`fb340590 00000000`00000000 : nt!AlpcpProcessSynchronousRequest+0x32d
+ffffd880`fb3404d0 fffff800`d186bb59 : 00000000`00000000 00000000`00000001 ffff8304`387ba4b0 00000000`00010246 : nt!LpcpRequestWaitReplyPort+0x86
+ffffd880`fb340530 ffffeab8`2de377cb : 00000000`00000000 00000000`00000000 00000000`00000000 ffffd880`fb340720 : nt!LpcRequestWaitReplyPortEx+0x29
+ffffd880`fb340570 ffffeab8`2e1fbac4 : 00000000`00000000 00000000`00000001 00000000`00000000 00000000`00000001 : win32kfull!DwmSyncFlushForceRenderAndWaitForBatch+0x9b
+ffffd880`fb340860 ffffeab8`2e1fb1d3 : 00000000`00000000 ffffd880`fb340989 00000000`00000019 00000000`00000001 : win32kbase!PowerOnMonitor+0x174
+ffffd880`fb3408e0 ffffeab8`2e1faef0 : ffff8304`3a68fd40 ffff8304`3a68fd40 00000000`00000001 ffffeab8`2e20f97f : win32kbase!xxxUserPowerEventCalloutWorker+0x1b3
+ffffd880`fb3409f0 ffffeab8`2dec358f : ffff8304`386bb080 00000000`00000000 00000000`00000025 00000000`00000000 : win32kbase!xxxUserPowerCalloutWorker+0xb0
+ffffd880`fb340a50 fffff800`d1590613 : ffff8304`386bb080 00000000`00000000 00000000`00000000 ffff8304`386909b0 : win32kfull!NtUserCallNoParam+0x2f
+ffffd880`fb340a80 00007ffd`75cb1124 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffd880`fb340a80)
+000000fc`395ffd98 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : win32u!ZwUserCallNoParam+0x14
+
+So it seems that monitor power on delay is caused by the DWM user mode crash and subsequent deadlock.

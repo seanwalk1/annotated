@@ -1,0 +1,122 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/22011441199
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck 7E - SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e) (see attached memory dump):
+0: kd> !analyze -show
+SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (7e)
+This is a very common bugcheck.  Usually the exception address pinpoints
+the driver/function that caused the problem.  Always note this address
+as well as the link date of the driver/image that contains this address.
+Arguments:
+Arg1: c0000005, The exception code that was not handled
+Arg2: 86ca3259, The address that the exception occurred at
+Arg3: c472c498, Exception Record Address
+Arg4: c472c040, Context Record Address
+
+The exception record indicates an Access Violation, due to an attempt to dereference 0xC8 as a pointer:
+0: kd> !error c0000005
+Error code: (NTSTATUS) 0xc0000005 (3221225477) - The instruction at 0x%p referenced memory at 0x%p. The memory could not be %s.
+	
+0: kd> .exr c472c498
+VirtualToOffset: c472c498 not properly sign extended
+ExceptionAddress: 86ca3259 (WppRecorder!WppAutoLogTrace+0x00000129)
+   ExceptionCode: c0000005 (Access violation)
+  ExceptionFlags: 00000000
+NumberParameters: 2
+   Parameter[0]: 00000000
+   Parameter[1]: 000000c8
+Attempt to read from address 000000c8
+
+0xC8 is not a valid pointer:
+0: kd> !pte c8
+                    VA 000000c8
+PDE at C0600000            PTE at C0000000
+contains 0000000000000000
+contains 0000000000000000
+not valid
+
+But CR2 confirms that indeed that is what WppRecorder!WppAutoLogTrace tried to dereference:
+0: kd> r cr2
+cr2=000000c8
+
+Switching to the context:
+0: kd> .cxr c472c040
+VirtualToOffset: c472c040 not properly sign extended
+eax=c4362158 ebx=cc7e5924 ecx=000000c8 edx=cc7e5000 esi=cc7e5908 edi=cc7e089c
+eip=86ca3259 esp=c472c5e4 ebp=c472c610 iopl=0         nv up ei pl nz na po nc
+cs=0008  ss=0010  ds=0023  es=0023  fs=0030  gs=0000             efl=00010202
+WppRecorder!WppAutoLogTrace+0x129:
+86ca3259 8b01            mov     eax,dword ptr [ecx]  ds:0023:000000c8=????????
+
+We can see the actual callstack:
+0: kd> k
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # ChildEBP RetAddr      
+00 c472c610 b79d163f     WppRecorder!WppAutoLogTrace+0x129
+01 c472c64c b79ff90b     TeeDriverW10!WPP_RECORDER_SF_d+0x93
+02 c472c678 86c094de     TeeDriverW10!TEEDriverEvtDeviceAdd+0x5b
+03 (Inline) --------     Wdf01000!FxDriverDeviceAdd::Invoke+0x22
+04 c472c8ac 86c0944f     Wdf01000!FxDriver::AddDevice+0x84
+05 c472c8b8 8256a4ef     Wdf01000!FxDriver::AddDevice+0x21
+06 c472c8d8 8288ddfd     nt!PpvUtilCallAddDevice+0x1f
+07 c472c920 82858af1     nt!PnpCallAddDevice+0x75
+08 c472ca18 82857fb8     nt!PipCallDriverAddDevice+0x729
+09 c472ca4c 82973dec     nt!PipProcessDevNodeTree+0xf4
+0a c472ca80 825e6e7a     nt!PiRestartDevice+0x92
+0b c472cae8 82447de8     nt!PnpDeviceActionWorker+0xa2e08
+0c c472cb38 824fb6fc     nt!ExpWorkerThread+0xf8
+0d c472cb70 8258d95d     nt!PspSystemThreadStartup+0x4a
+0e c472cb7c 00000000     nt!KiThreadStartup+0x15
+
+TeeDriverW10!WPP_RECORDER_SF_d takes 5th parameter as a pointer to a GUID:
+0: kd> x TeeDriverW10!WPP_RECORDER_SF_d
+b79d15ac          TeeDriverW10!WPP_RECORDER_SF_d (void *, unsigned char, unsigned long, unsigned short, struct _GUID *, int)
+b79d15ac          TeeDriverW10!WPP_RECORDER_SF_D (void *, unsigned char, unsigned long, unsigned short, struct _GUID *, unsigned int)
+
+But switching to the caller’s frame, we can see that it was TeeDriverW10!TEEDriverEvtDeviceAdd that passed 0xC8 as a pointer to a GUID:
+0: kd> .frame /r 2
+02 c472c678 86c094de     TeeDriverW10!TEEDriverEvtDeviceAdd+0x5b
+eax=c4362158 ebx=3757cde8 ecx=000000c8 edx=cc7e5000 esi=00000000 edi=000000c8
+eip=b79ff90b esp=c472c654 ebp=c472c678 iopl=0         nv up ei pl nz na po nc
+cs=0008  ss=0010  ds=0023  es=0023  fs=0030  gs=0000             efl=00010202
+TeeDriverW10!TEEDriverEvtDeviceAdd+0x5b:
+b79ff90b 5f              pop     edi
+0: kd> ub
+TeeDriverW10!TEEDriverEvtDeviceAdd+0x46:
+b79ff8f6 a1f0d09fb7      mov     eax,dword ptr [TeeDriverW10!WPP_GLOBAL_Control (b79fd0f0)]
+b79ff8fb 56              push    esi
+b79ff8fc 57              push    edi
+b79ff8fd 6a10            push    10h
+b79ff8ff 6a09            push    9
+b79ff901 6a05            push    5
+b79ff903 ff7030          push    dword ptr [eax+30h]
+b79ff906 e8a11cfdff      call    TeeDriverW10!WPP_RECORDER_SF_d (b79d15ac)
+
+The driver at fault is Intel Management Engine Interface driver, version 2013.14.0.1529:
+0: kd> lmvi mTeeDriverW10
+Browse full module list
+start    end        module name
+b79d0000 b7a0d000   TeeDriverW10   (private pdb symbols)  TeeDriverW10.sys
+    Symbol file: d:\symcache\TEEDriverW10.pdb\524C934B5EF64C3CB6ED4BC9465D903B1\TEEDriverW10.pdb
+    Mapped memory image file: d:\symcache\TeeDriverW10.sys\5E79BA033d000\TeeDriverW10.sys
+    Image path: \SystemRoot\System32\DriverStore\FileRepository\heci.inf_x86_1a32eec1475f7db8\x86\TeeDriverW10.sys
+    Image name: TeeDriverW10.sys
+    Browse all global symbols  functions  data
+    Timestamp:        Tue Mar 24 00:42:59 2020 (5E79BA03)
+    CheckSum:         0004B04E
+    ImageSize:        0003D000
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4
+    Information from resource tables:
+0: kd> !!sigcheck -nobanner d:\symcache\TeeDriverW10.sys\5E79BA033d000\TeeDriverW10.sys
+<.shell waiting 1 second(s) for process>
+d:\symcache\teedriverw10.sys\5e79ba033d000\TeeDriverW10.sys:
+	Verified:	Signed
+	Signing date:	12:48 AM 3/24/2020
+	Publisher:	Intel(R) Embedded Subsystems and IP Blocks Group
+	Company:	Intel Corporation
+	Description:	Intel(R) Management Engine Interface
+	Product:	Intel(R) Management Engine Interface
+	Prod version:	2013.14.0.1529
+	File version:	2013.14.0.1529
+	MachineType:	32-bit

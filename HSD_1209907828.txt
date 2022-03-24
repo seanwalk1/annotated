@@ -1,0 +1,192 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209907828
+[AUTHOR]:	Mark Alward (mdalward)
+
+[ANALYSIS]:
+Storage failure caused by SD bus driver surprise-removing the PDO for 
+the boot device.
+
+
+This is a CRITICAL_PROCESS_DIED bugcheck after running ~200 CS cycles on
+eMMC storage.
+
+!analyze -v
+
+CRITICAL_PROCESS_DIED (ef)
+        A critical system process died
+Arguments:
+Arg1: ffff998d963c4600, Process object or thread object
+Arg2: 0000000000000000, If this is 0, a process died. If this is 1, a thread died.
+Arg3: 0000000000000000
+Arg4: 0000000000000000
+
+...
+EXCEPTION_CODE: (NTSTATUS) 0xc000000e - A device which does not exist was specified.
+
+
+This bugcheck is often caused by issues in the storage stack 
+causing file IO to fail in system processes. classpnp keeps a log
+of failed requests:
+
+3: kd> !storagekd.storclass
+Storage Class Devices
+
+Usage Legend: B = Boot, P = Paging, D = Dump, H = Hiber, R = Removable
+
+FDO                      # Device ID                        Usage   UP   DN  FL
+-------------------------------------------------------------------------------
+ffff998d947e9060 [1,2]   0 VID:15     BWBC3R                BPD      0    0  16
+ffff998d94ea8060 [1,2]   0 VID:15     BWBC3R                B        0    0   0
+
+3: kd> !storagekd.storclass ffff998d947e9060
+Storage class device ffff998d947e9060 with extension at ffff998d947e91b0
+
+Classpnp Internal Information at ffff998d947ea010
+
+    Failed Requests:
+
+           Srb    Scsi                                   
+    Opcode Status Status Sense Code  Sector/ListId   Time Stamp 
+    ------ ------ ------ ---------- --------------- ------------
+      2a     08     00    00 00 00      01d55290    02:08:31.021   
+      2a     08     00    00 00 00      01de8d60    02:08:31.068   
+      2a     08     00    00 00 00      0217c560    02:08:31.068   
+      2a     08     00    00 00 00      00689c98    02:08:31.068   
+      2a     08     00    00 00 00      01e18f20    02:08:31.068   
+      2a     08     00    00 00 00      01de8d60    02:08:31.068   
+      28     08     00    00 00 00      02091388    02:08:31.068   
+      2a     08     00    00 00 00      0217c560    02:08:31.068   
+      28     08     00    00 00 00      00aacde8    02:08:31.068   
+      2a     08     00    00 00 00      01e18f20    02:08:31.068   
+      2a     08     00    00 00 00      01e18f20    02:08:31.068   
+      2a     08     00    00 00 00      01e18f20    02:08:31.068   
+      2a     08     00    00 00 00      01e18f20    02:08:31.068   
+      28     08     00    00 00 00      01e283c0    02:08:31.068   
+      2a     08     00    00 00 00      01e123f0    02:08:31.084   
+      28     08     00    00 00 00      00d49ba2    02:08:31.084   
+
+
+Opcode is the SCSI CDB opcode, with 2A being a WRITE command. Srb status
+corresponds to the SrbStatus field in the SCSI_REQUEST_BLOCK (each of these
+commands is packaged in a SCSI_REQUEST_BLOCK structure when they are
+sent to the port driver). Looking in storport.h, 0x08 is a no-device status:
+
+#define SRB_STATUS_NO_DEVICE                0x08
+
+
+sdkd.dll is a private extension:
+
+.load \\myshare\sdkd.dll
+3: kd> !sdkd.busext
+SdBus driver object : [ !drvobj ffff998d9454dcc0] has 5 device objects[Copy]
+
+  SdBus-HC2 [ dt sdbus!_FDO_EXTENSION ffff998d958991a0 ][Copy]	[ !devobj ffff998d95899050 ][Copy]
+    Socket [0]	: [ dt sdbus!_SD_SOCKET ffff998d958da000 ][Copy]
+
+  SdBus-HC1 [ dt sdbus!_FDO_EXTENSION ffff998d9574b1a0 ][Copy]	[ !devobj ffff998d9574b050 ][Copy]
+    Socket [0]	: [ dt sdbus!_SD_SOCKET ffff998d94e3e000 ][Copy]
+
+  SdBus-HC0 [ dt sdbus!_FDO_EXTENSION ffff998d9454e1a0 ][Copy]	[ !devobj ffff998d9454e050 ][Copy]
+    Socket [0]	: [ dt sdbus!_SD_SOCKET ffff998d94550000 ][Copy]
+      SdBus-1	: [ dt sdbus!_PDO_EXTENSION ffff998d91f9b250 ][Copy]	[ !devobj ffff998d91f9b100 ][Copy] eMMC Disk  //[WOS Dump]
+      SdBus-0	: [ dt sdbus!_PDO_EXTENSION ffff998d945561b0 ][Copy]	[ !devobj ffff998d94556060 ][Copy] eMMC Disk  //[WOS Dump]
+
+We are interested in the PDO's labelled as "eMMC disk". Interestingly, there are 2 PDO's
+while eMMC host controllers only have 1 physical slot. Looking at the PNP state of each 
+PDO (!devobj on each device object gives the DevNode addresses):
+
+For the PDO labeled SdBus-1, the devnode is started:
+
+3: kd> !devnode ffff998d91f76010
+DevNode 0xffff998d91f76010 for PDO 0xffff998d91f9b100
+  Parent 0xffff998d9452ba50   Sibling 0000000000   Child 0xffff998d915a6010   
+  InstancePath is "SD\VID_15&OID_0000&PID_BWBC3R&REV_0.2\4&34d5d459&0&0"
+  ServiceName is "sdstor"
+  State = DeviceNodeStarted (0x308)
+
+For the PDO labeled SdBus-0, the devnode is being removed:
+  
+ 3: kd> !devnode ffff998d94556d30
+DevNode 0xffff998d94556d30 for PDO 0xffff998d94556060
+  Parent 0000000000   Sibling 0000000000   Child 0000000000   
+  InstancePath is "SD\VID_15&OID_0000&PID_BWBC3R&REV_0.2\4&34d5d459&0&0"
+  ServiceName is "sdstor"
+  State = DeviceNodeDeletePendingCloses (0x313)
+
+
+This means that sdbus reported the SdBus-0 eMMC card as missing to PnP.
+The PDO extension for the removed PDO gives some hints as to our 
+current state:
+
+3: kd> dt sdbus!_PDO_EXTENSION ffff998d945561b0
+   +0x000 Signature        : 0x50626453
+   +0x008 DeviceObject     : 0xffff998d`94556060 _DEVICE_OBJECT
+   +0x010 Socket           : 0xffff998d`94550000 _SD_SOCKET
+   +0x018 NextPdo          : (null) 
+   +0x020 PnpState         : 5 ( SDBUS_DEVICE_SURPRISE_REMOVE_PENDING )
+   +0x024 PrevPnpState     : 1 ( SDBUS_DEVICE_STARTED )
+   +0x028 Flags            : 0x80003
+
+The flags field means:
+
+#define SDBUS_PDO_PHYSICALLY_REMOVED    0x00000001
+#define SDBUS_PDO_REPORTED_MISSING      0x00000002
+#define SDBUS_PDO_FUNCTION_ACTIVE       0x00080000
+
+The SDBUS_PDO_PHYSICALLY_REMOVED flag is only set in a few places, the 
+main one being in SdbusSetSocketCardChanged(). This routine sets this
+flag on the PDO and calls IoInvalidateDeviceRelations(). When PnP 
+later queries for bus relations, the PDO's that are marked as removed
+will not be reported.
+
+
+I narrowed down the reason for SdbusSetSocketCardChanged() being called
+by looking at every circumstance where it is called (note that each 
+work flow in sdbus is called an "activation type", and they perform
+various hardware operations for power/Pnp events):
+
+-SA_REQUEST_VERIFY_CARD_ON_POWER_UP activation type is performed, and 
+ SDPORT_DetectCardInSocket() returns false.
+ 
+	Not possible - SDPORT_DetectCardInSocket() always returns TRUE for
+	eMMC cards, since they are non-removable.
+	
+-SA_CARD_INSERTED activation type failed to initialize card.
+
+	Not possible - SD_SOCKET.Dbg.ActivationFailedCount keeps a count of
+	failed activation sequences, and the count is 0.
+	
+-During SA_CARD_INSERTED activation type, the card ID changed.
+
+	Not possible - PDO_EXTENSION.CardData stores card serial #, manufacturer
+	ID, etc. These values match exactly between the removed PDO and the
+	started PDO.
+	
+-An upper-layer driver obtained the REENUMERATE_SELF_INTERFACE_STANDARD and told
+ sdbus to reenumerate.
+ 
+	Not likely - sdstor is the driver above sdbus, and there are no hits
+	when I search for GUID_REENUMERATE_SELF_INTERFACE_STANDARD in sdstor.
+	
+-SA_REQUEST_VERIFY_CARD_ON_INTERRUPT activation was performed.
+
+	Likely - FDo_EXTENSION.Dbg.CardDetectViaSDHC is set to 1. This is a counter 
+	of the number of Card Detect interrupts that have fired. For every card
+	detect interrupt, SA_REQUEST_VERIFY_CARD_ON_INTERRUPT activation is 
+	performed and all PDO's are flagged as removed.
+	
+
+The SD host controller has "Card Removal" and "Card Insertion" as two of the 
+interrupt types it can generate. So it looks like one of these fired 
+(spuriously i guess, since eMMC is non-removable?) and sdbus tore down
+all the PDO's.
+
+One solution might be to check whether the card ID has changed after the
+card removal event, rather than unconditionally tearing down the PDO.
+This would guard against spurious card removal/insertion interrupts.
+
+
+	
+
+ 
+	
+

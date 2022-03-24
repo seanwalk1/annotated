@@ -1,0 +1,255 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1604436188
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:
+
+The issue is a hang, System was crashed manually – see attached memory dump:
+4: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+MANUALLY_INITIATED_CRASH (e2)
+The user manually initiated this crash dump.
+Arguments:
+Arg1: 0000000000000000
+Arg2: 0000000000000000
+Arg3: 0000000000000000
+Arg4: 0000000000000000
+…
+
+Looking at the locks, we see high contention over the locks owned by the Thread ffffcd870d0e0700:
+4: kd> !locks
+**** DUMP OF ALL RESOURCE OBJECTS ****
+KD: Scanning for held locks............................................................
+
+Resource @ 0xffffcd86fc2b14e0    Exclusively owned
+    Contention Count = 2166
+    NumberOfSharedWaiters = 4
+     Threads: ffffcd870d0e0700-01<*> ffffcd870b6d2080-01    ffffcd870d0a9080-01    ffffcd870d69e040-01    
+              ffffcd87097c4040-01    
+KD: Scanning for held locks..
+
+Resource @ 0xffffcd87097d2e30    Shared 1 owning threads
+    Contention Count = 952435
+    NumberOfSharedWaiters = 2
+    NumberOfExclusiveWaiters = 69
+     Threads: ffffcd870d0e0700-01<*> ffffcd870e13f080-01    ffffcd870da08080-01    
+
+     Threads Waiting On Exclusive Access:
+              ffffcd870d95c080       ffffcd870a828700       ffffcd8709ce1080       ffffcd870d8c0080       
+              ffffcd870c6e0240       ffffcd870c75e700       ffffcd870c934700       ffffcd870db60080       
+              ffffcd870e153700       ffffcd87096e3080       ffffcd870ab95080       ffffcd870d6a8080       
+              ffffcd8709a44700       ffffcd870b624700       ffffcd870aec6080       ffffcd8709863080       
+              ffffcd8709dab080       ffffcd870ad2e080       ffffcd870e1f7080       ffffcd870d514080       
+              ffffcd870df65700       ffffcd870d7c8080       ffffcd870cad9080       ffffcd870ca25400       
+              ffffcd870dc1d700       ffffcd870de13080       ffffcd870cb92080       ffffcd870c7f4700       
+              ffffcd870d959080       ffffcd870e0ee080       ffffcd870dd5d3c0       ffffcd870dd8b480       
+              ffffcd870d964080       ffffcd86ea8d1040       ffffcd870c21e700       ffffcd870ae98700       
+              ffffcd870aea7080       ffffcd870c7ec440       ffffcd870aec3700       ffffcd87096d5080       
+              ffffcd870a801080       ffffcd870dd00080       ffffcd870aa40080       ffffcd8709e6f400       
+              ffffcd870d7c3040       ffffcd870d970700       ffffcd870ac29700       ffffcd870b50f700       
+              ffffcd870acca040       ffffcd870d9f0700       ffffcd870c2ec080       ffffcd870d024700       
+              ffffcd870e321700       ffffcd870d833700       ffffcd870e21c080       ffffcd870de68040       
+              ffffcd87097a8080       ffffcd870ac2e080       ffffcd870ac7b700       ffffcd870a80a700       
+              ffffcd870dd38080       ffffcd870b2b5700       ffffcd870d9b2040       ffffcd870d95d080       
+              ffffcd870d948080       ffffcd870a829080       ffffcd870a6eb080       ffffcd870f15d080       
+              ffffcd870d047080       
+KD: Scanning for held locks.
+
+Resource @ 0xffffcd870a6f6470    Exclusively owned
+    Contention Count = 102
+     Threads: ffffcd870d0e0700-01<*> 
+
+Resource @ 0xffffcd870a6f63d0    Exclusively owned
+    Contention Count = 671
+     Threads: ffffcd870d0e0700-01<*> 
+
+Resource @ 0xffffcd870a6f6330    Exclusively owned
+    Contention Count = 229
+     Threads: ffffcd870d0e0700-01<*> 
+KD: Scanning for held locks.
+
+Resource @ 0xffffcd870a1cf480    Exclusively owned
+    Contention Count = 1579
+     Threads: ffffcd870d0e0700-01<*> 
+KD: Scanning for held locks.....
+
+Resource @ 0xffffcd870a7b7700    Exclusively owned
+    Contention Count = 10
+     Threads: ffffcd870d0e0700-01<*> 
+KD: Scanning for held locks..........................................................................................................................................
+
+Resource @ 0xffffcd870ca5a2e0    Exclusively owned
+     Threads: ffffcd870cd50700-01<*> 
+KD: Scanning for held locks.
+
+Resource @ 0xffffcd870afd4810    Exclusively owned
+    Contention Count = 105
+     Threads: ffffcd870d0e0700-01<*> 
+KD: Scanning for held locks............................................................................................................................................................................................................................................................................................................................................................................
+
+Resource @ 0xffffcd870e0919d0    Exclusively owned
+     Threads: ffffcd870d0e0700-01<*> 
+KD: Scanning for held locks......................................
+19415 total locks, 10 locks currently held
+
+Switching to the thread context we can see that it is waiting for CDD worker thread to complete issued command:
+4: kd> .thread /p /r ffffcd870d0e0700
+Implicit thread is now ffffcd87`0d0e0700
+Implicit process is now ffffcd87`0a6f35c0
+Loading User Symbols
+.....................
+4: kd> !thread ffffcd870d0e0700
+THREAD ffffcd870d0e0700  Cid 04dc.13e0  Teb: 0000006691fb1000 Win32Thread: ffffcd870c94d350 WAIT: (Executive) KernelMode Non-Alertable
+    ffffcd870d8d0c50  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffe40b60a1f010
+Owning Process            ffffcd870a8c45c0       Image:         dwm.exe
+Attached Process          ffffcd870a6f35c0       Image:         csrss.exe
+Wait Start TickCount      440154         Ticks: 3506819 (0:15:13:14.046)
+Context Switch Count      65853          IdealProcessor: 4             
+UserTime                  00:00:27.500
+KernelTime                00:00:30.156
+Win32 Start Address 0x00007ff909746c20
+Stack Init fffffb0e9123fb90 Current fffffb0e9123ef20
+Base fffffb0e91240000 Limit fffffb0e91239000 Call 0000000000000000
+Priority 15 BasePriority 15 PriorityDecrement 0 IoPriority 2 PagePriority 5
+
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffffb0e`9123ef60 fffff803`b6440e49 : 00000000`00000000 ffffcd86`eadb3e58 fffffb0e`00000000 ffffcd86`00000000 : nt!KiSwapContext+0x76
+fffffb0e`9123f0a0 fffff803`b644073e : ffffcd87`0d0e0700 fffff803`b644073e 00000000`00000000 00000000`00000000 : nt!KiSwapThread+0x269
+fffffb0e`9123f160 fffff803`b6440096 : ffffcd87`0d0e0700 fffff803`00000000 ffff8000`1475d100 ffffcd87`0d8d0c50 : nt!KiCommitThreadWait+0x10e
+fffffb0e`9123f200 fffff426`f5dd388e : ffffcd87`0d8d0c50 00000000`00000000 fffffb0e`9123f300 ffffcd87`00000000 : nt!KeWaitForSingleObject+0x236
+fffffb0e`9123f2e0 fffff426`f5dd2893 : fffff452`c005f020 00000000`00000000 fffffb0e`9123f970 fffffb0e`9123f542 : cdd!CddIssueCommand+0x8e
+fffffb0e`9123f320 fffff426`f5dd2697 : 00000000`00000000 ffffcd87`0a1af010 00000000`00000001 fffff452`c005f020 : cdd!DrvAssertModeInternal+0x147
+fffffb0e`9123f390 fffff426`f5c3dae9 : fffff452`c0048010 ffffcd87`0a1b5620 00000000`00000001 00000000`00000001 : cdd!DrvAssertMode+0x57
+fffffb0e`9123f3c0 fffff80b`bc64d162 : ffffcd87`0a1b5620 fffffb0e`9123f4b9 ffffcd87`0d0e0700 ffffcd87`0a1af010 : win32kbase!DxgkEngAssertGdiOutput+0xe9
+fffffb0e`9123f400 fffff80b`bc63d75a : 00000000`00000000 ffffe40b`6280f2e0 fffffb0e`9123fa80 ffffe40b`6280f2e0 : dxgkrnl!ADAPTER_DISPLAY::EnsureGdiOutput+0x16a
+fffffb0e`9123f510 fffff80b`bc63d0cf : 00000000`80005140 00000000`00000000 00000000`00002058 00000000`00000001 : dxgkrnl!SetVidPnSourceOwnerInternal+0x5aa
+fffffb0e`9123f940 fffff426`f5c42881 : 40000540`40000080 00000236`bb80d0d0 00000236`ae64a8d0 00000000`00000160 : dxgkrnl!DxgkSetVidPnSourceOwner+0xff
+fffffb0e`9123f9d0 fffff803`b65a2a53 : ffffcd87`0d0e0700 fffffb0e`9123fa80 00000000`000000bc fffff452`00000000 : win32kbase!NtGdiDdDDISetVidPnSourceOwner+0x11
+fffffb0e`9123fa00 00007ff9`0cdb5484 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ fffffb0e`9123fa00)
+00000066`9227dfe8 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : win32u!ZwGdiDdDDISetVidPnSourceOwner+0x14
+
+4: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 fffffb0e`9123ef60 fffff803`b6440e49 nt!KiSwapContext+0x76
+01 fffffb0e`9123f0a0 fffff803`b644073e nt!KiSwapThread+0x269
+02 fffffb0e`9123f160 fffff803`b6440096 nt!KiCommitThreadWait+0x10e
+03 fffffb0e`9123f200 fffff426`f5dd388e nt!KeWaitForSingleObject+0x236
+04 fffffb0e`9123f2e0 fffff426`f5dd2893 cdd!CddIssueCommand+0x8e
+05 fffffb0e`9123f320 fffff426`f5dd2697 cdd!DrvAssertModeInternal+0x147
+06 fffffb0e`9123f390 fffff426`f5c3dae9 cdd!DrvAssertMode+0x57
+07 fffffb0e`9123f3c0 fffff80b`bc64d162 win32kbase!DxgkEngAssertGdiOutput+0xe9
+08 fffffb0e`9123f400 fffff80b`bc63d75a dxgkrnl!ADAPTER_DISPLAY::EnsureGdiOutput+0x16a
+09 fffffb0e`9123f510 fffff80b`bc63d0cf dxgkrnl!SetVidPnSourceOwnerInternal+0x5aa
+0a fffffb0e`9123f940 fffff426`f5c42881 dxgkrnl!DxgkSetVidPnSourceOwner+0xff
+0b fffffb0e`9123f9d0 fffff803`b65a2a53 win32kbase!NtGdiDdDDISetVidPnSourceOwner+0x11
+0c fffffb0e`9123fa00 00007ff9`0cdb5484 nt!KiSystemServiceCopyEnd+0x13
+0d 00000066`9227dfe8 00000000`00000000 win32u!ZwGdiDdDDISetVidPnSourceOwner+0x14
+
+The worker thread is 0xffffcd87`0b6d2080:
+4: kd> .frame /r 4
+04 fffffb0e`9123f2e0 fffff426`f5dd2893 cdd!CddIssueCommand+0x8e
+rax=0000000000000000 rbx=fffff452c005f020 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000080000000 rdi=0000000000000006
+rip=fffff426f5dd388e rsp=fffffb0e9123f2e0 rbp=000000000cddba5e
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=fffffb0e9123f970
+r14=000000000cddba5e r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+cdd!CddIssueCommand+0x8e:
+fffff426`f5dd388e 4883a3b809000000 and     qword ptr [rbx+9B8h],0 ds:fffff452`c005f9d8=ffffcd870d0e0700
+4: kd> dt   ppdev  pWorkerThread
+Local var @ rbx Type CDDPDEV*
+   +0x9b0 pWorkerThread : 0xffffcd87`0b6d2080 _ETHREAD
+
+Switching to the worker thread context:
+4: kd> .thread /p /r 0xffffcd87`0b6d2080
+Implicit thread is now ffffcd87`0b6d2080
+Implicit process is now ffffcd87`0a6f35c0
+Loading User Symbols
+.....................
+4: kd> !thread 0xffffcd87`0b6d2080
+THREAD ffffcd870b6d2080  Cid 0270.0970  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrResource) KernelMode Non-Alertable
+    fffffb0e8f9570e8  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffe40b60a1f010
+Owning Process            ffffcd870a6f35c0       Image:         csrss.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      3946952        Ticks: 21 (0:00:00:00.328)
+Context Switch Count      48416          IdealProcessor: 6             
+UserTime                  00:00:00.000
+KernelTime                00:00:03.921
+Win32 Start Address cdd!PresentWorkerThread (0xfffff426f5dd9aa0)
+Stack Init fffffb0e8f957b90 Current fffffb0e8f956c50
+Base fffffb0e8f958000 Limit fffffb0e8f951000 Call 0000000000000000
+Priority 14 BasePriority 14 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+fffffb0e`8f956c90 fffff803`b6440e49 : fffff803`00000000 ffffcd87`00000000 00000001`00007530 00000000`00000000 : nt!KiSwapContext+0x76
+fffffb0e`8f956dd0 fffff803`b644073e : ffffcd87`0b6d2080 ffffcd87`0b6d2180 ffffcd87`0b6d2100 00001fa0`00000000 : nt!KiSwapThread+0x269
+fffffb0e`8f956e90 fffff803`b6440096 : 00000000`0000004f 00000000`00000000 00000000`00000000 fffffb0e`8f9570e8 : nt!KiCommitThreadWait+0x10e
+fffffb0e`8f956f30 fffff803`b643e52d : fffffb0e`8f9570e8 0000ff00`0000001b ffffcd87`0a1af000 ffffe40b`00000000 : nt!KeWaitForSingleObject+0x236
+fffffb0e`8f957010 fffff803`b64923c1 : ffffcd86`fc2b14e0 fffffb0e`8f9570d8 00000000`00010244 fffff803`b65414b0 : nt!ExpWaitForResource+0x6d
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ExpCommitWaitForResourceShared+0x19 (Inline Function @ fffff803`b64923c1)
+fffffb0e`8f957090 fffff803`b6491ed0 : ffffcd87`0b6d2002 ffffcd86`fc2b14e0 00000000`00000000 00000000`00000001 : nt!ExpAcquireResourceSharedLite+0x431
+fffffb0e`8f957130 fffff80b`bc676181 : ffffcd87`0a1af010 ffffcd87`0a1af010 ffffcd87`00000000 00000000`00000000 : nt!ExAcquireResourceSharedLite+0x40
+fffffb0e`8f957170 fffff80b`bc694d9b : ffffffff`ffffffff 00000000`00000000 00000000`00000000 00000000`00000000 : dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x81
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!COREACCESS::AcquireShared+0x3e (Inline Function @ fffff80b`bc694d9b)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!COREADAPTERACCESS::AcquireShared+0x3e (Inline Function @ fffff80b`bc694d9b)
+fffffb0e`8f9571b0 fffff426`f5dd9e68 : 00000000`00000004 fffffb0e`8f9579f0 00000000`00028b14 ffffcd87`00000000 : dxgkrnl!DxgkCddWaitForVerticalBlankEvent+0x11b
+fffffb0e`8f957480 fffff803`b64e20e7 : 3b679816`b9c2d243 ffffcd87`0b6d2080 fffff426`f5dd9aa0 fffff452`c005f020 : cdd!PresentWorkerThread+0x3c8
+fffffb0e`8f957b10 fffff803`b659cb86 : fffff803`b5172180 ffffcd87`0b6d2080 fffff803`b64e20a0 76ffe709`d59eb575 : nt!PspSystemThreadStartup+0x47
+fffffb0e`8f957b60 00000000`00000000 : fffffb0e`8f958000 fffffb0e`8f951000 00000000`00000000 00000000`00000000 : nt!KxStartSystemThread+0x16
+
+4: kd> kn
+  *** Stack trace for last set context - .thread/.cxr resets it
+# Child-SP          RetAddr           Call Site
+00 fffffb0e`8f956c90 fffff803`b6440e49 nt!KiSwapContext+0x76
+01 fffffb0e`8f956dd0 fffff803`b644073e nt!KiSwapThread+0x269
+02 fffffb0e`8f956e90 fffff803`b6440096 nt!KiCommitThreadWait+0x10e
+03 fffffb0e`8f956f30 fffff803`b643e52d nt!KeWaitForSingleObject+0x236
+04 fffffb0e`8f957010 fffff803`b64923c1 nt!ExpWaitForResource+0x6d
+05 (Inline Function) --------`-------- nt!ExpCommitWaitForResourceShared+0x19
+06 fffffb0e`8f957090 fffff803`b6491ed0 nt!ExpAcquireResourceSharedLite+0x431
+07 fffffb0e`8f957130 fffff80b`bc676181 nt!ExAcquireResourceSharedLite+0x40
+08 fffffb0e`8f957170 fffff80b`bc694d9b dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x81
+09 (Inline Function) --------`-------- dxgkrnl!COREACCESS::AcquireShared+0x3e
+0a (Inline Function) --------`-------- dxgkrnl!COREADAPTERACCESS::AcquireShared+0x3e
+0b fffffb0e`8f9571b0 fffff426`f5dd9e68 dxgkrnl!DxgkCddWaitForVerticalBlankEvent+0x11b
+0c fffffb0e`8f957480 fffff803`b64e20e7 cdd!PresentWorkerThread+0x3c8
+0d fffffb0e`8f957b10 fffff803`b659cb86 nt!PspSystemThreadStartup+0x47
+0e fffffb0e`8f957b60 00000000`00000000 nt!KxStartSystemThread+0x16
+
+The worker is waiting for the lock owned by the thread ffffcd870d0e0700:
+4: kd> .frame /r 7
+07 fffffb0e`8f957130 fffff80b`bc676181 nt!ExAcquireResourceSharedLite+0x40
+rax=0000000000000000 rbx=ffffcd86fc2b14e0 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000000000000001
+rip=fffff803b6491ed0 rsp=fffffb0e8f957130 rbp=fffffb0e8f9572b0
+r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=00000009f833e66e r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+cs=0000  ss=0000  ds=0000  es=0000  fs=0000  gs=0000             efl=00000000
+nt!ExAcquireResourceSharedLite+0x40:
+fffff803`b6491ed0 488b5c2448      mov     rbx,qword ptr [rsp+48h] ss:fffffb0e`8f957178=ffffcd870a1af010
+4: kd> dv /V
+@rbx              @rbx                     Resource = 0xffffcd86`fc2b14e0
+@edi              @edi                         Wait = 0x01 ''
+4: kd> !locks 0xffffcd86`fc2b14e0
+
+Resource @ 0xffffcd86fc2b14e0    Exclusively owned
+    Contention Count = 2166
+    NumberOfSharedWaiters = 4
+     Threads: ffffcd870d0e0700-01<*> ffffcd870b6d2080-01    ffffcd870d0a9080-01    ffffcd870d69e040-01    
+              ffffcd87097c4040-01    
+1 total locks
+
+So ffffcd870d0e0700 is waiting on ffffcd870b6d2080 in CDD and ffffcd870b6d2080 is waiting on ffffcd870d0e0700 in DirectX Kernel.
+So this is a deadlock and since screen is not being updated, user perceives it as a hang.

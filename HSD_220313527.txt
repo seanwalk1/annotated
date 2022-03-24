@@ -1,0 +1,117 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/220313527
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:	Bugcheck DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5)
+[BUGCHECK]:	0xD5
+
+
+This is bugcheck DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5) – see attached memory dump:
+2: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL (d5)
+Memory was referenced after it was freed.
+This cannot be protected by try-except.
+When possible, the guilty driver's name (Unicode string) is printed on
+the bugcheck screen and saved in KiBugCheckDriver.
+Arguments:
+Arg1: fffff6b14a89ede0, memory referenced
+Arg2: 0000000000000000, value 0 = read operation, 1 = write operation
+Arg3: fffff6951b888c15, if non-zero, the address which referenced memory.
+Arg4: 0000000000000000, (reserved)
+…
+
+Looking at the callstack, switching to the trap:
+2: kd> kV
+ # Child-SP          RetAddr           : Args to Child                                                           : Call Site
+00 ffffc480`3e5b00b8 fffff800`b3816c5c : 00000000`00000050 fffff6b1`4a89ede0 00000000`00000000 ffffc480`3e5b0350 : nt!KeBugCheckEx
+01 ffffc480`3e5b00c0 fffff800`b36ea766 : 00000000`00000000 fffff6b1`4a89ede0 ffffc480`3e5b0350 ffff970f`595ee640 : nt!MiSystemFault+0x12e69c
+02 ffffc480`3e5b0160 fffff800`b37f1772 : fffff6b1`4b794de0 00000000`00000000 ffff970f`59858080 ffffc480`3e5b04b0 : nt!MmAccessFault+0xae6
+03 ffffc480`3e5b0350 fffff695`1b888c15 : fffff6b1`40a4edd0 fffff6b1`4a89ede0 ffff204a`00000000 00000000`00000000 : nt!KiPageFault+0x132 (TrapFrame @ ffffc480`3e5b0350)
+04 ffffc480`3e5b04e0 fffff695`1b8bcde3 : fffff6b1`40a4edd0 00000000`00000000 fffff6b1`4cb7aed0 fffff6b1`4cb7aef0 : win32kfull!UpdateWindowMonitor+0x35
+05 ffffc480`3e5b0520 fffff695`1b8bccaf : 00000000`00000000 fffff6b1`40602c40 00000000`00000001 00000000`00000000 : win32kfull!UpdateMonitorForWindowAndChildren+0x63
+06 ffffc480`3e5b0560 fffff695`1b8bbcce : ffff970f`00000000 00000000`00000001 fffff6b1`40811620 00000000`00000000 : win32kfull!zzzUpdateWindowsAfterModeChange+0x1b3
+07 ffffc480`3e5b05f0 fffff695`1bbb86bb : 00000000`2a0405db ffff970f`59c21cb0 00000000`00000000 fffff6b1`42c08f80 : win32kfull!zzzResetSharedDesktops+0xde
+08 ffffc480`3e5b0620 fffff695`1bc14d20 : 00000000`00000000 00000000`00000000 ffffc480`3e5b0739 00000000`00000000 : win32kbase!xxxResetDisplayDevice+0xeb
+09 ffffc480`3e5b06a0 fffff695`1bc9d64a : ffffc480`00000000 00000000`00000000 ffff970f`00000000 00000000`00000000 : win32kbase!xxxUserSetDisplayConfig+0x270
+0a ffffc480`3e5b0780 fffff695`1bca0168 : 00000000`00000000 ffffef01`00000000 00000000`00000000 fffff6b1`00000000 : win32kbase!DrvProcessSetDisplayConfigParameters+0x9e
+0b ffffc480`3e5b0860 fffff695`1bc82295 : ffffc480`3c33da30 ffffc480`3c33da30 ffffa888`8dc8afe0 00000000`00000001 : win32kbase!DrvProcessDxgkDisplayCallout+0x1f4
+0c ffffc480`3e5b0970 fffff695`1bc732ea : 00000000`00000001 00000000`00286900 ffff970f`59858001 00000000`00000000 : win32kbase!VideoPortCalloutThread+0x2ed
+0d ffffc480`3e5b0a10 fffff695`1b85055f : ffff970f`00000004 ffffc480`3c33d6f8 ffff970f`59858080 00000000`00000000 : win32kbase!xxxCreateSystemThreads+0x58d0a
+0e ffffc480`3e5b0a50 fffff800`b37f2e13 : ffff970f`59858080 00000000`00000005 000002c4`501042a0 00000000`000027a4 : win32kfull!NtUserCallNoParam+0x2f
+0f ffffc480`3e5b0a80 00007ffb`4b281124 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffc480`3e5b0a80)
+10 000000e4`43b3fd58 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ffb`4b281124
+2: kd> .trap  ffffc480`3e5b0350
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=0000000000000000 rbx=0000000000000000 rcx=00000000000004c4
+rdx=fffff6b14a89ede0 rsi=0000000000000000 rdi=0000000000000000
+rip=fffff6951b888c15 rsp=ffffc4803e5b04e0 rbp=0000000000000000
+ r8=0000000000000012  r9=0000000000000162 r10=0000000000000001
+r11=ffffc4803e5b0520 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+win32kfull!UpdateWindowMonitor+0x35:
+fffff695`1b888c15 488b06          mov     rax,qword ptr [rsi] ds:00000000`00000000=????????????????
+
+The win32kfull!UpdateWindowMonitor tried to read fffff6b14a89ede0:
+2: kd> .bugcheck
+Bugcheck code 000000D5
+Arguments fffff6b1`4a89ede0 00000000`00000000 fffff695`1b888c15 00000000`00000000
+
+2: kd> r cr2
+Last set context:
+cr2=fffff6b14a89ede0
+
+2: kd> ub fffff695`1b888c15
+win32kfull!UpdateWindowMonitor+0xb:
+fffff695`1b888beb 4883ec30        sub     rsp,30h
+fffff695`1b888bef 488bf2          mov     rsi,rdx
+fffff695`1b888bf2 488bf9          mov     rdi,rcx
+fffff695`1b888bf5 4885f6          test    rsi,rsi
+fffff695`1b888bf8 0f8498000000    je      win32kfull!UpdateWindowMonitor+0xb6 (fffff695`1b888c96)
+fffff695`1b888bfe 488b8f68010000  mov     rcx,qword ptr [rdi+168h]
+fffff695`1b888c05 ff157d422d00    call    qword ptr [win32kfull!_imp_ValidateHmonitorNoRip (fffff695`1bb5ce88)]
+fffff695`1b888c0b f7873001000000000008 test dword ptr [rdi+130h],8000000h
+
+The page has been freed:
+2: kd> !pte fffff6b14a89ede0
+                                           VA fffff6b14a89ede0
+PXE at FFFFC26130984F68    PPE at FFFFC261309ED628    PDE at FFFFC2613DAC52A0    PTE at FFFFC27B58A544F0
+contains 0A000002551DD863  contains 0A00000257B0D863  contains 0A00000271DB0863  contains 00314A7F20000000
+pfn 2551dd    ---DA--KWEV  pfn 257b0d    ---DA--KWEV  pfn 271db0    ---DA--KWEV  not valid
+                                                                                  Page has been freed
+
+
+The memory was freed because monitor was destroyed earlier:
+2: kd> !verifier 80 fffff6b14a89ede0
+
+Log of recent kernel pool Allocate and Free operations:
+
+There are up to 0x10000 entries in the log.
+
+Parsing 0x0000000000010000 log entries, searching for address 0xfffff6b14a89ede0.
+
+
+======================================================================
+Pool block fffff6b14a89ede0, Size 0000000000000220, Thread ffff970f59858080
+fffff800b3dee8bf nt!VfFreePoolNotification+0x5b
+fffff800b38d38d1 nt!ExpFreePoolChecks+0x81
+fffff800b38fce3e nt!ExFreePoolWithTag+0xe2e
+fffff804cdf399a0 VerifierExt!ExFreePoolWithTag_wrapper+0x10
+fffff800b3ddd80a nt!VerifierExFreePoolWithTag+0x4a
+fffff6951bbf76cc win32kbase!Win32FreePool+0x1c
+fffff6951bbf8b6a win32kbase!HMFreeObject+0x20a
+fffff6951bc2f188 win32kbase!DestroyMonitor+0xe8
+fffff6951bc547f8 win32kbase!UpdateUserScreen+0x9b17c
+fffff6951bbb865a win32kbase!xxxResetDisplayDevice+0x8a
+fffff6951bc14d20 win32kbase!xxxUserSetDisplayConfig+0x270
+fffff6951bc9d64a win32kbase!DrvProcessSetDisplayConfigParameters+0x9e
+fffff6951bca0168 win32kbase!DrvProcessDxgkDisplayCallout+0x1f4
+…
+
+So it looks like UpdateWindowMonitor needs to take this into account. Perhaps DestroyMonitor needs to zero out the pointer.

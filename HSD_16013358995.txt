@@ -1,0 +1,192 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/16013358995
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is Bugcheck A - IRQL_NOT_LESS_OR_EQUAL (a) (see attached memory dump):
+5: kd> !analyze -show
+IRQL_NOT_LESS_OR_EQUAL (a)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If a kernel debugger is available get the stack backtrace.
+Arguments:
+Arg1: 000000000000005d, memory referenced
+Arg2: 000000000000000f, IRQL
+Arg3: 0000000000000000, bitfield :
+	bit 0 : value 0 = read operation, 1 = write operation
+	bit 3 : value 0 = not an execute operation, 1 = execute operation (only on chips which support this level of status)
+Arg4: fffff8034c780977, address which referenced memory
+
+This was a NULL-pointer dereference during interrupt disconnect:
+5: kd> r cr2
+cr2=000000000000005d
+5: kd> u fffff8034c780977 L1
+nt!KiDisconnectInterruptInternal+0x33:
+fffff803`4c780977 384a5d          cmp     byte ptr [rdx+5Dh],cl
+
+Switching to the frame:
+5: kd> kn
+ # Child-SP          RetAddr               Call Site
+00 fffffb8d`722ff038 fffff803`4c8265a9     nt!KeBugCheckEx
+01 fffffb8d`722ff040 fffff803`4c822700     nt!KiBugCheckDispatch+0x69
+02 fffffb8d`722ff180 fffff803`4c780977     nt!KiPageFault+0x440
+03 fffffb8d`722ff310 fffff803`4c7808de     nt!KiDisconnectInterruptInternal+0x33
+04 fffffb8d`722ff340 fffff803`4c780103     nt!KiDisconnectInterruptCommon+0xe2
+05 fffffb8d`722ff3e0 fffff803`4cbefbb2     nt!KeDisconnectInterrupt+0x6b
+06 fffffb8d`722ff430 fffff803`4cbefa6f     nt!IoDisconnectInterrupt+0xd2
+07 fffffb8d`722ff4e0 fffff803`4fb2d4d1     nt!IoDisconnectInterruptEx+0x2f
+08 fffffb8d`722ff520 fffff803`4fb2d438     Wdf01000!FxInterrupt::DisconnectInternal+0x4d
+09 fffffb8d`722ff560 fffff803`4fb2d1e8     Wdf01000!FxInterrupt::Disconnect+0xc4
+0a fffffb8d`722ff5d0 fffff803`4fb2d08c     Wdf01000!FxPkgPnp::NotifyResourceObjectsDx+0x6c
+0b fffffb8d`722ff630 fffff803`4fb2e75b     Wdf01000!FxPkgPnp::PowerGotoDxIoStoppedCommon+0xcc
+0c (Inline Function) --------`--------     Wdf01000!FxPkgPnp::PowerGotoDxIoStopped+0x7
+0d fffffb8d`722ff6a0 fffff803`4fb36b67     Wdf01000!FxPkgPnp::PowerGotoDNotZeroIoStopped+0xb
+0e fffffb8d`722ff6d0 fffff803`4fb36d20     Wdf01000!FxPkgPnp::PowerEnterNewState+0x143
+0f fffffb8d`722ff820 fffff803`4fb359ee     Wdf01000!FxPkgPnp::PowerProcessEventInner+0xdc
+10 fffffb8d`722ff8a0 fffff803`4fb2c839     Wdf01000!FxPkgPnp::PowerProcessEvent+0x142
+11 (Inline Function) --------`--------     Wdf01000!FxPkgFdo::LowerDevicePower+0x11
+12 fffffb8d`722ff930 fffff803`4fb2c655     Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x6d
+13 fffffb8d`722ff980 fffff803`4fb2b459     Wdf01000!FxPkgFdo::_DispatchSetPower+0x25
+14 fffffb8d`722ff9b0 fffff803`4fb23d83     Wdf01000!FxPkgPnp::Dispatch+0xd9
+15 (Inline Function) --------`--------     Wdf01000!DispatchWorker+0xfa
+16 (Inline Function) --------`--------     Wdf01000!FxDevice::Dispatch+0x11b
+17 fffffb8d`722ffa20 fffff803`4c7aaec7     Wdf01000!FxDevice::DispatchWithLock+0x153
+18 fffffb8d`722ffa90 fffff803`4c75f8b5     nt!PopIrpWorker+0x207
+19 fffffb8d`722ffb30 fffff803`4c817b14     nt!PspSystemThreadStartup+0x55
+1a fffffb8d`722ffb80 00000000`00000000     nt!KiStartSystemThread+0x34
+5: kd> .frame /r 3
+03 fffffb8d`722ff310 fffff803`4c7808de     nt!KiDisconnectInterruptInternal+0x33
+rax=0000000000000057 rbx=ffffa881610de000 rcx=ffffa881610de000
+rdx=0000000000000000 rsi=ffff800828472d50 rdi=0000000000000057
+rip=fffff8034c780977 rsp=fffffb8d722ff310 rbp=fffffb8d722ff3b0
+ r8=ffffa8815f517180  r9=ffff800828472d50 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+nt!KiDisconnectInterruptInternal+0x33:
+fffff803`4c780977 384a5d          cmp     byte ptr [rdx+5Dh],cl ds:002b:00000000`0000005d=??
+
+The interrupt vector was 0x57:
+5: kd> dt nt!_KINTERRUPT ffffa881610de000 Vector
+   +0x058 Vector : 0x57
+
+But 0x57 is not connected on processor 5:
+5: kd> !prcb
+PRCB for Processor 5 at ffffa8815f517180:
+Current IRQL -- 15
+Threads--  Current ffff800825321080 Next ffff80082a16a080 Idle ffffa8815f523440
+…
+5: kd> dt nt!_KPRCB ffffa8815f517180 InterruptObject[0x57]
+   +0x3400 InterruptObject       : [87] (null) 
+
+But here is the problem: the processor we were supposed to work on is actually processor 6:
+5: kd> dt nt!_KINTERRUPT ffffa881610de000 Number
+   +0x060 Number : 6
+
+Here is additional evidence that this must be processor 6 as this is 6th object in the interrupt object array and this is 6th iteration through the processors loop:
+5: kd> .frame /r 6
+06 fffffb8d`722ff430 fffff803`4cbefa6f     nt!IoDisconnectInterrupt+0xd2
+rax=0000000000000057 rbx=ffff800828472f30 rcx=ffffa881610de000
+rdx=0000000000000000 rsi=0000000000000010 rdi=ffff800828472db0
+rip=fffff8034cbefbb2 rsp=fffffb8d722ff430 rbp=0000000000000000
+ r8=ffffa8815f517180  r9=ffff800828472d50 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000000 r13=0000000000000001
+r14=ffff8007ff132db0 r15=0000000000000000
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+nt!IoDisconnectInterrupt+0xd2:
+fffff803`4cbefbb2 4c39642448      cmp     qword ptr [rsp+48h],r12 ss:0018:fffffb8d`722ff478=0000000000000000
+
+Parameters passed – interrupt objects and number of processors:
+5: kd> ub
+nt!IoDisconnectInterrupt+0xad:
+fffff803`4cbefb8d 48c1ee38        shr     rsi,38h
+fffff803`4cbefb91 4c39642448      cmp     qword ptr [rsp+48h],r12
+fffff803`4cbefb96 0f8506010000    jne     nt!IoDisconnectInterrupt+0x1c2 (fffff803`4cbefca2)
+fffff803`4cbefb9c 488d9f80010000  lea     rbx,[rdi+180h]
+fffff803`4cbefba3 408ad6          mov     dl,sil
+fffff803`4cbefba6 488bcb          mov     rcx,rbx
+fffff803`4cbefba9 4c8d47a0        lea     r8,[rdi-60h]
+fffff803`4cbefbad e8e604b9ff      call    nt!KeDisconnectInterrupt (fffff803`4c780098)
+
+SIL=0x10 – 16 processors.
+All interrupt objects, ours is 6th (starting from 0):
+5: kd> dps ffff800828472f30  L10
+ffff8008`28472f30  ffffa881`60217b40
+ffff8008`28472f38  ffffa881`5f3ffdc0
+ffff8008`28472f40  ffffa881`5f5fcdc0
+ffff8008`28472f48  ffffa881`5f5fddc0
+ffff8008`28472f50  ffffa881`6087e000
+ffff8008`28472f58  ffffa881`6087f000
+ffff8008`28472f60  ffffa881`610de000
+ffff8008`28472f68  ffffa881`610df000
+ffff8008`28472f70  ffffa881`610e0000
+ffff8008`28472f78  ffffa881`610e1000
+ffff8008`28472f80  ffffa881`610e2000
+ffff8008`28472f88  ffffa881`610e3000
+ffff8008`28472f90  ffffa881`610e4000
+ffff8008`28472f98  ffffa881`610e5000
+ffff8008`28472fa0  ffffa881`610e6000
+ffff8008`28472fa8  ffffa881`5f5fedc0
+
+Current loop iteration:
+5: kd> .frame /r 5
+05 fffffb8d`722ff3e0 fffff803`4cbefbb2     nt!KeDisconnectInterrupt+0x6b
+rax=0000000000000057 rbx=ffffa881610de000 rcx=ffffa881610de000
+rdx=0000000000000000 rsi=0000000000000000 rdi=ffff800828472f30
+rip=fffff8034c780103 rsp=fffffb8d722ff3e0 rbp=0000000000000010
+ r8=ffffa8815f517180  r9=ffff800828472d50 r10=0000000000000000
+r11=0000000000000000 r12=ffff800828472d50 r13=0000000000000000
+r14=ffff800828472f60 r15=000000000000000a
+iopl=0         nv up ei ng nz na pe nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040282
+nt!KeDisconnectInterrupt+0x6b:
+fffff803`4c780103 f0834b6801      lock or dword ptr [rbx+68h],1 ds:002b:ffffa881`610de068=00000001
+5: kd> u
+nt!KeDisconnectInterrupt+0x6b:
+fffff803`4c780103 f0834b6801      lock or dword ptr [rbx+68h],1
+fffff803`4c780108 85c0            test    eax,eax
+fffff803`4c78010a 786b            js      nt!KeDisconnectInterrupt+0xdf (fffff803`4c780177)
+fffff803`4c78010c b928010000      mov     ecx,128h
+fffff803`4c780111 3bc1            cmp     eax,ecx
+fffff803`4c780113 0f44f1          cmove   esi,ecx
+fffff803`4c780116 4983c608        add     r14,8
+fffff803`4c78011a 4983ef01        sub     r15,1
+
+Counter is on R15 (counting backwards), current pointer to the interrupt object is ours in R14:
+5: kd> ? 0x10-0xa
+Evaluate expression: 6 = 00000000`00000006
+5: kd> dq ffff800828472f60 L1
+ffff8008`28472f60  ffffa881`610de000
+
+Since this was 6th processor, the thread supposed to be affinitized to the 6th processor and it is:
+5: kd> dt nt!_KTHREAD ffff800825321080 Affinity 
+   +0x240 Affinity : 0xffff8008`25321a38 _KAFFINITY_EX
+5: kd> dt  0xffff8008`25321a38 _KAFFINITY_EX Bitmap[0]
+nt!_KAFFINITY_EX
+   +0x008 Bitmap    : [0] 0x40
+5: kd> .formats 0x40
+…
+  Binary:  00000000 00000000 00000000 00000000 00000000 00000000 00000000 01000000
+…
+
+Additional evidence that it was, in fact, affinitized to 6th:
+5: kd> dt nt!_KTHREAD ffff800825321080 IdealProcessor
+   +0x24c IdealProcessor : 6
+5: kd> dt nt!_KTHREAD ffff800825321080 SystemAffinityActive
+   +0x074 SystemAffinityActive : 0y1
+
+But it was running on 5th:
+5: kd> dt nt!_KTHREAD ffff800825321080 NextProcessor
+   +0x218 NextProcessor : 5
+
+And somehow still running on 5th, despite having a hard affinity set.
+5: kd> !prcb
+PRCB for Processor 5 at ffffa8815f517180:
+Current IRQL -- 15
+Threads--  Current ffff800825321080 Next ffff80082a16a080 Idle ffffa8815f523440
+…
+
+So it looks like in hetero case, under certain circumstances, dispatcher fails to move the thread to its hard affinity subset and leaves to run where it was.
+This leads to an attempt to disconnect non-connected interrupt and results in NULL-pointer dereference.

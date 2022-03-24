@@ -1,0 +1,349 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1409113987
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is an ASSERT (see memory dump):
+4: kd> ~4
+4: kd> r
+…
+nt!KeAccumulateTicks+0x186140:
+fffff800`45ace990 cd2c            int     2Ch
+4: kd> !idt 2c
+
+Dumping IDT: ffffe780ca4b1000
+
+2c:	fffff80045c0fd80 nt!KiRaiseAssertionShadow
+…
+
+The assert is caused by the DPC watchdog timeout:
+0: kd> !swd
+SWD: Initial DPC Watchdog Period:    120.000 (s)
+SWD: Initial DPC Timeout Period:     20.000 (s)
+
+CPU Type       Counter    Time (s)
+ 0: DPC        Period     120.000 (s)
+ 0: DPC        Count      120.000 (s)
+ 0: DPCTimeout Period     20.000 (s)
+ 0: DPCTimeout Count      20.000 (s)
+ 0: Thread                <Disabled>
+
+ 1: DPC        Period     120.000 (s)
+ 1: DPC        Count      0.000 (s)
+ 1: DPCTimeout Period     20.000 (s)
+ 1: DPCTimeout Count      20.000 (s)
+ 1: Thread                <Disabled>
+
+ 2: DPC        Period     120.000 (s)
+ 2: DPC        Count      0.000 (s)
+ 2: DPCTimeout Period     20.000 (s)
+ 2: DPCTimeout Count      20.000 (s)
+ 2: Thread                <Disabled>
+
+ 3: DPC        Period     120.000 (s)
+ 3: DPC        Count      0.000 (s)
+ 3: DPCTimeout Period     20.000 (s)
+ 3: DPCTimeout Count      20.000 (s)
+ 3: Thread                <Disabled>
+
+ 4: DPC        Period     120.000 (s)
+ 4: DPC        Count      120.000 (s)
+ 4: DPCTimeout Period     20.000 (s)
+ 4: DPCTimeout Count      20.000 (s)
+ 4: Thread                <Disabled>
+
+ 5: DPC        Period     120.000 (s)
+ 5: DPC        Count      0.000 (s)
+ 5: DPCTimeout Period     20.000 (s)
+ 5: DPCTimeout Count      20.000 (s)
+ 5: Thread                <Disabled>
+
+ 6: DPC        Period     120.000 (s)
+ 6: DPC        Count      0.000 (s)
+ 6: DPCTimeout Period     20.000 (s)
+ 6: DPCTimeout Count      20.000 (s)
+ 6: Thread                <Disabled>
+
+ 7: DPC        Period     120.000 (s)
+ 7: DPC        Count      120.000 (s)
+ 7: DPCTimeout Period     20.000 (s)
+ 7: DPCTimeout Count      20.000 (s)
+ 7: Thread                <Disabled>
+
+Looking at the callstack:
+4: kd> k
+ # Child-SP          RetAddr           Call Site
+00 ffffe780`ca4bdb00 fffff800`459450ff nt!KeAccumulateTicks+0x186140
+01 (Inline Function) --------`-------- nt!KiUpdateRunTime+0x4e
+02 ffffe780`ca4bdb60 fffff800`458221dc nt!KeClockInterruptNotify+0xcf
+03 (Inline Function) --------`-------- hal!HalpTimerClockIpiRoutineCommon+0xb
+04 ffffe780`ca4bdf30 fffff800`45920015 hal!HalpTimerClockIpiRoutine+0x1c
+05 ffffe780`ca4bdf60 fffff800`45a8026a nt!KiCallInterruptServiceRoutine+0xa5
+06 ffffe780`ca4bdfb0 fffff800`45a807b7 nt!KiInterruptSubDispatchNoLockNoEtw+0xfa
+07 ffffd109`75a95910 fffff800`4595a840 nt!KiInterruptDispatchNoLockNoEtw+0x37
+08 (Inline Function) --------`-------- nt!KeYieldProcessorEx+0x10
+09 ffffd109`75a95aa0 fffff800`4590fcbb nt!KxWaitForSpinLockAndAcquire+0x30
+0a (Inline Function) --------`-------- nt!KxAcquireSpinLock+0x55
+0b ffffd109`75a95ad0 fffff800`46238367 nt!KeAcquireSpinLockAtDpcLevel+0x5b
+0c ffffd109`75a95b00 fffff800`46236e23 nt!ViKeAcquireSpinLockAtDpcLevelCommon+0x87
+0d ffffd109`75a95b40 fffff808`e622cdb6 nt!VerifierKeAcquireSpinLockAtDpcLevel+0x13
+0e (Inline Function) --------`-------- igdkmd64!GfxAcquireSpinLock+0x1f
+0f ffffd109`75a95b80 fffff808`e63a4027 igdkmd64!GfxAcquireResource+0x1f6
+10 ffffd109`75a95be0 fffff808`e6433e89 igdkmd64!GMCHGEN9_ReComputeGMCHConfig+0x4d7
+11 ffffd109`75a95ef0 fffff808`e63a36ed igdkmd64!GEN9PLANECONTROLLER_SetDisplayStartMPO+0x1239
+12 ffffd109`75a96470 fffff808`e62dba32 igdkmd64!GMCHGEN9_SetDisplayStartMPO+0x18d
+13 ffffd109`75a964e0 fffff808`e623d131 igdkmd64!CSLBASE_SetDisplayStartMPO+0x142
+14 ffffd109`75a965d0 fffff808`e628ecaf igdkmd64!GfxSetSourceAddressForMPO+0x101
+15 ffffd109`75a96620 fffff808`e62724de igdkmd64!PATH_SetSourceAddressForMPO+0xaf
+16 ffffd109`75a966d0 fffff808`e628b551 igdkmd64!TOPOLOGY_SetSourceAddressForMPO3+0xcde
+17 ffffd109`75a96890 fffff808`e6253926 igdkmd64!MMDMM_SetSourceAddressForMPO3+0x101
+18 ffffd109`75a969f0 fffff808`e2eca3ec igdkmd64!DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3+0x886
+19 ffffd109`75a96bf0 fffff808`e2ecde79 dxgkrnl!ADAPTER_DISPLAY::DdiSetVidPnSourceAddressWithMultiPlaneOverlay3+0x1e4
+1a ffffd109`75a96ca0 fffff808`e102aa3f dxgkrnl!ADAPTER_DISPLAY_DdiSetVidPnSourceAddressWithMultiPlaneOverlay3+0x9
+1b (Inline Function) --------`-------- dxgmms2!ADAPTER_DISPLAY::DdiSetVidPnSourceAddressWithMultiPlaneOverlay3+0x1f
+1c ffffd109`75a96cd0 fffff800`45a7fa38 dxgmms2!VidSchiExecuteMmIoFlipMultiPlaneOverlayAtISR3+0x2f
+1d ffffd109`75a96d00 fffff808`e2ea32f7 nt!KeSynchronizeExecution+0x48
+1e ffffd109`75a96d40 fffff808`e102a8d4 dxgkrnl!DpSynchronizeExecution+0xa7
+1f ffffd109`75a96d90 fffff808`e1020eb8 dxgmms2!VidSchiExecuteMmIoFlipMultiPlaneOverlay3+0x200
+20 ffffd109`75a96ee0 fffff808`e1011594 dxgmms2!VidSchiExecuteMmIoFlip+0xf798
+21 ffffd109`75a97960 fffff808`e10862d2 dxgmms2!VidSchiSubmitMmIoFlipCommand+0xa54
+22 (Inline Function) --------`-------- dxgmms2!VidSchiSubmitQueueCommand+0x12f
+23 ffffd109`75a97a80 fffff808`e108613a dxgmms2!VidSchiRun_PriorityTable+0x182
+24 ffffd109`75a97ad0 fffff800`459f2925 dxgmms2!VidSchiWorkerThread+0xca
+25 ffffd109`75a97b10 fffff800`45a85d5a nt!PspSystemThreadStartup+0x55
+26 ffffd109`75a97b60 00000000`00000000 nt!KiStartSystemThread+0x2a
+
+We can see that igdkmd64!GfxAcquireResource is trying to acquire a spinlock. The spinlock is part of Resource Object:
+4: kd> .frame /r f
+0f ffffd109`75a95b80 fffff808`e63a4027 igdkmd64!GfxAcquireResource+0x1f6
+rax=0000000000000001 rbx=ffff988a7225efc0 rcx=ffff988a72260ff0
+rdx=0000000000000006 rsi=ffff988a6ed43000 rdi=00000000c0000001
+rip=fffff808e622cdb6 rsp=ffffd10975a95b80 rbp=ffff988a721ad000
+ r8=ffff988a72260ff8  r9=000000000006f400 r10=fffff8004590fc60
+r11=0000000000000000 r12=0000000000000188 r13=ffff988a721be000
+r14=0000000000000000 r15=ffff988a72250b70
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+igdkmd64!GfxAcquireResource+0x1f6:
+fffff808`e622cdb6 32c0            xor     al,al
+4: kd> dv /V
+@rsi              @rsi                       pHwDev = 0xffff988a`6ed43000
+@rbx              @rbx              pResourceObject = 0xffff988a`7225efc0
+@edi              @edi                     ntStatus = 0n-1073741823
+0: kd> dt _RESOURCE_NODE  0xffff988a`7225efc0
+igdkmd64!_RESOURCE_NODE
+   +0x000 eResourceTypeIndex : 3 ( eResourceTypeSpinLock )
+   +0x008 pSerializeObject : 0xffff988a`72260ff0 Void
+   +0x010 m_TimeOutValue   : _LARGE_INTEGER 0x0
+   +0x018 ulAcquireInProgress : 0
+   +0x01c ulReleaseInProgress : 0
+   +0x020 hOwnerThreadId   : 0x00000000`00000284 Void
+   +0x028 ulReferenceCount : 0
+   +0x02c ulNoOfContendingClients : 0
+   +0x030 bIrqlLevelRaised : 0x1 ''
+   +0x031 kIrqlNoToRestore : 0 ''
+
+And spinlock is taken:
+4: kd> .frame /r b
+0b ffffd109`75a95ad0 fffff800`46238367 nt!KeAcquireSpinLockAtDpcLevel+0x5b
+rax=0000000000000001 rbx=ffff988a72260ff0 rcx=ffff988a72260ff0
+rdx=0000000000000006 rsi=ffff988a6ed43000 rdi=ffffe780ca49e180
+rip=fffff8004590fcbb rsp=ffffd10975a95ad0 rbp=ffff988a721ad000
+ r8=ffff988a72260ff8  r9=000000000006f400 r10=fffff8004590fc60
+r11=0000000000000000 r12=0000000000000188 r13=ffff988a721be000
+r14=0000000000000000 r15=ffff988a72250b70
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+nt!KeAcquireSpinLockAtDpcLevel+0x5b:
+fffff800`4590fcbb ebdb            jmp     nt!KeAcquireSpinLockAtDpcLevel+0x38 (fffff800`4590fc98)
+4: kd> dv /V
+@rbx              @rbx                     SpinLock = 0xffff988a`72260ff0
+4: kd> dq 0xffff988a`72260ff0 L1
+ffff988a`72260ff0  00000000`00000001
+
+The resource object is GMCHConfigUpdateResourceSpinLock:
+4: kd> .frame /r 10
+10 ffffd109`75a95be0 fffff808`e6433e89 igdkmd64!GMCHGEN9_ReComputeGMCHConfig+0x4d7
+rax=0000000000000001 rbx=fffff808e62ed760 rcx=ffff988a72260ff0
+rdx=0000000000000006 rsi=ffff988a722c0cb0 rdi=fffff808e64e30b0
+rip=fffff808e63a4027 rsp=ffffd10975a95be0 rbp=ffff988a721ad000
+ r8=ffff988a72260ff8  r9=000000000006f400 r10=fffff8004590fc60
+r11=0000000000000000 r12=0000000000000188 r13=ffff988a721be000
+r14=0000000000000000 r15=ffff988a72250b70
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+igdkmd64!GMCHGEN9_ReComputeGMCHConfig+0x4d7:
+fffff808`e63a4027 85c0            test    eax,eax
+4: kd> dt pThis m_pGMCHConfigUpdateResourceSpinLock
+Local var @ rbp Type _GMCHGEN9*
+   +0x1f70 m_pGMCHConfigUpdateResourceSpinLock : 0xffff988a`7225efc0 Void
+
+However, earlier in the stack, dxgmms2!VidSchiExecuteMmIoFlipMultiPlaneOverlay3 is synchronizing execution with the ISR.
+Switching to the frame:
+4: kd> .frame /r 1d
+1d ffffd109`75a96d00 fffff808`e2ea32f7 nt!KeSynchronizeExecution+0x48
+rax=0000000000000001 rbx=ffff988a68ee4180 rcx=ffff988a72260ff0
+rdx=0000000000000006 rsi=ffff988a6836dd30 rdi=ffff988a73c61000
+rip=fffff80045a7fa38 rsp=ffffd10975a96d00 rbp=fffff808e102aa10
+ r8=ffff988a72260ff8  r9=000000000006f400 r10=fffff8004590fc60
+r11=0000000000000000 r12=ffffd10975a96ff8 r13=0000000000000000
+r14=ffffd10975a970b0 r15=ffff988a708e8000
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+nt!KeSynchronizeExecution+0x48:
+fffff800`45a7fa38 488bce          mov     rcx,rsi
+
+And looking at the nt!KeSynchronizeExecution, we can find first parameter which is KINTERRUPT:
+https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/wdm/nf-wdm-kesynchronizeexecution
+
+4: kd> u nt!KeSynchronizeExecution
+nt!KeSynchronizeExecution:
+fffff800`45a7f9f0 4856            push    rsi
+fffff800`45a7f9f2 4883ec30        sub     rsp,30h
+fffff800`45a7f9f6 488b7148        mov     rsi,qword ptr [rcx+48h]
+fffff800`45a7f9fa 48894c2440      mov     qword ptr [rsp+40h],rcx
+fffff800`45a7f9ff 0fb6495d        movzx   ecx,byte ptr [rcx+5Dh]
+fffff800`45a7fa03 80f900          cmp     cl,0
+fffff800`45a7fa06 744c            je      nt!KeSynchronizeExecution+0x64 (fffff800`45a7fa54)
+fffff800`45a7fa08 440f20c0        mov     rax,cr8
+4: kd> dq ffffd10975a96d00+40 L1
+ffffd109`75a96d40  ffff988a`70661d20
+
+The interrupt vector is GFX device:
+4: kd> dt nt!_KINTERRUPT  ffff988a`70661d20 Vector
+   +0x058 Vector : 0x61
+4: kd> !idt 61
+
+Dumping IDT: ffffe780ca4b1000
+
+61:	fffff80045c10588 igdkmd64!DxgkDdiInterruptRoutine (WDDM) (KINTERRUPT ffffe780cb4a3640)
+
+What this means is that thread, running at processor 4 has acquired interrupt lock and now trying to acquire GMCHConfigUpdateResourceSpinLock.
+
+At the same time, there is another thread running at processor 0:
+4: kd> ~0
+0: kd> k
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!VfSettingsIsOptionEnabledInSnapshot+0xa
+01 (Inline Function) --------`-------- nt!VfSettingsIsOptionEnabled+0xa
+02 fffff800`48e13d28 fffff800`46223298 nt!VfStopBranchTracing+0xa
+03 fffff800`48e13d30 fffff800`46213687 nt!VfNotifyVerifierOfEvent+0xe8
+04 fffff800`48e13d60 fffff800`45b62b31 nt!KdEnterDebugger+0x2f
+05 fffff800`48e13d90 fffff800`46217115 nt!KdpReport+0x71
+06 fffff800`48e13dd0 fffff800`4597a9e0 nt!KdpTrap+0x14d
+07 fffff800`48e13e20 fffff800`4597a64f nt!KdTrap+0x2c
+08 fffff800`48e13e60 fffff800`45a9059d nt!KiDispatchException+0x15f
+09 fffff800`48e14510 fffff800`45a8ef58 nt!KiExceptionDispatch+0x11d
+0a fffff800`48e146f0 fffff800`45ace990 nt!KiRaiseAssertion+0x318
+0b fffff800`48e14880 fffff800`459456f4 nt!KeAccumulateTicks+0x186140
+0c (Inline Function) --------`-------- nt!KiUpdateRunTime+0x43
+0d (Inline Function) --------`-------- nt!KiUpdateTime+0x481
+0e fffff800`48e148e0 fffff800`458204b2 nt!KeClockInterruptNotify+0x6c4
+0f (Inline Function) --------`-------- hal!HalpTimerClockInterruptEpilogCommon+0xe
+10 (Inline Function) --------`-------- hal!HalpTimerClockInterruptCommon+0xdc
+11 fffff800`48e14cb0 fffff800`45920015 hal!HalpTimerClockInterrupt+0xf2
+12 fffff800`48e14ce0 fffff800`45a8026a nt!KiCallInterruptServiceRoutine+0xa5
+13 fffff800`48e14d30 fffff800`45a807b7 nt!KiInterruptSubDispatchNoLockNoEtw+0xfa
+14 fffff800`48e14d80 fffff800`4595a840 nt!KiInterruptDispatchNoLockNoEtw+0x37
+15 (Inline Function) --------`-------- nt!KeYieldProcessorEx+0x10
+16 fffff800`48e14f10 fffff800`459201c6 nt!KxWaitForSpinLockAndAcquire+0x30
+17 (Inline Function) --------`-------- nt!KxAcquireSpinLock+0x114
+18 (Inline Function) --------`-------- nt!KeAcquireSpinLockAtDpcLevel+0x114
+19 fffff800`48e14f40 fffff800`45a7ffef nt!KiCallInterruptServiceRoutine+0x256
+1a fffff800`48e14f90 fffff800`45a802b7 nt!KiInterruptSubDispatch+0x11f
+1b ffffd109`78cb6460 fffff800`459daf20 nt!KiInterruptDispatch+0x37
+1c ffffd109`78cb65f8 fffff808`e622cdc3 nt!PsGetCurrentThreadId
+1d ffffd109`78cb6600 fffff808`e62c0857 igdkmd64!GfxAcquireResource+0x203
+1e ffffd109`78cb6660 fffff808`e633ce3b igdkmd64!GMCHBASE_GetGMCHConfig+0x47
+1f ffffd109`78cb6690 fffff808`e62deef8 igdkmd64!BASEENCODER_DispatchGammaHandler+0x9b
+20 ffffd109`78cb6a60 fffff808`e6257fc7 igdkmd64!CSLBASE_GammaHandler+0x158
+21 ffffd109`78cb6ae0 fffff808`e628e96e igdkmd64!GfxSetMonitorGamma+0x217
+22 ffffd109`78cb6b90 fffff808`e62506a2 igdkmd64!PATH_UpdateActiveGammaRamp+0x12e
+23 ffffd109`78cb6bf0 fffff808`e3092e3b igdkmd64!DxgkDdiSetTargetGamma+0x112
+24 ffffd109`78cb6c40 fffff808`e31557cb dxgkrnl!ADAPTER_DISPLAY::DdiSetTargetGamma+0x14f
+25 ffffd109`78cb6cf0 fffff808`e2f63ef5 dxgkrnl!DMMVIDPNPRESENTPATH::SetTargetGamma+0x12b
+26 ffffd109`78cb6d40 fffff808`e2fc029d dxgkrnl!DMMVIDPNPRESENTPATH::SetDriverGammaRamp+0x75
+27 ffffd109`78cb6d70 fffff808`e2fc0114 dxgkrnl!DmmUpdateGammaRampOnVidPnTarget+0xc9
+28 ffffd109`78cb6db0 fffff808`e2fbfd11 dxgkrnl!DXGMONITOR::_SetColorSpaceTransform+0x3c0
+29 ffffd109`78cb6e20 fffff808`e2fbfc71 dxgkrnl!DXGMONITOR::_DispatchIoctrls+0x51
+2a (Inline Function) --------`-------- dxgkrnl!MonitorHandleIOCtrl+0x9e
+2b ffffd109`78cb6e60 fffff808`e2fc5daa dxgkrnl!DpiPdoDispatchIoctl+0x121
+2c ffffd109`78cb6ee0 fffff800`45a3d92a dxgkrnl!DpiDispatchIoctl+0xda
+2d ffffd109`78cb7000 fffff800`462220a9 nt!IopfCallDriver+0x56
+2e ffffd109`78cb7040 fffff800`45aa792f nt!IovCallDriver+0x275
+2f ffffd109`78cb7080 fffff800`46d611f1 nt!IofCallDriver+0x1bdbdf
+30 (Inline Function) --------`-------- ACPI!ACPIDispatchForwardIrp+0x68
+31 ffffd109`78cb70c0 fffff800`45a3d92a ACPI!ACPIDispatchIrp+0x1e1
+32 ffffd109`78cb7140 fffff800`462220a9 nt!IopfCallDriver+0x56
+33 ffffd109`78cb7180 fffff800`45aa792f nt!IovCallDriver+0x275
+34 ffffd109`78cb71c0 fffff800`46ba3a52 nt!IofCallDriver+0x1bdbdf
+35 ffffd109`78cb7200 fffff800`46ba19c7 Wdf01000!FxIoTarget::Send+0x12
+36 ffffd109`78cb7230 fffff808`e10e15ea Wdf01000!imp_WdfRequestSend+0x207
+37 (Inline Function) --------`-------- monitor!WdfRequestSend+0x29
+38 ffffd109`78cb72b0 fffff808`e10e924d monitor!ForwardRequestToNextDriver+0x9a
+39 ffffd109`78cb7310 fffff800`46ba9455 monitor!EvtIoDeviceControl+0x23d
+3a (Inline Function) --------`-------- Wdf01000!FxIoQueueIoDeviceControl::Invoke+0x42
+3b ffffd109`78cb7380 fffff800`46ba8e07 Wdf01000!FxIoQueue::DispatchRequestToDriver+0x225
+3c ffffd109`78cb7420 fffff800`46ba6fc6 Wdf01000!FxIoQueue::DispatchEvents+0x657
+3d (Inline Function) --------`-------- Wdf01000!FxIoQueue::QueueRequest+0x92
+3e (Inline Function) --------`-------- Wdf01000!FxPkgIo::DispatchStep2+0x4b6
+3f ffffd109`78cb7500 fffff800`46ba6a7d Wdf01000!FxPkgIo::DispatchStep1+0x536
+40 ffffd109`78cb75c0 fffff800`46baabd3 Wdf01000!FxPkgIo::Dispatch+0x5d
+41 (Inline Function) --------`-------- Wdf01000!DispatchWorker+0x9e
+42 (Inline Function) --------`-------- Wdf01000!FxDevice::Dispatch+0xbc
+43 ffffd109`78cb7620 fffff800`45a3d92a Wdf01000!FxDevice::DispatchWithLock+0x113
+44 ffffd109`78cb7680 fffff800`462220a9 nt!IopfCallDriver+0x56
+45 ffffd109`78cb76c0 fffff800`45aa792f nt!IovCallDriver+0x275
+46 ffffd109`78cb7700 fffff800`45ed7dd5 nt!IofCallDriver+0x1bdbdf
+47 (Inline Function) --------`-------- nt!IoCallDriverWithTracing+0x2b
+48 (Inline Function) --------`-------- nt!IopCallDriverReference+0xbd
+49 ffffd109`78cb7740 fffff800`45ed772a nt!IopSynchronousServiceTail+0x1a5
+4a ffffd109`78cb77e0 fffff800`45ed7146 nt!IopXxxControlFile+0x5ca
+4b ffffd109`78cb7920 fffff800`45a8fe95 nt!NtDeviceIoControlFile+0x56
+4c ffffd109`78cb7990 00007ff8`3ef1c144 nt!KiSystemServiceCopyEnd+0x25
+4d 00000071`197e7358 00007ff8`3bf157b7 0x00007ff8`3ef1c144
+4e 00000071`197e7360 00000000`00000000 0x00007ff8`3bf157b7
+
+This thread has already acquired GMCHConfigUpdateResourceSpinLock:
+0: kd> .frame /r 1d
+1d ffffd109`78cb6600 fffff808`e62c0857 igdkmd64!GfxAcquireResource+0x203
+rax=0000000000000001 rbx=ffff988a7225efc0 rcx=d39b2ff1985f0000
+rdx=0000000000000005 rsi=ffff988a6ed43000 rdi=0000000000000000
+rip=fffff808e622cdc3 rsp=ffffd10978cb6600 rbp=ffff988a721ad000
+ r8=ffff988a78706080  r9=0000000000000000 r10=fffff8004595b900
+r11=0000000000000000 r12=ffff988a721ad000 r13=ffff988a721e4000
+r14=ffff988a721e4000 r15=0000000000000000
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+igdkmd64!GfxAcquireResource+0x203:
+fffff808`e622cdc3 ff4328          inc     dword ptr [rbx+28h] ds:002b:ffff988a`7225efe8=00000000
+0: kd> dv /V
+@rsi              @rsi                       pHwDev = 0xffff988a`6ed43000
+@rbx              @rbx              pResourceObject = 0xffff988a`7225efc0
+@edi              @edi                     ntStatus = 0n0
+
+But GFX interrupt has occurred:
+0: kd> .frame /r 19
+19 fffff800`48e14f40 fffff800`45a7ffef nt!KiCallInterruptServiceRoutine+0x256
+rax=0000000000000001 rbx=ffffe780cb0a4280 rcx=ffff988a6836dd30
+rdx=00001e6500000000 rsi=ffffe780cb0a4330 rdi=fffff800446a2180
+rip=fffff800459201c6 rsp=fffff80048e14f40 rbp=ffff988a6836dd30
+ r8=ffff988a64e5c000  r9=0000000000000000 r10=0000000000000000
+r11=0000000020004000 r12=00001e650be93abb r13=fffff800446a2180
+r14=0000000000000001 r15=0000000000000001
+iopl=0         nv up ei pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+nt!KiCallInterruptServiceRoutine+0x256:
+fffff800`459201c6 e923ffffff      jmp     nt!KiCallInterruptServiceRoutine+0x17e (fffff800`459200ee)
+0: kd> dt Interrupt Vector
+Local var @ rbx Type _KINTERRUPT*
+   +0x058 Vector : 0x61
+
+So this thread is trying to acquire interrupt lock.
+
+So there are 2 threads and 2 locks – thread 1 acquired lock A and waiting to lock B, thread 2 acquired lock B and waiting for lock A – this is a deadlock.
+This needs to be resolved by establishing lock ordering between interrupt lock and GMCHConfigUpdateResourceSpinLock which then requires GMCHConfigUpdateResourceSpinLock to have same IRQL as interrupt lock.
+Which then means igdkmd64!GfxAcquireResource should not skip raising IRQL if it is at DISPATCH_LEVEL or above already.
+
+Another small bug in igdkmd64!GfxAcquireResource is that it stores owner thread before actually acquiring the lock.
+

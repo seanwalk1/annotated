@@ -1,0 +1,292 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1409055601
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+This is debugger break (see attached memory dump):
+5: kd> r
+rax=0000000000000000 rbx=ffffd40cdb379890 rcx=ffffd40cce2f19a0
+rdx=0000000000001000 rsi=fffff8007e7eb180 rdi=ffffa2098ab0f340
+rip=fffff8007e8fc2d2 rsp=ffffa2098ab0f260 rbp=ffffa2098ab0f339
+ r8=000000000000002c  r9=000000000000002f r10=0000000000000000
+r11=ffffa2098ab0f000 r12=0000000000000000 r13=fffff8007e9eb7e0
+r14=0000000000010244 r15=0000000000000097
+iopl=0         nv up ei ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040286
+nt!ExpWaitForResource+0x134a12:
+fffff800`7e8fc2d2 int     3
+
+The nt!ExpWaitForResource broke into debugger due to a possible deadlock:
+5: kd> !dbgprint
+…
+Possible deadlock. Use !locks FFFFD40CDB379890 to determine the resource owner
+
+DirectX Kernel is trying to acquire ERESOURCE Shared:
+5: kd> !thread
+THREAD ffffd40cdcb9b0c0  Cid 02d0.0314  Teb: 0000000000000000 Win32Thread: 0000000000000000 RUNNING on processor 5
+Not impersonating
+DeviceMap                 ffff810d2ca137e0
+Owning Process            ffffd40cdb4ef300       Image:         csrss.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      139859         Ticks: 256 (0:00:00:04.000)
+Context Switch Count      10818          IdealProcessor: 5             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.453
+Win32 Start Address cdd!PresentWorkerThread (0xffffef6ce1c72460)
+Stack Init ffffa2098ab0fb90 Current ffffa2098ab0ee90
+Base ffffa2098ab10000 Limit ffffa2098ab09000 Call 0000000000000000
+Priority 14 BasePriority 14 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffa209`8ab0f260 fffff800`7e747bd2 : ffffd40c`db379890 ffffa209`8ab0f340 00000000`00010244 fffff800`7e7eb180 : nt!ExpWaitForResource+0x134a12
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ExpCommitWaitForResourceShared+0x19 (Inline Function @ fffff800`7e747bd2)
+ffffa209`8ab0f2e0 fffff800`7e7476c0 : ffffd40c`db379890 ffffd40c`d7aba000 00000000`00000001 00000000`00050246 : nt!ExpAcquireResourceSharedLite+0x452
+ffffa209`8ab0f3a0 fffff804`1feae7e6 : ffffd40c`dca1b000 ffffd40c`dca1b000 ffffd40c`d7aba000 00000000`00000000 : nt!ExAcquireResourceSharedLite+0x40
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!DXGADAPTER::AcquireCoreResourceSharedWithTracking+0xc5 (Inline Function @ fffff804`1feae7e6)
+ffffa209`8ab0f3e0 fffff804`1fee9752 : ffffffff`ffffffff ffffa209`8ab0f690 00000000`00000000 00000000`00000000 : dxgkrnl!DXGADAPTER::AcquireCoreResourceShared+0x1a6
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!COREACCESS::AcquireShared+0x50 (Inline Function @ fffff804`1fee9752)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : dxgkrnl!COREADAPTERACCESS::AcquireShared+0x50 (Inline Function @ fffff804`1fee9752)
+ffffa209`8ab0f590 ffffef6c`e1c72a0e : 00000000`00028b14 00000000`00028b14 00000000`00028b14 ffffef21`4061f020 : dxgkrnl!DxgkCddWaitForVerticalBlankEvent+0x162
+ffffa209`8ab0f8c0 fffff800`7e7bbf65 : ffffd40c`dcb9b0c0 ffffd40c`dcb9b0c0 ffffef6c`e1c72460 ffffef21`4061f020 : cdd!PresentWorkerThread+0x5ae
+ffffa209`8ab0fb10 fffff800`7e87a76a : ffff9200`0a340180 ffffd40c`dcb9b0c0 fffff800`7e7bbf10 00000000`00000000 : nt!PspSystemThreadStartup+0x55
+ffffa209`8ab0fb60 00000000`00000000 : ffffa209`8ab10000 ffffa209`8ab09000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x2a
+
+Switching to the frame:
+5: kd> .frame /r 3
+03 ffffa209`8ab0f3a0 fffff804`1feae7e6 nt!ExAcquireResourceSharedLite+0x40
+rax=0000000000000000 rbx=ffffd40cdb379890 rcx=ffffd40cce2f19a0
+rdx=0000000000001000 rsi=ffffd40cd7aba000 rdi=0000000000000001
+rip=fffff8007e7476c0 rsp=ffffa2098ab0f3a0 rbp=0000000000000000
+ r8=000000000000002c  r9=000000000000002f r10=0000000000000000
+r11=ffffa2098ab0f000 r12=0000000000000000 r13=0000000000000008
+r14=ffffd40cd0b16060 r15=0000000000000bc7
+iopl=0         nv up ei ng nz na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00040286
+nt!ExAcquireResourceSharedLite+0x40:
+fffff800`7e7476c0 mov     rbx,qword ptr [rsp+48h] ss:0018:ffffa209`8ab0f3e8=ffffd40cdca1b000
+
+Determine the address of the ERESOURCE (also visible in the debugger print above):
+5: kd> dv /V
+@rbx              @rbx                     Resource = 0xffffd40c`db379890
+@edi              @edi                         Wait = 0x01 ''
+
+Current thread (trying to acquire resource SHARED):
+5: kd> .thread
+Implicit thread is now ffffd40c`dcb9b0c0
+
+Owners of the resource:
+5: kd> !locks 0xffffd40c`db379890
+
+Resource @ 0xffffd40cdb379890    Exclusively owned
+    Contention Count = 160
+    NumberOfSharedWaiters = 1
+     Threads: ffffd40cd7a0d040-01<*> ffffd40cdcb9b0c0-01<*> 
+1 total locks
+
+Looking at the current exclusive owner, it is DirectX Arbiter thread that has been waiting for a while:
+5: kd> !thread ffffd40cd7a0d040
+THREAD ffffd40cd7a0d040  Cid 0004.01e4  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (Executive) KernelMode Non-Alertable
+    ffffd40cd76180e8  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffff810d2ca137e0
+Owning Process            ffffd40cce2d9380       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      97625          Ticks: 42490 (0:00:11:03.906)
+Context Switch Count      894            IdealProcessor: 1             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.062
+Win32 Start Address dxgkrnl!DpiPowerArbiterThread (0xfffff8041ff2ad40)
+Stack Init ffffa2098a9b7b90 Current ffffa2098a9b76e0
+Base ffffa2098a9b8000 Limit ffffa2098a9b1000 Call 0000000000000000
+Priority 14 BasePriority 8 PriorityDecrement 96 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffa209`8a9b7720 fffff800`7e74c225 : 00000000`00000000 ffffd40c`d7a0d040 00000000`00000000 00000000`00000000 : nt!KiSwapContext+0x76
+ffffa209`8a9b7860 fffff800`7e74ba5c : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSwapThread+0x2d5
+ffffa209`8a9b7930 fffff800`7e74afbe : 00000000`00000000 00000000`00000000 ffffa209`8cfff700 00000000`00000000 : nt!KiCommitThreadWait+0x1cc
+ffffa209`8a9b79d0 fffff804`1ff2ada1 : ffffd40c`d76180e8 00000000`00000000 00000000`00000000 ffffd40c`d7618000 : nt!KeWaitForSingleObject+0x23e
+ffffa209`8a9b7ab0 fffff800`7e7bbf65 : ffffd40c`d7a0d040 00000000`00000080 fffff804`1ff2ad40 000024ef`bd9bbfff : dxgkrnl!DpiPowerArbiterThread+0x61
+ffffa209`8a9b7b10 fffff800`7e87a76a : ffff9200`0a09d180 ffffd40c`d7a0d040 fffff800`7e7bbf10 01000004`b1e9d989 : nt!PspSystemThreadStartup+0x55
+ffffa209`8a9b7b60 00000000`00000000 : ffffa209`8a9b8000 ffffa209`8a9b1000 00000000`00000000 00000000`00000000 : nt!KiStartSystemThread+0x2a
+
+This is because System is in the middle of S3 transition:
+5: kd> !poaction
+PopAction: fffff8007eaf0d60
+  State..........: 3 - Set System State
+  Updates........: 0 
+  Action.........: Sleep
+  Lightest State.: Sleeping3
+  Flags..........: 80000004 OverrideApps|Critical
+  Irp minor......: SetPower
+  System State...: Sleeping3
+  Hiber Context..: 0000000000000000
+…
+
+Looking at the GFX device:
+5: kd> !pcitree
+Bus 0x0 (FDO Ext ffffd40cd0d03a20)
+…
+  (d=2,  f=0) 80863ea0 devext 0xffffd40cd0b161b0 devstack 0xffffd40cd0b16060 0300 Display Controller/VGA
+…
+5: kd> !devstack ffffd40cd0b16060
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffd40cd7617030  \Driver\igfx       ffffd40cd7617180  
+  ffffd40ccedcfba0  \Driver\ACPI       ffffd40cd0a447d0  
+> ffffd40cd0b16060  \Driver\pci        ffffd40cd0b161b0  NTPNP_PCI0001
+!DevNode ffffd40cd0b1a9a0 :
+  DeviceInst is "PCI\VEN_8086&DEV_3EA0&SUBSYS_22128086&REV_00\3&11583659&0&10"
+  ServiceName is "<???>"
+
+GFX is in D3 (for S3) with no outstanding D-IRPs:
+5: kd> dt nt!_DEVICE_NODE ffffd40cd0b1a9a0 CurrentPowerState.DeviceState
+   +0x08c CurrentPowerState             : 
+      +0x000 DeviceState                   : 4 ( PowerDeviceD3 )
+5: kd> dt nt!_DEVICE_NODE ffffd40cd0b1a9a0 FxDevice
+   +0x050 FxDevice : 0xffffd40c`da7d9820 _POP_FX_DEVICE
+5: kd> dt 0xffffd40c`da7d9820 _POP_FX_DEVICE Status.IrpInUse
+nt!_POP_FX_DEVICE
+   +0x020 Status          : 
+      +0x000 IrpInUse        : 0y0
+
+So the Power Arbiter thread will not release the resource until GFX comes out of D3 which will not happen until S0.
+So to resolve the wait, System has to go to S0 which would require S3 transition to complete.
+
+Looking at the PnP Engine lock we can see Power Manager’s System Transition thread:
+5: kd> !locks nt!PiEngineLock
+
+Resource @ nt!PiEngineLock (0xfffff8007eb0e6a0)    Exclusively owned
+    Contention Count = 68
+     Threads: ffffd40ce149b040-01<*> 
+1 total locks
+
+Power Manager has hit a page fault and has been waiting for a while:
+5: kd> !thread ffffd40ce149b040
+THREAD ffffd40ce149b040  Cid 0004.1b5c  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrPageIn) KernelMode Non-Alertable
+    ffffd40ce3f34a70  NotificationEvent
+IRP List:
+    ffffd40cde230bd0: (0006,0430) Flags: 40060043  Mdl: ffffd40ce3f34b60
+Not impersonating
+Owning Process            ffffd40cce2d9380       Image:         System
+Attached Process          ffffd40cde48c040       Image:         MemCompression
+Wait Start TickCount      101763         Ticks: 38352 (0:00:09:59.250)
+Context Switch Count      3746           IdealProcessor: 0  NoStackSwap
+UserTime                  00:00:00.000
+KernelTime                00:00:00.218
+Win32 Start Address nt!ExpWorkerThread (0xfffff8007e6da610)
+Stack Init ffffa2098d727b90 Current ffffa2098d725f00
+Base ffffa2098d728000 Limit ffffa2098d721000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffa209`8d725f40 fffff800`7e74c225 : 00000000`00000000 ffffd40c`e149b040 ffffd40c`00000000 ffffd40c`0a144180 : nt!KiSwapContext+0x76
+ffffa209`8d726080 fffff800`7e74ba5c : ffffd40c`e149b040 00000000`00000000 ffffd40c`de230bd0 fffff800`7f836279 : nt!KiSwapThread+0x2d5
+ffffa209`8d726150 fffff800`7e74afbe : 00000000`00000000 fffff800`00000000 ffffd40c`d6ca9000 00000000`00000000 : nt!KiCommitThreadWait+0x1cc
+ffffa209`8d7261f0 fffff800`7e6d7310 : ffffd40c`e3f34a70 ffffd40c`00000009 00000000`00000000 ffffd40c`e3f34a00 : nt!KeWaitForSingleObject+0x23e
+ffffa209`8d7262d0 fffff800`7e6d6d0b : 00000000`00000002 ffffa209`8d726450 ffffa209`8d726460 fffff800`00000000 : nt!MiWaitForInPageComplete+0xd0
+ffffa209`8d7263c0 fffff800`7e73dd77 : 00000000`c0033333 00000000`00000000 000001f1`17c9f990 fffff800`7e8062b7 : nt!MiIssueHardFault+0x17b
+ffffa209`8d7264c0 fffff800`7e88109a : 00000000`00000001 ffffa209`8d7266e0 ffffa209`8d726a88 fffff800`7e75524f : nt!MmAccessFault+0x4a7
+ffffa209`8d726660 fffff800`7e7f83b0 : ffff9200`0f749000 ffffd40c`de48a050 fffff800`7e7b3ad0 ffff9200`0f749000 : nt!KiPageFault+0x35a (TrapFrame @ ffffa209`8d726660)
+ffffa209`8d7267f8 fffff800`7e7b3ad0 : ffff9200`0f749000 ffff9200`0f749000 00000000`00000002 000001f1`17c9f990 : nt!RtlDecompressBufferXpressLz+0x50
+ffffa209`8d726810 fffff800`7e7fa2c5 : 12a5a28c`00000000 00000000`00000001 00000000`00000000 ffffd40c`de48b788 : nt!RtlDecompressBufferEx+0x60
+ffffa209`8d726860 fffff800`7e7fa150 : 00000000`00000004 ffffa209`8d726a70 00000000`00000000 00000000`00000a94 : nt!ST_STORE<SM_TRAITS>::StDmSinglePageCopy+0x155
+ffffa209`8d726940 fffff800`7e7f9eb2 : 00000000`00000001 00000000`0000f990 ffffd40c`0000f990 ffffd40c`00001000 : nt!ST_STORE<SM_TRAITS>::StDmSinglePageTransfer+0xa0
+ffffa209`8d726990 fffff800`7e7f9cdb : ffffd40c`ffffffff ffffd40c`e0b7a000 ffffa209`8d726a70 ffffd40c`e3b47a50 : nt!ST_STORE<SM_TRAITS>::StDmpSinglePageRetrieve+0x186
+ffffa209`8d726a30 fffff800`7e7f9b21 : ffffd40c`e0b7a000 00000000`00000000 00000000`00000001 ffffd40c`de48b788 : nt!ST_STORE<SM_TRAITS>::StDmPageRetrieve+0xcb
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ST_STORE<SM_TRAITS>::StDirectRead+0x1b (Inline Function @ fffff800`7e7f9b21)
+ffffa209`8d726ae0 fffff800`7e7f9a31 : ffffd40c`de48a000 ffffd40c`e3b47a50 ffffd40c`e0b7a000 ffffd40c`de48b9b0 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectReadIssue+0x85
+ffffa209`8d726b60 fffff800`7e6e4718 : ffffd40c`e149b040 ffffd40c`de48a000 00000000`00000000 00000000`00000000 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectReadCallout+0x21
+ffffa209`8d726b90 fffff800`7e806d45 : fffff800`7e7f9a10 ffffa209`8d726c40 00000000`00000003 00000000`00000000 : nt!KeExpandKernelStackAndCalloutInternal+0x78
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!KeExpandKernelStackAndCalloutEx+0x42 (Inline Function @ fffff800`7e806d45)
+ffffa209`8d726c00 fffff800`7e6bffc5 : ffffa209`8d726d00 00000000`00000001 ffffd40c`de48a000 00000000`00000200 : nt!SMKM_STORE<SM_TRAITS>::SmStDirectRead+0xcd
+ffffa209`8d726cd0 fffff800`7e6bf9e3 : 00000000`0000000c ffffd40c`de48a000 ffffa209`8d726d80 ffffd40c`e3b47a50 : nt!SMKM_STORE<SM_TRAITS>::SmStWorkItemQueue+0x1c9
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!SmWorkItemQueue+0xe (Inline Function @ fffff800`7e6bf9e3)
+ffffa209`8d726d20 fffff800`7e8062b7 : 00000000`0000000c ffffd40c`e3b47a50 00000000`00000001 00000000`00000001 : nt!SMKM_STORE_MGR<SM_TRAITS>::SmIoCtxQueueWork+0xbf
+ffffa209`8d726db0 fffff800`7e8076df : ffffd40c`00000001 ffffd40c`e3f364c0 00000000`00000000 ffffd40c`de48a000 : nt!SMKM_STORE_MGR<SM_TRAITS>::SmPageRead+0x167
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!SmpPageRead+0x15 (Inline Function @ fffff800`7e8076df)
+ffffa209`8d726e20 fffff800`7e6d77f0 : ffffd40c`e3f363b0 ffffa3d1`e8f47000 ffffa209`8d727068 fffff800`7e6d7174 : nt!SmPageRead+0x33
+ffffa209`8d726e70 fffff800`7e6d6fe6 : 00000000`00000002 ffffa209`8d726f00 ffffd40c`e3f363b0 00000000`00000000 : nt!MiIssueHardFaultIo+0x120
+ffffa209`8d726ec0 fffff800`7e73dd77 : 00000000`c0033333 00000000`00000000 ffff810d`311650a2 ffff810d`311650a2 : nt!MiIssueHardFault+0x456
+ffffa209`8d726f70 fffff800`7e88109a : 00000000`00000003 fffff800`7e71742d fffff800`7e6b1000 00000000`00050206 : nt!MmAccessFault+0x4a7
+ffffa209`8d727110 fffff800`7e716970 : ffff810d`2c400340 ffff810d`2c4020c0 ffff810d`2c402280 00000000`00000050 : nt!KiPageFault+0x35a (TrapFrame @ ffffa209`8d727110)
+ffffa209`8d7272a0 fffff800`7ea1a06d : ffff30b3`00000000 00000000`80000000 00000000`74703353 00000000`00000005 : nt!ExAllocateHeapPool+0x310
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ExpAllocatePoolWithTagFromNode+0x3c (Inline Function @ fffff800`7ea1a06d)
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ExAllocatePoolWithTagFromNode+0x3c (Inline Function @ fffff800`7ea1a06d)
+ffffa209`8d7273f0 fffff800`7ec5bd1b : 00000000`00000000 ffffa209`8d727489 00000000`00000000 ffffa209`00000000 : nt!ExAllocatePoolWithTag+0x5d
+ffffa209`8d727440 fffff800`7ec52463 : 00000000`00000000 ffffa209`8d727608 ffffa209`8d7275d0 0018431e`00000004 : nt!PopDiagTraceFirmwareS3Stats+0x73
+ffffa209`8d7274f0 fffff800`7ec4acec : fffff800`7ec3b200 00000000`00000004 00000000`00000002 00000000`00000000 : nt!PopTransitionSystemPowerStateEx+0xd0a7
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!PopTransitionSystemPowerState+0x28 (Inline Function @ fffff800`7ec4acec)
+ffffa209`8d7275b0 fffff800`7e884895 : 7ffff800`7eaf2e40 00000000`ffffffff 00000000`00000000 ffffd40c`e149b3b0 : nt!NtSetSystemPowerState+0x4c
+ffffa209`8d727790 fffff800`7e876fd0 : fffff800`7eda7d27 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x25 (TrapFrame @ ffffa209`8d727790)
+ffffa209`8d727928 fffff800`7eda7d27 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiServiceLinkage
+
+The reason for the pagefault is that nt!PopDiagTraceFirmwareS3Stats tries to allocate memory from Paged pool:
+5: kd> u  nt!PopDiagTraceFirmwareS3Stats  nt!PopDiagTraceFirmwareS3Stats+0x73
+nt!PopDiagTraceFirmwareS3Stats:
+fffff800`7ec5bca8 mov     rax,rsp
+fffff800`7ec5bcab mov     qword ptr [rax+8],rbx
+fffff800`7ec5bcaf mov     qword ptr [rax+10h],rsi
+fffff800`7ec5bcb3 mov     qword ptr [rax+18h],rdi
+fffff800`7ec5bcb7 push    rbp
+fffff800`7ec5bcb8 push    r14
+fffff800`7ec5bcba push    r15
+fffff800`7ec5bcbc lea     rbp,[rax-5Fh]
+fffff800`7ec5bcc0 sub     rsp,90h
+fffff800`7ec5bcc7 mov     rax,qword ptr [nt!__security_cookie (fffff800`7ead8f20)]
+fffff800`7ec5bcce xor     rax,rsp
+fffff800`7ec5bcd1 mov     qword ptr [rbp+37h],rax
+fffff800`7ec5bcd5 mov     rax,qword ptr [nt!HalDispatchTable+0x8 (fffff800`7ead4228)]
+fffff800`7ec5bcdc lea     r9,[rbp-19h]
+fffff800`7ec5bce0 xor     edx,edx
+fffff800`7ec5bce2 xor     r8d,r8d
+fffff800`7ec5bce5 lea     edi,[rdx+23h]
+fffff800`7ec5bce8 mov     ecx,edi
+fffff800`7ec5bcea call    nt!_guard_dispatch_icall (fffff800`7e87bc10)
+fffff800`7ec5bcef cmp     eax,0C0000004h
+fffff800`7ec5bcf4 jne     nt!PopDiagTraceFirmwareS3Stats+0x212 (fffff800`7ec5beba)
+fffff800`7ec5bcfa mov     eax,dword ptr [rbp-19h]
+fffff800`7ec5bcfd xor     esi,esi
+fffff800`7ec5bcff test    eax,eax
+fffff800`7ec5bd01 je      nt!PopDiagTraceFirmwareS3Stats+0x212 (fffff800`7ec5beba)
+fffff800`7ec5bd07 lea     r15d,[rdi-22h]
+fffff800`7ec5bd0b mov     edx,eax
+fffff800`7ec5bd0d mov     ecx,r15d
+fffff800`7ec5bd10 mov     r8d,74703353h
+fffff800`7ec5bd16 call    nt!ExAllocatePoolWithTag (fffff800`7ea1a010)
+fffff800`7ec5bd1b mov     rbx,rax
+
+5: kd> dt nt!_POOL_TYPE PagedPool
+   PagedPool = 0n1
+
+Looking at the paging device through:
+5: kd> !storagekd.storclass
+Storage Class Devices
+
+Usage Legend: B = Boot, P = Paging, D = Dump, H = Hiber, R = Removable
+
+FDO                      # Device ID                        Usage   UP   DN  FL
+-------------------------------------------------------------------------------
+ffffd40cd6bf8060 [1,2]   0 INTEL SSDPEKKF512G8              BPD      ?    ?  12
+
+Usage: !storclass <class device> <level [0-2]>
+       !storclass 0 <level [1-2]> to display summary with upper-level and down-level IRP counts
+
+Optical devices, such as DVD drives, can be listed with !wdfkd.wdfdriverinfo cdrom, and further explored 
+using the "!wdfkd.wdfdevice <device_handle>" and "!wdfkd.wdfdevicequeues <device_handle>" commands.
+
+5: kd> !devstack ffffd40cd6bf8060 
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffffd40cd6ad68d0  \Driver\partmgr    ffffd40cd6ad6a20  
+> ffffd40cd6bf8060  \Driver\disk       ffffd40cd6bf81b0  <???>
+  ffffd40cd0c4f0a0  \Driver\iaStorAC   ffffd40cd0c4f1f0  <???>
+!DevNode ffffd40cd0d0f9a0 :
+  DeviceInst is "SCSI\Disk&Ven_NVMe&Prod_INTEL_SSDPEKKF51\5&b0bdb50&0&000000"
+  ServiceName is "disk"
+
+Paging device is also in D3 for S3 with no outstanding device power IRPs:
+5: kd> dt nt!_DEVICE_NODE ffffd40cd0d0f9a0 CurrentPowerState.DeviceState
+   +0x08c CurrentPowerState             : 
+      +0x000 DeviceState                   : 4 ( PowerDeviceD3 )
+5: kd> dt nt!_DEVICE_NODE ffffd40cd0d0f9a0 FxDevice
+   +0x050 FxDevice : 0xffffd40c`d6bf8b20 _POP_FX_DEVICE
+5: kd> dt 0xffffd40c`d6bf8b20 _POP_FX_DEVICE Status.IrpInUse
+nt!_POP_FX_DEVICE
+   +0x020 Status          : 
+      +0x000 IrpInUse        : 0y0
+
+So nt!PopDiagTraceFirmwareS3Stats  trying to allocate memory from paged pool triggers pagefault that cannot be satisfied until S0 and, therefore, PopDiagTraceFirmwareS3Stats deadlocks the system.

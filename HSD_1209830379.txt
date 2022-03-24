@@ -1,0 +1,146 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1209830379
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:
+
+This is CONNECTED_STANDBY_WATCHDOG_TIMEOUT_LIVEDUMP (15f) – see attached memory dump:
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+CONNECTED_STANDBY_WATCHDOG_TIMEOUT_LIVEDUMP (15f)
+Connected standby watchdog timeout
+This machine is exhibiting behavior that reduces screen-off battery life.
+Typically this is caused by CPU activity, device activity, or devices being in
+an insufficiently idle state.
+(This code can never be used for a real bugcheck; it is used to identify live dumps including device telemetry.)
+Arguments:
+Arg1: 0000000000000001, DRIPS watchdog timeout.  The system has been in the resiliency phase
+	of connected standby with no activators active and no device
+	constraints unsatisfied for too long without entering DRIPS
+	(deepest runtime idle platform state).
+Arg2: ffffd480ba7e7ba8, A pointer to additional information (nt!POP_DRIPS_WATCHDOG_METRICS).
+Arg3: 00000000000493e6, Non-DRIPS duration in milliseconds
+Arg4: 0000000000000000, Reserved
+…
+
+The CS watchdog has fired:
+0: kd> .frame /r 7
+07 ffffd480`ba7e7a80 fffff800`27750f42 nt!PopDripsWatchdogTakeAction+0x3cd
+rax=0000000000000000 rbx=0000000000000000 rcx=ffffd480ba20b2c0
+rdx=0000000000000007 rsi=000000000000000e rdi=ffffd480ba7e7ba8
+rip=fffff80027750c09 rsp=ffffd480ba7e7a80 rbp=ffffd480ba7e7b19
+ r8=0000000000000000  r9=ffff8c4623126000 r10=ffff8c45bffffff8
+r11=0000000000000000 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl zr na po nc
+cs=0010  ss=0018  ds=002b  es=002b  fs=0053  gs=002b             efl=00000046
+nt!PopDripsWatchdogTakeAction+0x3cd:
+fffff800`27750c09 4885db          test    rbx,rbx
+
+There is no Veto from PEP:
+0: kd> dv VetoCode; dv VetoName
+       VetoCode = 0
+       VetoName = 0x00000000`00000000 ""
+
+The are no PoFx devices blocking the DRIPS either:
+0: kd> dv FxDevice
+       FxDevice = 0x00000000`00000000
+
+The system is idle other than running the watchdog routine:
+0: kd> !running -it
+
+System Processors:  (000000000000000f)
+  Idle Processors:  (000000000000000e)
+
+       Prcbs             Current         (pri) Next            (pri) Idle
+  0    fffff800263d0180  ffffb186b5076040 (12)                       fffff80027478a40  ................
+
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!IopLiveDumpCaptureProcessorContext+0x1c
+01 ffffd480`ba7e7630 fffff800`27485ee2 nt!IopLiveDumpEndMirroringCallback+0x7e
+02 ffffd480`ba7e7680 fffff800`27491361 nt!MmDuplicateMemory+0x75a
+03 ffffd480`ba7e7760 fffff800`2770a462 nt!IopLiveDumpCaptureMemoryPages+0x79
+04 ffffd480`ba7e7810 fffff800`276ff129 nt!IoCaptureLiveDump+0x28e
+05 ffffd480`ba7e79d0 fffff800`276fef8b nt!DbgkpWerCaptureLiveFullDump+0x129
+06 ffffd480`ba7e7a30 fffff800`27750c09 nt!DbgkWerCaptureLiveKernelDump+0x19b
+07 ffffd480`ba7e7a80 fffff800`27750f42 nt!PopDripsWatchdogTakeAction+0x3cd
+08 ffffd480`ba7e7b80 fffff800`270e410f nt!PopDripsWatchdogWorkerRoutine+0x202
+09 ffffd480`ba7e7c00 fffff800`27144957 nt!ExpWorkerThread+0xef
+0a ffffd480`ba7e7c90 fffff800`271ecb26 nt!PspSystemThreadStartup+0x47
+0b ffffd480`ba7e7ce0 00000000`00000000 nt!KxStartSystemThread+0x16
+
+  1    ffffd480ba20c180  ffffd480ba218c80 ( 0)                       ffffd480ba218c80  ................
+
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!IopLiveDumpCaptureProcessorContext+0x21
+01 ffffd480`ba239900 fffff800`270d8c1c nt!IopLiveDumpCorralDpc+0x3e
+02 ffffd480`ba239940 fffff800`270d828b nt!KiExecuteAllDpcs+0x1dc
+03 ffffd480`ba239a80 fffff800`271ea74a nt!KiRetireDpcList+0xdb
+04 ffffd480`ba239ce0 00000000`00000000 nt!KiIdleLoop+0x5a
+
+  2    ffffd480ba391180  ffffd480ba39dc80 ( 0)                       ffffd480ba39dc80  ................
+
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!IopLiveDumpCaptureProcessorContext+0x21
+01 ffffd480`ba3be900 fffff800`270d8c1c nt!IopLiveDumpCorralDpc+0x3e
+02 ffffd480`ba3be940 fffff800`270d828b nt!KiExecuteAllDpcs+0x1dc
+03 ffffd480`ba3bea80 fffff800`271ea74a nt!KiRetireDpcList+0xdb
+04 ffffd480`ba3bece0 00000000`00000000 nt!KiIdleLoop+0x5a
+
+  3    ffffd480ba600180  ffffd480ba60cc80 ( 0)                       ffffd480ba60cc80  ................
+
+ # Child-SP          RetAddr           Call Site
+00 (Inline Function) --------`-------- nt!IopLiveDumpCaptureProcessorContext+0x21
+01 ffffd480`ba415900 fffff800`270d8c1c nt!IopLiveDumpCorralDpc+0x3e
+02 ffffd480`ba415940 fffff800`270d828b nt!KiExecuteAllDpcs+0x1dc
+03 ffffd480`ba415a80 fffff800`271ea74a nt!KiRetireDpcList+0xdb
+04 ffffd480`ba415ce0 00000000`00000000 nt!KiIdleLoop+0x5a
+
+0: kd> !ready
+KSHARED_READY_QUEUE fffff800263d6780: (00) ****------------------------------------------------------------
+SharedReadyQueue fffff800263d6780: No threads in READY state
+Processor 0: No threads in READY state
+Processor 1: No threads in READY state
+Processor 2: No threads in READY state
+Processor 3: No threads in READY state
+0: kd> !dpcs
+CPU Type      KDPC       Function
+
+dpcs: no pending DPCs found
+
+The system actually is able to reach DRIPS:
+0: kd> dt nt!PopDripsWatchdog  DripsIdleTransitionsSnap
+   +0x008 DripsIdleTransitionsSnap : 0x57
+
+The DRIPS watchdog period is 5 minutes:
+0: kd> dt nt!PopDripsWatchdog Period
+   +0x000 Period : 0x12c
+0: kd> ? 12c
+Evaluate expression: 300 = 00000000`0000012c
+
+But the watchdog was armed less than a second ago:
+0: kd> dt nt!PopDripsWatchdog StartOfThisPeriod
+   +0x030 StartOfThisPeriod : 0x00000004`f44b22f1
+0: kd> !time
+CURRENT TIME:
+System:               01d29a00`39df1854 (2017 Mar 11 00:41:30.876)
+Interrupt:            00000004`f4c7552d (00:35:28.657)
+0: kd> ? (00000004`f4c7552d - 0x00000004`f44b22f1) / 0n10000
+Evaluate expression: 813 = 00000000`0000032d
+
+And the timer has not fired yet:
+0: kd> dt nt!PopDripsWatchdog Timer.Timer.Header.SignalState
+   +0x0d0 Timer                          : 
+      +0x000 Timer                          : 
+         +0x000 Header                         : 
+            +0x004 SignalState                    : 0n0
+
+So basically this execution of PopDripsWatchdogWorkerRoutine is from previous arming of the watchdog timer.
+The problem is that watchdog can be started again after the timer has fired but when PopDripsWatchdogWorkerRoutine have not executed yet, this can happen on a slower processors.
+This leads to a spurious Live dump when action is taken and it should not be.
+
+

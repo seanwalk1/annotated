@@ -1,0 +1,481 @@
+[BUG]:		https://hsdes.intel.com/appstore/article/#/1406327093
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSIS]:
+
+This is power IRP timeout - DRIVER_POWER_STATE_FAILURE (9f):
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_POWER_STATE_FAILURE (9f)
+A driver has failed to complete a power IRP within a specific time.
+Arguments:
+Arg1: 0000000000000003, A device object has been blocking an Irp for too long a time
+Arg2: ffff90031047c060, Physical Device Object of the stack
+Arg3: fffff802b7a31c30, nt!TRIAGE_9F_POWER on Win7 and higher, otherwise the Functional Device Object of the stack
+Arg4: fffff88675fb69d0, The blocked IRP
+…
+
+The timed-out power IRP is D0 power IRP for USB hub:
+0: kd> !irp fffff88675fb69d0
+Irp is active with 18 stacks 12 is current (= 0xfffff88675fb6db8)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+…
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff90031047c060 00000000 fffff80550116f50-ffff9003111b4570 Success Error Cancel pending
+            \Driver\USBHUB3     UsbHub3!HUBPDO_WdmPnpPowerIrpCompletionRoutineForAsynchronousCompletion
+              Args: 00000000 00000001 00000001 00000000
+[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff90031047c060 00000000 fffff802b5236040-ffffc38a46c173b0 Success Error Cancel pending
+            \Driver\USBHUB3  nt!ViFilterGenericCompletionRoutine
+              Args: 00000000 00000001 00000001 00000000
+[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e0 ffff9003104b0040 00000000 fffff8054a07e3f0-ffff9003104b3950 Success Error Cancel 
+            \DRIVER\VERIFIER_FILTER     Wdf01000!FxPkgFdo::RaiseDevicePowerCompletion (IopUnloadSafeCompletion)
+              Args: 00000000 00000001 00000001 00000000
+[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff9003104b4d10 00000000 fffff802b5236040-ffffc38a46c17890 Success Error Cancel pending
+           *** ERROR: Module load completed but symbols could not be loaded for ibtusb.sys
+\Driver\ibtusb    nt!ViFilterGenericCompletionRoutine
+              Args: 00000000 00000001 00000001 00000000
+[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e0 ffff9003104b7b90 00000000 fffff8054a61bd60-00000000 Success Error Cancel 
+            \DRIVER\VERIFIER_FILTER    bthport!DevicePowerUpComplete
+              Args: 00000000 00000001 00000001 00000000
+[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff9003104b7550 00000000 fffff802b4b2b5d0-ffff900309d69ae0 Success Error Cancel pending
+            \Driver\BTHUSB   nt!PopRequestCompletion
+              Args: 00000000 00000001 00000001 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffff900309d69ae0    
+
+              Args: 00000000 00000000 00000000 00000000
+
+Irp Extension present at 0xfffff88675fb6fb0:
+0: kd> dt nt!_POP_IRP_DATA ffff900309d69ae0 PowerState.DeviceState
+   +0x0c0 PowerState             : 
+      +0x000 DeviceState            : 1 ( PowerDeviceD0 )
+
+The IRP is pended by the PDO:
+0: kd> !devstack ffff90031047c060
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffff9003104b7550  \Driver\BTHUSB     ffff9003104b76a0  
+  ffff9003104b7b90  \DRIVER\VERIFIER_FILTERffff9003104b7ce0  
+  ffff9003104b4d10  \Driver\ibtusb     ffff9003104b0e40  
+  ffff9003104b0040  \DRIVER\VERIFIER_FILTERffff9003104b0190  
+  ffff9003104a7d30  \Driver\ACPI       ffff90030b5e5c40  
+> ffff90031047c060  \Driver\USBHUB3    ffff90031047b310  <???>
+!DevNode ffff9003104a7a10 :
+  DeviceInst is "USB\VID_8087&PID_0A2B\5&2c705bfe&0&7"
+  ServiceName is "<???>"
+
+The PDO is waiting for the parent to go to D0:
+0: kd> !wdfkd.wdfdriverinfo usbhub3
+----------------------------------
+Default driver image name: usbhub3
+WDF library image name: Wdf01000
+FxDriverGlobals  0xffff90031082c800
+WdfBindInfo      0xfffff8055015a000
+   Version        v1.15
+Library module   0xffff90030abf71e0
+   ServiceName    \Registry\Machine\System\CurrentControlSet\Services\Wdf01000
+   ImageName      Wdf01000
+----------------------------------
+WDFDRIVER: 0x00006ffcef7a6818
+Driver logs: !wdflogdump usbhub3.sys -d
+Framework logs: !wdflogdump usbhub3.sys -f
+
+    !wdfdevice 0x00006ffcf4bc4fd8 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerDx, WdfDevStatePwrPolIoPresentArmedWakeCanceled
+        context:  dt 0xffff90030b43b310 UsbHub3!HUB_FDO_CONTEXT (size is 0xa30 bytes)
+        EvtCleanupCallback fffff8055010b130 UsbHub3!HUBFDO_EvtDeviceCleanupCallback
+        EvtDestroyCallback fffff8055010b310 UsbHub3!HUBFDO_EvtDeviceDestroyCallback
+        !wdfdevicequeues 0x00006ffcf4bc4fd8
+
+        !wdfdevice 0x00006ffcefb84fd8 ff (PDO)
+            Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerWaitForParentArmedForWake, WdfDevStatePwrPolDx
+            context:  dt 0xffff90031047b310 UsbHub3!HUB_PDO_CONTEXT (size is 0x1c0 bytes)
+            EvtCleanupCallback fffff805501156e0 UsbHub3!HUBPDO_EvtDeviceCleanup
+            !wdfdevicequeues 0x00006ffcefb84fd8
+
+----------------------------------
+
+WDF Verifier settings for usbhub3.sys is OFF
+----------------------------------
+
+0: kd> !wdfdevice 0x00006ffcefb84fd8 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x00006ffcefb84fd8
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffff90031047c060
+
+Pnp state:  119 ( WdfDevStatePnpStarted )
+Power state:  329 ( WdfDevStatePowerWaitForParentArmedForWake )
+Power Pol state:  571 ( WdfDevStatePwrPolDx )
+
+Parent WDFDEVICE 00006ffcf4bc4fd8
+Parent states:
+   Pnp state:  119 ( WdfDevStatePnpStarted )
+   Power state:  31f ( WdfDevStatePowerDx )
+   Power Pol state:  541 ( WdfDevStatePwrPolIoPresentArmedWakeCanceled )
+
+Device is NOT the power policy owner for the stack
+No pended pnp irps
+Pended device power !irp 0xfffff88675fb69d0 (D0)
+Pended wait-wake !irp 0xfffff8867606e9d0 (S4)
+
+Pnp state history:
+[0] WdfDevStatePnpObjectCreated (0x100)
+[1] WdfDevStatePnpInit (0x105)
+[2] WdfDevStatePnpInitStarting (0x106)
+[3] WdfDevStatePnpHardwareAvailable (0x108)
+[4] WdfDevStatePnpEnableInterfaces (0x109)
+[5] WdfDevStatePnpStarted (0x119)
+
+Power state history:
+[0] WdfDevStatePowerD0BusWakeOwner (0x309)
+[1] WdfDevStatePowerEnablingWakeAtBus (0x305)
+[2] WdfDevStatePowerD0ArmedForWake (0x30b)
+[3] WdfDevStatePowerGotoDxArmedForWake (0x321)
+[4] WdfDevStatePowerGotoDxIoStoppedArmedForWake (0x323)
+[5] WdfDevStatePowerDxArmedForWake (0x325)
+[6] WdfDevStatePowerCheckParentStateArmedForWake (0x327)
+[7] WdfDevStatePowerWaitForParentArmedForWake (0x329)
+…
+
+The parent hub is transitioning to D0 as well:
+0: kd> !devstack ffff90031047c060
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffff9003104b7550  \Driver\BTHUSB     ffff9003104b76a0  
+  ffff9003104b7b90  \DRIVER\VERIFIER_FILTERffff9003104b7ce0  
+  ffff9003104b4d10  \Driver\ibtusb     ffff9003104b0e40  
+  ffff9003104b0040  \DRIVER\VERIFIER_FILTERffff9003104b0190  
+  ffff9003104a7d30  \Driver\ACPI       ffff90030b5e5c40  
+> ffff90031047c060  \Driver\USBHUB3    ffff90031047b310  <???>
+!DevNode ffff9003104a7a10 :
+  DeviceInst is "USB\VID_8087&PID_0A2B\5&2c705bfe&0&7"
+  ServiceName is "<???>"
+0: kd> dt nt!_device_node ffff900310821710 CurrentPowerState.DeviceState
+   +0x08c CurrentPowerState             : 
+      +0x000 DeviceState                   : 1 ( PowerDeviceD0 )
+0: kd> dt nt!_device_node ffff900310821710 FxDevice
+   +0x050 FxDevice : 0xffff9003`11174530 _POP_FX_DEVICE
+0: kd> dt 0xffff9003`11174530 _POP_FX_DEVICE Status.IrpInUse
+nt!_POP_FX_DEVICE
+   +0x020 Status          : 
+      +0x000 IrpInUse        : 0y1
+0: kd> dt 0xffff9003`11174530 _POP_FX_DEVICE Irp
+nt!_POP_FX_DEVICE
+   +0x010 Irp : 0xfffff886`72b76b80 _IRP
+
+But its IRP is pended by the parent XHCI controller:
+0: kd> !irp 0xfffff886`72b76b80 
+Irp is active with 12 stacks 10 is current (= 0xfffff88672b76ed8)
+No Mdl: No System Buffer: Thread 00000000:  Irp stack trace.  
+     cmd  flg cl Device   File     Completion-Context
+…
+>[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff90030f3ec670 00000000 fffff8054a07e3f0-ffff900310a9f950 Success Error Cancel pending
+            \Driver\USBXHCI  Wdf01000!FxPkgFdo::RaiseDevicePowerCompletion (IopUnloadSafeCompletion)
+              Args: 00000000 00000001 00000001 00000000
+[IRP_MJ_POWER(16), IRP_MN_SET_POWER(2)]
+            0 e1 ffff900310781810 00000000 fffff802b4b2b5d0-ffff900310942130 Success Error Cancel pending
+            \Driver\USBHUB3  nt!PopRequestCompletion
+              Args: 00000000 00000001 00000001 00000000
+[N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-ffff900310942130    
+
+              Args: 00000000 00000000 00000000 00000000
+
+Irp Extension present at 0xfffff88672b76fb0:
+0: kd> !devstack ffff90030f3ec670
+  !DevObj           !DrvObj            !DevExt           ObjectName
+  ffff900310781810  \Driver\USBHUB3    ffff90030b43b310  
+  ffff90031077c830  \Driver\ACPI       ffff90030b5e2970  
+> ffff90030f3ec670  \Driver\USBXHCI    ffff90030f3ecfe0  USBPDO-0
+!DevNode ffff900310821710 :
+  DeviceInst is "USB\ROOT_HUB30\4&db2fc44&0&0"
+  ServiceName is "USBHUB3"
+
+The XHCI controller is going to D0 as well:
+0: kd> !wdfdriverinfo usbxhci
+----------------------------------
+Default driver image name: usbxhci
+WDF library image name: Wdf01000
+FxDriverGlobals  0xffff90030f32c010
+WdfBindInfo      0xfffff80550f8d000
+   Version        v1.15
+Library module   0xffff90030abf71e0
+   ServiceName    \Registry\Machine\System\CurrentControlSet\Services\Wdf01000
+   ImageName      Wdf01000
+----------------------------------
+WDFDRIVER: 0x00006ffcf0c1fc48
+Driver logs: !wdflogdump usbxhci.sys -d
+Framework logs: !wdflogdump usbxhci.sys -f
+
+    !wdfdevice 0x00006ffcf0c256c8 ff (FDO)
+        Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerWakingConnectInterrupt, WdfDevStatePwrPolIoPresentArmedWakeCanceled
+        context:  dt 0xffff90030f3dac20 USBXHCI!DEVICE_DATA (size is 0x30 bytes)
+        EvtCleanupCallback fffff80550f53a80 USBXHCI!Device_WdfEvtCleanupCallback
+
+        context:  dt 0xffff90030b43fc20 ucx01000!WDFDEVICE_UCX_CONTEXT (size is 0x10 bytes)
+        <no associated attribute callbacks>
+        !wdfdevicequeues 0x00006ffcf0c256c8
+
+        !wdfdevice 0x00006ffcf0c13308 ff (PDO)
+            Pnp/Power State: WdfDevStatePnpStarted, WdfDevStatePowerWaitForParentArmedForWake, WdfDevStatePwrPolDx
+            context:  dt 0xffff90030f3ecfe0 ucx01000!RHPDO_CONTEXT (size is 0x18 bytes)
+            <no associated attribute callbacks>
+            !wdfdevicequeues 0x00006ffcf0c13308
+
+----------------------------------
+
+WDF Verifier settings for usbxhci.sys is OFF
+----------------------------------
+
+0: kd> !wdfdevice 0x00006ffcf0c256c8 ff
+Treating handle as a KMDF handle!
+
+Dumping WDFDEVICE 0x00006ffcf0c256c8
+=================================
+
+WDM PDEVICE_OBJECTs:  self ffff90030f3e2e20, attached ffff90030bdf4e40, pdo ffff90030bde1060
+
+Pnp state:  119 ( WdfDevStatePnpStarted )
+Power state:  335 ( WdfDevStatePowerWakingConnectInterrupt )
+Power Pol state:  541 ( WdfDevStatePwrPolIoPresentArmedWakeCanceled )
+
+Default WDFIOTARGET: 00006ffcf0c1d988
+
+Device is the power policy owner for the stack
+No pended pnp, wait-wake irps
+Pended device power !irp 0xfffff88672936cf0 (D0)
+
+Pnp state history:
+[0] WdfDevStatePnpObjectCreated (0x100)
+[1] WdfDevStatePnpInit (0x105)
+[2] WdfDevStatePnpInitStarting (0x106)
+[3] WdfDevStatePnpHardwareAvailable (0x108)
+[4] WdfDevStatePnpEnableInterfaces (0x109)
+[5] WdfDevStatePnpStarted (0x119)
+
+owning thread:  ffff900312da63c0
+Power state history:
+[0] WdfDevStatePowerGotoDx (0x31a)
+[1] WdfDevStatePowerNotifyingD0ExitToWakeInterrupts (0x359)
+[2] WdfDevStatePowerGotoDxIoStopped (0x31c)
+[3] WdfDevStatePowerDx (0x31f)
+[4] WdfDevStatePowerCheckDeviceType (0x301)
+[5] WdfDevStatePowerWaking (0x333)
+[6] WdfDevStatePowerNotifyingD0EntryToWakeInterrupts (0x35a)
+[7] WdfDevStatePowerWakingConnectInterrupt (0x335)
+…
+
+The processing thread is waiting for the Registry lock:
+0: kd> !thread ffff900312da63c0
+THREAD ffff900312da63c0  Cid 0004.48d0  Teb: 0000000000000000 Win32Thread: 0000000000000000 WAIT: (WrResource) KernelMode Non-Alertable
+    ffffc38a4c2fe038  SynchronizationEvent
+Not impersonating
+DeviceMap                 ffffa38bc2e16b00
+Owning Process            ffff900309c90480       Image:         System
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      5080293        Ticks: 218 (0:00:00:03.406)
+Context Switch Count      91362          IdealProcessor: 0             
+UserTime                  00:00:00.000
+KernelTime                00:00:09.515
+Win32 Start Address nt!ExpWorkerThread (0xfffff802b4ba1bc0)
+Stack Init ffffc38a4c2ffb90 Current ffffc38a4c2fdc50
+Base ffffc38a4c300000 Limit ffffc38a4c2f9000 Call 0000000000000000
+Priority 12 BasePriority 12 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffc38a`4c2fdc90 fffff802`b4b948a4 : ffff9003`12da63c0 00000000`00000000 fffff802`b3a12640 00000000`00000000 : nt!KiSwapContext+0x76
+ffffc38a`4c2fddd0 fffff802`b4b94052 : ffff9003`12da63c0 ffff9003`00000000 ffffb380`68350180 fffff802`00000013 : nt!KiSwapThread+0x664
+ffffc38a`4c2fde90 fffff802`b4bb2094 : 00000000`00000013 ffffa38b`00000000 00000000`00000000 ffffb380`68350180 : nt!KiCommitThreadWait+0x3b2
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!KeWaitForSingleObject+0x380 (Inline Function @ fffff802`b4bb2094)
+ffffc38a`4c2fdf30 fffff802`b4b8d4b3 : fffff802`b4e8f380 ffffc38a`4c2fe028 00000000`00010244 fffff802`b4b2f220 : nt!ExpWaitForResource+0x3e4
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ExpCommitWaitForResourceShared+0x19 (Inline Function @ fffff802`b4b8d4b3)
+ffffc38a`4c2fdfe0 fffff802`b4b8cfb0 : 00000000`00000002 fffff802`b4e8f380 ffffa38b`c2e3bab8 00000000`00000001 : nt!ExpAcquireResourceSharedLite+0x443
+ffffc38a`4c2fe080 fffff802`b4fed2db : 00000000`00000000 00000000`00000000 ffff8bd1`c5e6ad58 00000000`00000000 : nt!ExAcquireResourceSharedLite+0x40
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!CmpLockRegistry+0x37 (Inline Function @ fffff802`b4fed2db)
+ffffc38a`4c2fe0c0 fffff802`b4ff6f80 : ffff9003`0000001c ffffc38a`4c2fe5b0 ffffc38a`4c2fe528 ffffa38b`c2ec67d0 : nt!CmpDoParseKey+0x3cb
+ffffc38a`4c2fe4b0 fffff802`b4feb9a7 : 00000000`00000000 ffff8bfc`00000001 00000000`00000000 ffffc38a`4c2fe900 : nt!CmpParseKey+0x270
+ffffc38a`4c2fe690 fffff802`b4ff3d70 : ffff9003`1500f501 ffffc38a`4c2fe8e8 00000000`00000240 ffff9003`09dfee00 : nt!ObpLookupObjectName+0x11c7
+ffffc38a`4c2fe850 fffff802`b4ff4bd6 : ffff2576`00000001 ffff9003`09dfee00 00000000`00000000 ffffc38a`4c2fedc0 : nt!ObOpenObjectByNameEx+0x1e0
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!ObOpenObjectByName+0x38 (Inline Function @ fffff802`b4ff4bd6)
+ffffc38a`4c2fe990 fffff802`b4f90a16 : 00000000`00000010 fffff802`b4f90a04 00000000`00000010 00000000`00010246 : nt!CmOpenKey+0x356
+ffffc38a`4c2feba0 fffff802`b4c27353 : ffff8bfc`015a7900 ffffc38a`4c2fec40 ffffc38a`00000000 00001f80`0100ed80 : nt!NtOpenKey+0x12
+ffffc38a`4c2febe0 fffff802`b4c1f220 : fffff802`b4f31f6b 00000000`00000000 00000000`00000000 fffff802`b5084760 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffc38a`4c2febe0)
+ffffc38a`4c2fed78 fffff802`b4f31f6b : 00000000`00000000 00000000`00000000 fffff802`b5084760 00000000`000000f0 : nt!KiServiceLinkage
+ffffc38a`4c2fed80 fffff802`b4f31eb2 : 00000000`00000000 ffffffff`80000098 00000000`00000000 00000000`00000010 : nt!_RegRtlOpenKeyTransacted+0xa3
+ffffc38a`4c2fee20 fffff802`b4f318b7 : ffffffff`80000098 00000000`00000000 00000000`00000000 00000000`00000000 : nt!_SysCtxRegOpenKey+0x3a
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : nt!_PnpCtxRegOpenKey+0x2b (Inline Function @ fffff802`b4f318b7)
+ffffc38a`4c2fee60 fffff802`b4f30fac : 00000000`c0000120 ffff9003`0bdd56b0 00000000`0000005b ffffc38a`00000000 : nt!_CmOpenDeviceRegKeyWorker+0x177
+ffffc38a`4c2fef20 fffff802`b4f34734 : 00000000`00000000 fffff802`b4f33951 374683a8`4cc165a1 98d4d103`6e20a8e3 : nt!_CmOpenDeviceRegKey+0xe0
+ffffc38a`4c2ff020 fffff802`b4f34c03 : ffff9003`0bdd56b0 ffffa38b`c2edc650 ffffa38b`c2edc650 00000000`00000000 : nt!_PnpDispatchDevice+0xf4
+ffffc38a`4c2ff090 fffff802`b4f34d08 : 00000000`02000001 ffffc38a`4c2ff189 ffffa38b`c2edc650 fffff802`b4f340b9 : nt!_PnpOpenObjectRegKeyDispatch+0xa7
+ffffc38a`4c2ff120 fffff802`b4f33fe2 : 00000000`c0000016 00000000`00000000 00000000`00000000 ffffc38a`4c2ff560 : nt!_PnpOpenObjectRegKey+0xc8
+ffffc38a`4c2ff1d0 fffff802`b4f330f9 : 00000000`00000000 ffff9003`0bdd56b0 ffffc38a`4c2ff311 ffffa38b`c2edc650 : nt!_PnpGetObjectPropertyWorker+0x176
+ffffc38a`4c2ff270 fffff802`b4f6d338 : ffff9003`0bddbb80 ffffc38a`4c2ff558 ffff9003`0bde1060 00000000`00000000 : nt!_PnpGetObjectProperty+0x119
+ffffc38a`4c2ff340 fffff802`b4f6d22c : 33440691`c8246ba3 a7f4d1a6`077df13b ffff9003`12000028 00000000`007f636a : nt!PnpGetDevicePropertyData+0xf0
+ffffc38a`4c2ff4b0 fffff802`b502063e : ffffc38a`4c2ff650 ffffc38a`4c2ff5c9 ffffc38a`4c2ff638 fffff802`b50205f8 : nt!IoGetDevicePropertyData+0x7c
+ffffc38a`4c2ff500 fffff802`b501f8ed : ffffc38a`4c2ff650 000000b8`00000000 00000000`00000000 00000000`00000000 : nt!IopGetInterruptConnectionData+0x46
+ffffc38a`4c2ff550 fffff805`4a0a5d41 : ffff9003`0f3da930 00000000`00000000 ffff9003`0f3e9020 ffff9003`0f3e1020 : nt!IoConnectInterruptEx+0xdd
+ffffc38a`4c2ff630 fffff805`4a0a5a55 : ffff9003`0f3e9020 ffff9003`0f3e9020 ffff9003`0f3e14b8 ffff9003`0f3e9de0 : Wdf01000!FxInterrupt::ConnectInternal+0xd5
+ffffc38a`4c2ff6b0 fffff805`4a07f904 : ffff9003`0f3e91d8 ffff9003`0f3e1020 ffff9003`0f3e9020 ffff9003`0f3e14b8 : Wdf01000!FxInterrupt::Connect+0x65
+ffffc38a`4c2ff750 fffff805`4a07f787 : ffff9003`0f3e1020 ffffc38a`4c2ff910 00000000`000006a0 00000000`00000000 : Wdf01000!FxPkgPnp::NotifyResourceObjectsD0+0x68
+ffffc38a`4c2ff7b0 fffff805`4a099568 : ffff9003`0f3e1020 00000000`00000b40 00000000`00000335 00000000`00000000 : Wdf01000!FxPkgPnp::PowerWakingConnectInterrupt+0x17
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxPkgPnp::PowerEnterNewState+0x103 (Inline Function @ fffff805`4a099568)
+ffffc38a`4c2ff810 fffff805`4a09e9b8 : ffff9003`0f3e1220 fffff805`00000000 ffff9003`0f3e1220 ffff9003`100b6300 : Wdf01000!FxPkgPnp::PowerProcessEventInner+0x1f8
+ffffc38a`4c2ff980 fffff805`4a09da4e : ffff9003`0f3e11f8 ffff9003`0f3e1020 00000000`00000000 00000000`00000000 : Wdf01000!FxPkgPnp::_PowerProcessEventInner+0x58
+(Inline Function) --------`-------- : --------`-------- --------`-------- --------`-------- --------`-------- : Wdf01000!FxEventQueue::EventQueueWorker+0x7a (Inline Function @ fffff805`4a09da4e)
+
+The lock is owned by a currently running thread and there is heavy contention:
+0: kd> ub fffff802`b4fed2db 
+nt!KeGetCurrentThread [inlined in nt!CmpDoParseKey+0x39d]:
+fffff802`b4fed2ad 65488b0c2588010000 mov   rcx,qword ptr gs:[188h]
+fffff802`b4fed2b6 33d2            xor     edx,edx
+fffff802`b4fed2b8 e88337baff      call    nt!PsBoostThreadIo (fffff802`b4b90a40)
+fffff802`b4fed2bd 65488b042588010000 mov   rax,qword ptr gs:[188h]
+fffff802`b4fed2c6 66ff88e4010000  dec     word ptr [rax+1E4h]
+fffff802`b4fed2cd b201            mov     dl,1
+fffff802`b4fed2cf 488d0daa20eaff  lea     rcx,[nt!CmpRegistryLock (fffff802`b4e8f380)]
+fffff802`b4fed2d6 e895fcb9ff      call    nt!ExAcquireResourceSharedLite (fffff802`b4b8cf70)
+0: kd> !locks nt!CmpRegistryLock
+
+Resource @ nt!CmpRegistryLock (0xfffff802b4e8f380)    Exclusively owned
+    Contention Count = 371744
+    NumberOfSharedWaiters = 146
+     Threads: ffff900310331700-01<*> ffff90030f559080-01    ffff90031454e700-01    ffff90030f87e4c0-01    
+              ffff900311bae700-01    ffff900312346300-01    ffff9003137ab700-01    ffff900314ccf700-01    
+              ffff900313e20700-01    ffff900313a25080-01    ffff90030b908040-01    ffff90031293b080-01    
+              ffff90030bcf1400-01    ffff900314f5a700-01    ffff9003143b6080-01    ffff90030b696040-01    
+              ffff900313899700-01    ffff900311a83700-01    ffff9003119a1080-01    ffff90031474f700-01    
+              ffff90030f555080-01    ffff9003131d7080-01    ffff900313582700-01    ffff900313439240-01    
+              ffff90030bc6f080-01    ffff900314d68080-01    ffff900314534700-01    ffff90031267d480-01    
+              ffff900314408700-01    ffff900312677380-01    ffff900313841700-01    ffff90030baaf700-01    
+              ffff90031394e080-01    ffff900312bfe480-01    ffff9003139e6700-01    ffff90030b61d5c0-01    
+              ffff9003117f2080-01    ffff900313a13080-01    ffff900314a8c700-01    ffff900314bbc700-01    
+              ffff900311d3b700-01    ffff9003141cd700-01    ffff90030abd0700-01    ffff900314a69700-01    
+              ffff900311922080-01    ffff900311606080-01    ffff900313ec7080-01    ffff90031025c700-01    
+              ffff900311999700-01    ffff900314fbe700-01    ffff900313a92700-01    ffff900314610700-01    
+              ffff9003150b4080-01    ffff900313b5c080-01    ffff9003143ed080-01    ffff900312939080-01    
+              ffff900313b97700-01    ffff900313bba700-01    ffff90031415b700-01    ffff9003139ed080-01    
+              ffff9003139b6080-01    ffff900311d9e080-01    ffff900313072080-01    ffff9003139e5080-01    
+              ffff9003132ab080-01    ffff900313a2b080-01    ffff90030f86c080-01    ffff90030fd98040-01    
+              ffff900311c71080-01    ffff900311d84080-01    ffff900313954080-01    ffff900311dae080-01    
+              ffff900311dfe080-01    ffff900312a5c700-01    ffff900311db8080-01    ffff9003132a8080-01    
+              ffff900311d82080-01    ffff9003137df080-01    ffff900313817700-01    ffff90030bfad040-01    
+              ffff900311c9a080-01    ffff900311757080-01    ffff900314bab080-01    ffff9003143bf700-01    
+              ffff900311ab6080-01    ffff9003145d2700-01    ffff9003116d9080-01    ffff900314e34700-01    
+              ffff9003146d5080-01    ffff900311ddf080-01    ffff900312a63080-01    ffff900314166080-01    
+              ffff900312c64080-01    ffff900314846080-01    ffff900313a0f080-01    ffff9003136b1080-01    
+              ffff900311deb080-01    ffff900311d68080-01    ffff900313361080-01    ffff900311d7a080-01    
+              ffff900313a01080-01    ffff900311ded080-01    ffff900313a0a080-01    ffff900311dfa080-01    
+              ffff900314f4c700-01    ffff90031379b080-01    ffff90030b702700-01    ffff90030b957080-01    
+              ffff900312ca1700-01    ffff9003149a9700-01    ffff900311c95700-01    ffff90030b787080-01    
+              ffff900311d95700-01    ffff90031400b040-01    ffff90030ad5e080-01    ffff900314b4a700-01    
+              ffff90031321b700-01    ffff900312f62700-01    ffff900311a44040-01    ffff9003138d7640-01    
+              ffff9003140a7080-01    ffff900311a19080-01    ffff90030ff41340-01    ffff90030bfa6040-01    
+              ffff900312a77080-01    ffff90030f0fe040-01    ffff90030bb8a700-01    ffff90030b8b9700-01    
+              ffff900314e54700-01    ffff900314ca3700-01    ffff9003139de080-01    ffff9003131e9080-01    
+              ffff90031476b700-01    ffff900311b8b080-01    ffff900310086080-01    ffff900312bbc080-01    
+              ffff900312e4b700-01    ffff900312da63c0-01    ffff900312fac5c0-01    ffff900310105080-01    
+              ffff900313e45040-01    ffff900314791700-01    ffff9003122e3080-01    ffff900312ec4700-01    
+              ffff90031368a700-01    ffff900311d7c700-01    ffff900314887700-01    
+1 total locks
+0: kd> !thread ffff900310331700
+THREAD ffff900310331700  Cid 26e8.2528  Teb: 000000cfa3094000 Win32Thread: 0000000000000000 RUNNING on processor 1
+Not impersonating
+DeviceMap                 ffffa38bcdb976e0
+Owning Process            ffff9003102c2080       Image:         regwinBluerepros.exe
+Attached Process          N/A            Image:         N/A
+Wait Start TickCount      5080511        Ticks: 0
+Context Switch Count      1161308        IdealProcessor: 0             
+UserTime                  00:00:47.859
+KernelTime                00:16:38.890
+Win32 Start Address 0x00007ff713847b40
+Stack Init ffffc38a4a777b90 Current ffffc38a4a7771e0
+Base ffffc38a4a778000 Limit ffffc38a4a771000 Call 0000000000000000
+Priority 8 BasePriority 8 PriorityDecrement 0 IoPriority 2 PagePriority 5
+Child-SP          RetAddr           : Args to Child                                                           : Call Site
+ffffc38a`4a7774f8 fffff802`b4fa6294 : ffffa38b`00000001 ffffa38b`dd009be8 00000000`000019c0 00000000`00000001 : nt!CmpRemoveKeyHashFromTableEntry+0x9
+ffffc38a`4a777500 fffff802`b4efb9ed : ffffa38b`dd009be8 00000000`00000000 00000000`00000001 ffffa38b`d5d15118 : nt!CmpRemoveKeyHashFromDeletedKcbTable+0x4c
+ffffc38a`4a777530 fffff802`b4efb736 : 00000000`ffffffff ffffa38b`cd33c000 00000000`00000196 fffff802`b4dfec00 : nt!CmpCleanUpKcbCacheWithLock+0x1ed
+ffffc38a`4a777570 fffff802`b4f7bcab : ffffa38b`dd009be8 ffffa38b`c9c01d01 00000000`ffffffff ffffa38b`c9c01d01 : nt!CmpDereferenceKeyControlBlockWithLock+0x256
+ffffc38a`4a7775a0 fffff802`b4f7bb27 : 00000000`00000000 ffffc38a`4a777601 00000000`00000000 00000000`00000018 : nt!CmpRunDownDelayDerefKCBEngine+0xff
+ffffc38a`4a777610 fffff802`b4f7b9d9 : 00000000`00000000 ffffc38a`4a777700 ffffa38b`c9c01d18 ffffa38b`cd33c000 : nt!CmpCleanUpKCBCacheTable+0x2f
+ffffc38a`4a777640 fffff802`b4f7b989 : 00000000`00000000 ffffc38a`4a777730 ffffa38b`c9c01d18 fffff802`b4f7e730 : nt!CmpEnumerateAllOpenSubKeys+0x35
+ffffc38a`4a777680 fffff802`b4f7aa4e : 00000000`00040000 ffffa38b`c9c01d18 ffffa38b`c9c01d18 ffffa38b`cc7e95b0 : nt!CmpSearchForOpenSubKeys+0x89
+ffffc38a`4a7776d0 fffff802`b4f7a801 : ffffc38a`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!CmpPerformUnloadKey+0x10e
+ffffc38a`4a777770 fffff802`b50435df : 00000000`00000010 00000000`00010246 ffffc38a`4a7779f8 00000000`00000018 : nt!CmUnloadKey+0x449
+ffffc38a`4a7779d0 fffff802`b4c27353 : 00000000`00000000 ffff9003`10331700 ffff9003`10331700 00000000`00000000 : nt!NtUnloadKey2+0xf
+ffffc38a`4a777a00 00007ffb`2cef4724 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : nt!KiSystemServiceCopyEnd+0x13 (TrapFrame @ ffffc38a`4a777a00)
+000000cf`a2fff9d8 00000000`00000000 : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : 0x00007ffb`2cef4724
+
+The issue is caused by the overstress:
+0: kd> !ready
+KSHARED_READY_QUEUE fffff802b3a136c0: (00) ****------------------------------------------------------------
+SharedReadyQueue fffff802b3a136c0: Ready Threads at priority 8
+    THREAD ffff900311b93700  Cid 0004.3770  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff90030abc3700  Cid 0004.2a18  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffff90031448e700  Cid 0004.57ac  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff900310052040  Cid 0004.0848  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff90030cce7700  Cid 0004.0140  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff900314856700  Cid 1c18.0b38  Teb: 0000002b7155f000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff900311713040  Cid 0004.5560  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff90031020e040  Cid 0004.47c4  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff900312305040  Cid 0004.24c8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff9003133fd680  Cid 0004.489c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff900314d4d700  Cid 0004.4e94  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff900312af5640  Cid 0004.5768  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff90031465d700  Cid 0004.3754  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff900314831700  Cid 53ac.54d0  Teb: 0000008c381cd000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff90030abdf700  Cid 0004.50f8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffff90030fc2d080  Cid 0004.5a3c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff90031304b700  Cid 0004.4604  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff90031293a700  Cid 0004.23a4  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff90031496c080  Cid 0004.4b54  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffff900311996700  Cid 0004.50e8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff900314c18700  Cid 0004.3ed8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff900313996080  Cid 0004.5938  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff900313057700  Cid 0004.114c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff9003142f0700  Cid 0004.53e4  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff900314db8700  Cid 0004.554c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffff900311ce3080  Cid 0004.5be4  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff900314a3f700  Cid 0004.1be4  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff90031037c080  Cid 0004.3164  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff900314c76700  Cid 0004.430c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffff90031467b700  Cid 4bac.3da8  Teb: 000000d6ed05d000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff9003133d9080  Cid 0528.1b84  Teb: 00000036a1c69000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffff9003135e6700  Cid 0528.1a40  Teb: 00000036a1c87000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff900313ffe080  Cid 0004.599c  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000003
+    THREAD ffff9003146c6700  Cid 0004.3bd8  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff90030f9dd700  Cid 0004.5bc0  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000002
+    THREAD ffff900313b6c080  Cid 0004.4844  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+    THREAD ffff900313104080  Cid 0ed0.17f4  Teb: 0000006582545000 Win32Thread: 0000000000000000 READY on processor 80000000
+SharedReadyQueue fffff802b3a136c0: Ready Threads at priority 7
+    THREAD ffff9003101ad080  Cid 0988.09d0  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000001
+SharedReadyQueue fffff802b3a136c0: Ready Threads at priority 6
+    THREAD ffff900310289700  Cid 0918.5ab4  Teb: 0000008ddc438000 Win32Thread: 0000000000000000 READY on processor 80000000
+    THREAD ffff9003137b0700  Cid 2ae4.5a30  Teb: 000000626ad3b000 Win32Thread: ffff9003103f6320 READY on processor 80000002
+SharedReadyQueue fffff802b3a136c0: Ready Threads at priority 4
+    THREAD ffff9003140b8080  Cid 29b4.1d9c  Teb: 000000f05c1da000 Win32Thread: ffff9003128c9270 READY on processor 80000000
+SharedReadyQueue fffff802b3a136c0: Ready Threads at priority 0
+    THREAD ffff900309dff040  Cid 0004.0068  Teb: 0000000000000000 Win32Thread: 0000000000000000 READY on processor 80000000
+Processor 0: No threads in READY state
+Processor 1: No threads in READY state
+Processor 2: No threads in READY state
+Processor 3: No threads in READY state
+
+The D0 timeout is set to default 2 minutes:
+0: kd> ?? (int) nt!PopWatchdogResumeTimeout
+int 0n120
+
+This is by design during the stress, increase of the sleep and resume timeouts is recommended.

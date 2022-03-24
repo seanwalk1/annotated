@@ -1,0 +1,210 @@
+[BUG]:		https://hsdes.intel.com/home/default.html#article?id=1209646881
+[AUTHOR]:	Ivan Rouzanov
+
+[ANALYSYS]:	Page fault with interrupts disabled.
+[BUGCHECK]:	0xA
+
+So I was looking at a bugcheck and I saw this:
+
+IRQL_NOT_LESS_OR_EQUAL (a)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If a kernel debugger is available get the stack backtrace.
+Arguments:
+Arg1: ffff80821ca2b918, memory referenced
+Arg2: 00000000000000ff, IRQL
+Arg3: 000000000000006c, bitfield :
+     bit 0 : value 0 = read operation, 1 = write operation
+     bit 3 : value 0 = not an execute operation, 1 = execute operation (only on chips which support this level of status)
+Arg4: fffff8019501b587, address which referenced memory
+
+and it looks strange for 2 reasons – one is IRQL. IRQL supposed to be in the range [0x0 – 0xF] on x64. Another one is bitfield – the 0x6C is not read or write or execute.
+So what is going on?
+
+Debugger does not help too much, saved IRQL is actually 0 – so looks like it was not raised at all:
+3: kd> !irql
+Debugger saved IRQL for processor 0x3 -- 0 (LOW_LEVEL)
+
+Current IRQL is 0xF, which makes sense considering that KeBugCheckEx raises to HIGH_LEVEL:
+3: kd> r cr8
+cr8=000000000000000f
+
+So here is what is going on. Sometimes interrupts are not disabled by raising the IRQL but by actually disabling the interrupts:
+ULONG64
+KeUpdateTotalCyclesCurrentThread (
+    __inout PKTHREAD Thread,
+    __out_opt PULONG64 TimeStamp
+    )
+…
+    KeFastDisableInterrupts();
+    Prcb = KeGetCurrentPrcb();
+
+    NT_ASSERT(Prcb->NestingLevel == 0);
+
+    CycleTime = KiUpdateTotalCyclesCurrentThread(Prcb, Thread, TimeStamp);
+    KeEnableInterrupts(TRUE);
+    return CycleTime;
+}
+
+3: kd> uf nt!KeUpdateTotalCyclesCurrentThread
+nt!KeUpdateTotalCyclesCurrentThread [minkernel\ntos\ke\thredobj.c @ 4363]:
+4363 fffff801`950ddae0 4883ec28        sub     rsp,28h
+4363 fffff801`950ddae4 488bc1          mov     rax,rcx
+4379 fffff801`950ddae7 fa              cli
+4380 fffff801`950ddae8 65488b0c2520000000 mov   rcx,qword ptr gs:[20h]
+4384 fffff801`950ddaf1 4c8bc2          mov     r8,rdx
+4384 fffff801`950ddaf4 488bd0          mov     rdx,rax
+4384 fffff801`950ddaf7 e8a8d5f3ff      call    nt!KiUpdateTotalCyclesCurrentThread (fffff801`9501b0a4)
+4385 fffff801`950ddafc fb              sti
+4387 fffff801`950ddafd 4883c428        add     rsp,28h
+4387 fffff801`950ddb01 c3              ret
+
+And here is the logic in the Trap E handler:
+…
+KiPF01: mov     TrFaultAddress[rbp], rcx ; save fault address
+        bt      dword ptr TrEflags[rbp], EFLAGS_IF_BIT ; test previous interrupt state
+        jnc     KiPF50                  ; if nc, interrupts were not enabled
+        lea     r9, (-128)[rbp]         ; set trap frame address
+        mov     r8b, TrSegCs[rbp]       ; isolate previous mode
+        and     r8b, MODE_MASK          ;
+        mov     rdx, rcx                ; set faulting virtual address
+        movzx   ecx, al                 ; set raw error code register contents
+        shr     eax, 1                  ; isolate load/store and i/d indicators
+        and     eax, 09h                ;
+        mov     TrFaultIndicator[rbp], al ; save load/store and i/d indicators
+…
+KiPF40: CurrentIrql                     ; get current IRQL
+
+KiPF45: mov     r10, TrRip[rbp]         ; set parameter 5 to exception address
+        movzx   r9, byte ptr TrFaultIndicator[rbp] ; set load/store indicator
+        and     eax, 0ffh               ; isolate current IRQL
+        mov     r8, rax                 ;
+        mov     rdx, TrFaultAddress[rbp] ; set fault address
+        mov     ecx, IRQL_NOT_LESS_OR_EQUAL ; set bug check code
+        CAPCALL KiBugCheckDispatch, <NoRet> ; bug check system - no return
+
+;
+; A page fault occurred with interrupts disabled.
+;
+
+KiPF50: xor     eax, eax                ; set previous IRQL to 0ffh
+        mov     al, 0ffh                ;
+        jmp     short KiPF45            ; bugcheck
+…
+
+Notice 2 things: if interrupts are disabled, then “IRQL” will be set to 0xFF.
+Also notice a bug – if interrupts are disabled, then Fault Indicator is never updated hence it contains some garbage.
+
+Mystery solved!
+
+
+Summary: Trap E (#PF - Page fault) handler does not collect exception error code when processor Interrupt flag (IF) is clear.
+
+Impact: Less experienced debug engineers can get confused and mislead about software operations at the trap event. Since Intel engineers often debug pre-released OS and pre-released processors, incorrect information reported by debugger often makes less experienced debug and validation engineers reach wrong conclusions.
+In this case it is the nt!KiPageFault trap handler that does not collect error code from the stack in the case when interrupts were disabled at the trap.
+
+Details:
+Here we have a pagefault when interrupts were disabled (see attached dump and ignore the actual cause for the TrapE fault- bitflip):
+0: kd> !analyze -v
+*******************************************************************************
+*                                                                             *
+*                        Bugcheck Analysis                                    *
+*                                                                             *
+*******************************************************************************
+
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (d1)
+An attempt was made to access a pageable (or completely invalid) address at an
+interrupt request level (IRQL) that is too high.  This is usually
+caused by drivers using improper addresses.
+If kernel debugger is available get stack backtrace.
+Arguments:
+Arg1: fffffa0b9f3c1000, memory referenced
+Arg2: 00000000000000ff, IRQL
+Arg3: 00000000000000ca, value 0 = read operation, 1 = write operation
+Arg4: fffffa0b9f3c1000, address which referenced memory
+
+Looking at the reported information:
+0: kd> .bugcheck
+Bugcheck code 000000D1
+Arguments fffffa0b`9f3c1000 00000000`000000ff 00000000`000000ca fffffa0b`9f3c1000
+
+We can see that reported IRQL is 0xFF and reported error code is 0xCA which is neither read nor write nor execute.
+Looking at the trap:
+0: kd> kV
+ # Child-SP          RetAddr           : Args to Child                                                           : Call Site
+00 fffff802`6b0fd498 fffff802`68fd3129 : 00000000`0000000a fffffa0b`9f3c1000 00000000`000000ff 00000000`000000ca : nt!KeBugCheckEx
+01 fffff802`6b0fd4a0 fffff802`68fd1707 : 00000000`00000000 00000000`00000000 00000001`00000000 ffff0001`00000000 : nt!KiBugCheckDispatch+0x69
+02 fffff802`6b0fd5e0 fffffa0b`9f3c1000 : fffff802`68ea25d1 00000000`0002c0a8 00000000`0002c0ca 00000000`00000000 : nt!KiPageFault+0x247 (TrapFrame @ fffff802`6b0fd5e0)
+03 fffff802`6b0fd778 fffff802`68ea25d1 : 00000000`0002c0a8 00000000`0002c0ca 00000000`00000000 00000000`00000006 : 0xfffffa0b`9f3c1000
+04 fffff802`6b0fd780 fffff802`68ea1eeb : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`000000cb : nt!PpmUpdatePerformanceFeedback+0x131
+05 fffff802`6b0fd810 fffff802`68ea185a : fffff80b`9f7b4ca0 00000df2`00000df2 ffff8c86`d2a0d0e0 00000000`00000000 : nt!PpmIdleExecuteTransition+0x4db
+06 fffff802`6b0fda80 fffff802`68fcafec : 00000000`00000000 fffff802`691c0180 fffff802`6923b940 ffff8c86`d5cf57c0 : nt!PoIdle+0x33a
+07 fffff802`6b0fdbe0 00000000`00000000 : fffff802`6b0fe000 fffff802`6b0f7000 00000000`00000000 00000000`00000000 : nt!KiIdleLoop+0x2c
+0: kd> .trap fffff802`6b0fd5e0
+NOTE: The trap frame does not contain all registers.
+Some register values may be zeroed or incorrect.
+rax=0000000000000002 rbx=0000000000000000 rcx=ffff8c86d3a2da68
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000000000000000
+rip=fffffa0b9f3c1000 rsp=fffff8026b0fd778 rbp=ffff8c86d2ff0dd0
+ r8=fffff8026b0fd7a8  r9=fffff8026b0fd7b0 r10=0000000000000001
+r11=0000000000000000 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up di pl nz na pe nc
+fffffa0b`9f3c1000 ??              ???
+0: kd> rif
+Last set context:
+if=0
+0: kd> !irql
+Debugger saved IRQL for processor 0x0 -- 0 (LOW_LEVEL)
+0: kd> rcr8
+Last set context:
+cr8=0000000000000000
+
+We can see that interrupts were disabled (IF is clear and IRQL not raised). This is expected since we are in the Idle loop.
+Now if we look at the trap handler:
+0: kd> uf nt!KiPageFault
+nt!KiPageFault:
+fffff802`68fd14c0 55              push    rbp
+…
+fffff802`68fd1593 8b85e0000000    mov     eax,dword ptr [rbp+0E0h] ; This is where we save error code from the stack into EAX register
+…
+fffff802`68fd15cc 0fbaa5f800000009 bt      dword ptr [rbp+0F8h],9  ; This is where we test if interrupt flag is set and
+                                                                   ; if not – we jump to nt!KiPageFault+0x247
+fffff802`68fd15d4 0f832d010000    jae     nt!KiPageFault+0x247 (fffff802`68fd1707)  Branch
+
+nt!KiPageFault+0x11a:
+fffff802`68fd15da 4c8d4d80        lea     r9,[rbp-80h]
+fffff802`68fd15de 448a85f0000000  mov     r8b,byte ptr [rbp+0F0h]
+fffff802`68fd15e5 4180e001        and     r8b,1
+fffff802`68fd15e9 488bd1          mov     rdx,rcx
+fffff802`68fd15ec 0fb6c8          movzx   ecx,al
+fffff802`68fd15ef d1e8            shr     eax,1 
+fffff802`68fd15f1 83e009          and     eax,9
+fffff802`68fd15f4 8845aa          mov     byte ptr [rbp-56h],al ; This is where we’d normally store the error code
+fffff802`68fd15f7 e86437f2ff      call    nt!MmAccessFault (fffff802`68ef4d60)
+fffff802`68fd15fc 85c0            test    eax,eax
+fffff802`68fd15fe 7c36            jl      nt!KiPageFault+0x176 (fffff802`68fd1636)  Branch
+
+…
+
+nt!KiPageFault+0x221:
+fffff802`68fd16e1 440f20c0        mov     rax,cr8 ; This is where we collect current IRQL if interrupts are enabled
+
+nt!KiPageFault+0x225:
+fffff802`68fd16e5 4c8b95e8000000  mov     r10,qword ptr [rbp+0E8h] ; From here we just bugcheck
+fffff802`68fd16ec 4c0fb64daa      movzx   r9,byte ptr [rbp-56h]
+fffff802`68fd16f1 25ff000000      and     eax,0FFh
+fffff802`68fd16f6 4c8bc0          mov     r8,rax
+fffff802`68fd16f9 488b5550        mov     rdx,qword ptr [rbp+50h]
+fffff802`68fd16fd b90a000000      mov     ecx,0Ah
+fffff802`68fd1702 e8b9190000      call    nt!KiBugCheckDispatch (fffff802`68fd30c0)
+
+nt!KiPageFault+0x247:
+fffff802`68fd1707 33c0            xor     eax,eax ; We get here if interrupts were disabled.
+fffff802`68fd1709 b0ff            mov     al,0FFh ; So we set IRQL as 0xFF and then go to bugcheck path thus never saving the error code
+fffff802`68fd170b ebd8            jmp     nt!KiPageFault+0x225 (fffff802`68fd16e5)  Branch
+
+So the problem is that if interrupt flag was clear, then we never saved the error code.
+
+
